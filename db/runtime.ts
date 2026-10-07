@@ -46,7 +46,7 @@ function readLocalEnvFiles(): Record<string, string> {
 
   for (const file of candidates) {
     try {
-      const filePath = path.resolve(process.cwd(), file);
+      const filePath = path.resolve(/*turbopackIgnore: true*/ process.cwd(), file);
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf8');
         const lines = content.split('\n');
@@ -86,7 +86,7 @@ export function runtimeEnv(): AppRuntime {
     // Standard Node / Next.js environment
   }
 
-  if (!cachedLocalEnv || process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && !cachedLocalEnv) {
     cachedLocalEnv = readLocalEnvFiles();
   }
 
