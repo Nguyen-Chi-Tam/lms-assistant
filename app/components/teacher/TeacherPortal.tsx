@@ -39,17 +39,19 @@ import {
   Printer,
   FileDown,
   RotateCcw,
+  Play,
   Folder,
   Layers,
   GitFork,
   Layout,
   GitCompare,
   PenLine,
+  Pencil,
   Megaphone,
   Bell,
   Clock,
 } from 'lucide-react';
-import type { Course, ChatMessage, CitationSource, CourseSourceItem, StudyToolResponse, ManualEventItem } from '@/app/types';
+import type { Course, ChatMessage, CitationSource, CourseSourceItem, StudyToolResponse, ManualEventItem, RagMode } from '@/app/types';
 import { convertQuestionsToMoodleXml, type QuizQuestionItem } from '@/app/lib/moodle-xml';
 import { MarkdownRenderer } from '@/app/components/MarkdownRenderer';
 import { InteractiveMindmap } from '@/app/components/InteractiveMindmap';
@@ -57,6 +59,7 @@ import { SlidePresentation } from '@/app/components/SlidePresentation';
 import type { SlideDeckData } from '@/lib/pptx-export';
 import { exportSummaryToDocx, copyRichHtmlForWord } from '@/lib/export-utils';
 import { cleanSummaryData } from '@/lib/summary-cleaner';
+import { stripFluff } from '@/lib/anti-fluff';
 
 /* ── Flashcards Component ────────────────────────────────── */
 
@@ -185,7 +188,7 @@ function StudyArtifact({
   courseTitle: string;
   loading: boolean;
   selectedSourcesCount: number;
-  onGenerate: (level: 'simple' | 'standard' | 'complex', topic: string, allowExternal: boolean) => void;
+  onGenerate: (level: 'simple' | 'standard' | 'complex', topic: string, allowExternal: boolean, ragMode?: RagMode) => void;
   onReset: () => void;
   onStop?: () => void;
   copyText: (s: string) => void;
@@ -193,7 +196,7 @@ function StudyArtifact({
 }) {
   const [selectedLevel, setSelectedLevel] = useState<'simple' | 'standard' | 'complex'>('standard');
   const [topicInput, setTopicInput] = useState('');
-  const [allowExternal, setAllowExternal] = useState<boolean>(false);
+  const [selectedRagMode, setSelectedRagMode] = useState<RagMode>('hybrid');
 
   const toolIcon =
     type === 'Tóm tắt' ? (
@@ -306,7 +309,7 @@ function StudyArtifact({
                 <Sparkles size={14} />
                 Chuyên sâu
               </strong>
-              <small>Phân tích đa chiều, đào sâu nguyên lý, công thức và ví dụ thực tế</small>
+              <small>Phân tích đa chiều, mạch kể tự nhiên, ví dụ thực tế và lời giảng giàu ngữ cảnh</small>
             </button>
           </div>
         </div>
@@ -323,33 +326,49 @@ function StudyArtifact({
 
         <div>
           <div className="tool-section-label">3. PHẠM VI DỮ LIỆU THAM KHẢO</div>
-          <button
-            type="button"
-            className={`level-card ${allowExternal ? 'active' : ''}`}
-            onClick={() => setAllowExternal(prev => !prev)}
-            style={{ width: '100%' }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="level-selector">
+            <button
+              type="button"
+              className={`level-card ${selectedRagMode === 'strict' ? 'active' : ''}`}
+              onClick={() => setSelectedRagMode('strict')}
+            >
               <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                {allowExternal ? <Globe size={15} /> : <Lock size={15} />}
-                {allowExternal ? 'Cho phép liên hệ kiến thức thực tiễn bên ngoài' : 'Bám sát nghiêm ngặt tài liệu được cung cấp'}
+                <Lock size={14} style={{ color: selectedRagMode === 'strict' ? '#f87171' : undefined }} />
+                Bám sát (Strict)
               </strong>
-              <span className="level-badge" style={{ background: allowExternal ? 'rgba(56, 189, 248, 0.2)' : undefined }}>
-                {allowExternal ? 'BẬT' : 'TẮT'}
-              </span>
-            </div>
-            <small>
-              {allowExternal
-                ? 'Cho phép AI liên hệ thực tế ngành, ứng dụng hiện đại và mở rộng tư duy chuyên môn.'
-                : 'AI phân tích nghiêm ngặt chỉ dựa trên nội dung tài liệu môn học được cung cấp.'}
-            </small>
-          </button>
+              <small>100% bám sát tài liệu đã chọn, không suy diễn ngoài giáo trình</small>
+            </button>
+
+            <button
+              type="button"
+              className={`level-card ${selectedRagMode === 'hybrid' ? 'active' : ''}`}
+              onClick={() => setSelectedRagMode('hybrid')}
+            >
+              <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Sparkles size={14} style={{ color: selectedRagMode === 'hybrid' ? '#10b981' : undefined }} />
+                RAG Lai (Hybrid)
+              </strong>
+              <small>Ưu tiên giáo trình; tự động bù đắp tri thức chuyên ngành khi thiếu</small>
+            </button>
+
+            <button
+              type="button"
+              className={`level-card ${selectedRagMode === 'creative' ? 'active' : ''}`}
+              onClick={() => setSelectedRagMode('creative')}
+            >
+              <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Globe size={14} style={{ color: selectedRagMode === 'creative' ? '#38bdf8' : undefined }} />
+                Sáng tạo (Creative)
+              </strong>
+              <small>Tự do mở rộng thực tiễn ngành, xu hướng và tư duy đa chiều</small>
+            </button>
+          </div>
         </div>
 
         <button
           type="button"
           className="generate-tool-btn"
-          onClick={() => onGenerate(selectedLevel, topicInput.trim() || courseTitle, allowExternal)}
+          onClick={() => onGenerate(selectedLevel, topicInput.trim() || courseTitle, selectedRagMode === 'creative', selectedRagMode)}
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
         >
           <Sparkles size={16} />
@@ -598,6 +617,7 @@ interface TeacherPortalProps {
   sources?: Array<{ name: string; url?: string; type?: string; courseId?: number | string; courseCode?: string }>;
   initialTab?: 'assistant' | 'grades' | 'quiz' | 'notifications';
   onTabChange?: (tab: 'assistant' | 'grades' | 'quiz' | 'notifications') => void;
+  currentUser?: { id?: number; fullname?: string; username?: string; role?: string };
 }
 
 function TeacherModal({
@@ -659,11 +679,24 @@ export function TeacherPortal({
   sources = [],
   initialTab = 'assistant',
   onTabChange,
+  currentUser,
 }: TeacherPortalProps) {
+  const teacherUser = useMemo(() => {
+    if (currentUser) return currentUser;
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('moodleUser');
+        if (stored) return JSON.parse(stored);
+      } catch {}
+    }
+    return { id: 2, fullname: 'Giảng viên', username: 'teacher' };
+  }, [currentUser]);
+
   const [activeTab, setActiveTab] = useState<'assistant' | 'grades' | 'quiz' | 'notifications'>(initialTab);
   const [selectedCourseId, setSelectedCourseId] = useState<number | string>(
     initialCourseId || courses.find(c => c.isTeacher)?.id || courses[0]?.id || 1
   );
+  const [assistantSessionId, setAssistantSessionId] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -720,7 +753,7 @@ export function TeacherPortal({
     'matching',
     'short_answer',
   ]);
-  const quizModel = 'auto';
+  const [quizModel, setQuizModel] = useState<string>('auto');
   const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
   const teacherQuizAbortRef = useRef<AbortController | null>(null);
   const [generatedQuestions, setGeneratedQuestions] = useState<QuizQuestionItem[]>([]);
@@ -728,7 +761,8 @@ export function TeacherPortal({
   const [quizNotice, setQuizNotice] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [showXmlModal, setShowXmlModal] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
-  const [quizAllowExternalSource, setQuizAllowExternalSource] = useState(false);
+  const [quizRagMode, setQuizRagMode] = useState<RagMode>('hybrid');
+  const quizAllowExternalSource = quizRagMode === 'creative';
 
   // --------------------------------------------------------------------------
   // Tab 3: Teacher AI Assistant Chat & Study Tools states
@@ -737,7 +771,8 @@ export function TeacherPortal({
   const [checkedSources, setCheckedSources] = useState<boolean[]>(() => new Array(sources.length).fill(true));
   const [sourceQuery, setSourceQuery] = useState('');
   const [isSourcePanelCollapsed, setIsSourcePanelCollapsed] = useState(false);
-  const [allowExternalSource, setAllowExternalSource] = useState(false);
+  const [ragMode, setRagMode] = useState<RagMode>('hybrid');
+  const allowExternalSource = ragMode === 'creative';
   const [answerStyle, setAnswerStyle] = useState<'concise' | 'detailed'>('concise');
   const [tool, setTool] = useState('Chat');
   const [artifactsMap, setArtifactsMap] = useState<Record<string, GeneratedArtifact>>({});
@@ -761,10 +796,25 @@ export function TeacherPortal({
   const [assistantChat, setAssistantChat] = useState<ChatMessage[]>([]);
   const [assistantInput, setAssistantInput] = useState('');
   const [assistantLoading, setAssistantLoading] = useState(false);
-  const assistantModel = 'auto';
+  const [assistantModel, setAssistantModel] = useState<string>('auto');
+  const [teacherAvailableModels, setTeacherAvailableModels] = useState<Array<{ id: string; provider: string; label: string; available?: boolean }>>([]);
   const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
   const assistantAbortRef = useRef<AbortController | null>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
+  const teacherChatInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Fetch available AI models for Teacher healthcheck & model testing
+  useEffect(() => {
+    fetch('/api/models?all=true')
+      .then(res => res.json())
+      .then(data => {
+        const mList = (data as any)?.models;
+        if (mList && Array.isArray(mList)) {
+          setTeacherAvailableModels(mList);
+        }
+      })
+      .catch(err => console.warn('Failed to load teacher models:', err));
+  }, []);
 
   // Sync sources prop
   useEffect(() => {
@@ -937,7 +987,8 @@ export function TeacherPortal({
     toolType: string,
     level: 'simple' | 'standard' | 'complex',
     topic: string,
-    allowExternal?: boolean
+    allowExternal?: boolean,
+    toolRagMode?: RagMode
   ) => {
     setArtifactLoading(true);
     const selectedSources = portalSources.filter((_, i) => checkedSources[i]);
@@ -952,7 +1003,10 @@ export function TeacherPortal({
         : 'flashcards';
     const curCourse = courses.find(c => String(c.id) === String(selectedCourseId) || c.code === String(selectedCourseId));
     const courseTitle = curCourse ? curCourse.name : 'Môn học';
-    const effectiveAllowExternal = allowExternal !== undefined ? allowExternal : allowExternalSource;
+    const effectiveRagMode: RagMode =
+      toolRagMode ||
+      (allowExternal !== undefined ? (allowExternal ? 'creative' : 'hybrid') : ragMode);
+    const effectiveAllowExternal = effectiveRagMode === 'creative';
 
     if (artifactAbortRef.current) {
       artifactAbortRef.current.abort();
@@ -974,6 +1028,7 @@ export function TeacherPortal({
           sources: selectedSources,
           sourceNames: selectedSourceNames,
           level,
+          ragMode: effectiveRagMode,
           allowExternalSource: effectiveAllowExternal,
           model: assistantModel,
         }),
@@ -1370,20 +1425,92 @@ export function TeacherPortal({
       .map(item => item.name);
   }, [portalSources, checkedSources]);
 
-  // Initialize Teacher Assistant welcome message
+  // Hydrate Teacher Assistant chat session from Firebase / DB
   useEffect(() => {
-    const courseTitle = curCourse ? curCourse.name : 'môn học';
-    if (assistantChat.length === 0) {
-      setAssistantChat([
-        {
-          role: 'ai',
-          text: `Trợ lý AI Giảng dạy môn **${courseTitle}** đã sẵn sàng. Bạn có thể yêu cầu đề xuất tài liệu học tập, soạn bài tập, lập kế hoạch bài giảng hoặc phân tích kết quả sổ điểm.`,
-        },
-      ]);
-    }
-  }, [curCourse, assistantChat.length]);
+    let isCancelled = false;
+    const cId = Number(selectedCourseId) || Number(curCourse?.id) || 1;
+    const uId = teacherUser?.id || 2;
 
-  const askAssistant = async (customPrompt?: string) => {
+    async function loadTeacherChat() {
+      try {
+        const res = await fetch(`/api/chat-sessions?moodleCourseId=${cId}&userId=${uId}&role=teacher`);
+        const data = (await res.json()) as {
+          latest?: {
+            id?: string;
+            messages?: ChatMessage[];
+            response_model?: string;
+          };
+        };
+
+        if (
+          !isCancelled &&
+          data?.latest?.messages &&
+          Array.isArray(data.latest.messages) &&
+          data.latest.messages.length > 0
+        ) {
+          const loaded = data.latest.messages.map(m => {
+            if (m.role === 'ai' && !m.model && data.latest?.response_model) {
+              return { ...m, model: data.latest.response_model };
+            }
+            return m;
+          });
+          setAssistantChat(loaded);
+          if (data.latest.id) setAssistantSessionId(String(data.latest.id));
+          return;
+        }
+      } catch (err) {
+        console.warn('Failed to hydrate teacher chat session:', err);
+      }
+
+      if (!isCancelled) {
+        const courseTitle = curCourse ? curCourse.name : 'môn học';
+        setAssistantChat([
+          {
+            role: 'ai',
+            text: `Trợ lý AI Giảng dạy môn **${courseTitle}** đã sẵn sàng. Bạn có thể yêu cầu đề xuất tài liệu học tập, soạn bài tập, lập kế hoạch bài giảng hoặc phân tích kết quả sổ điểm.`,
+          },
+        ]);
+        setAssistantSessionId(null);
+      }
+    }
+
+    void loadTeacherChat();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedCourseId, curCourse?.id, teacherUser?.id]);
+
+  const persistTeacherChatSession = useCallback(
+    (updatedMessages: ChatMessage[], responseModelName?: string) => {
+      const cId = Number(selectedCourseId) || Number(curCourse?.id) || 1;
+      const uId = teacherUser?.id || 2;
+
+      fetch('/api/chat-sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: uId,
+          userName: teacherUser?.fullname || 'Giảng viên',
+          moodleCourseId: cId,
+          sessionId: assistantSessionId || undefined,
+          role: 'teacher',
+          messages: updatedMessages,
+          response_model: responseModelName,
+        }),
+      })
+        .then(res => res.json() as Promise<{ session?: { id?: string } }>)
+        .then(result => {
+          if (result.session?.id) setAssistantSessionId(String(result.session.id));
+        })
+        .catch(err => {
+          console.warn('Failed to persist teacher chat session to Firebase:', err);
+        });
+    },
+    [selectedCourseId, curCourse?.id, teacherUser, assistantSessionId]
+  );
+
+  const askAssistant = async (customPrompt?: string, customHistoryChat?: ChatMessage[]) => {
     if (assistantLoading) {
       if (assistantAbortRef.current) {
         assistantAbortRef.current.abort();
@@ -1396,10 +1523,12 @@ export function TeacherPortal({
     const q = (customPrompt ?? assistantInput).trim();
     if (!q) return;
 
-    const nextChat: ChatMessage[] = [...assistantChat, { role: 'user', text: q }];
+    const baseChat = customHistoryChat ?? assistantChat;
+    const nextChat: ChatMessage[] = [...baseChat, { role: 'user', text: q }];
     setAssistantChat(nextChat);
     if (!customPrompt) setAssistantInput('');
     setAssistantLoading(true);
+    persistTeacherChatSession(nextChat);
 
     const controller = new AbortController();
     assistantAbortRef.current = controller;
@@ -1436,8 +1565,9 @@ export function TeacherPortal({
             due: e.deliverTime ? new Date(e.deliverTime).toLocaleString('vi-VN') : '',
             type: e.eventType || 'Sự kiện',
           })),
-          history: assistantChat.slice(1).map(c => ({ role: c.role, text: c.text })),
+          history: baseChat.slice(1).map(c => ({ role: c.role, text: c.text })),
           model: assistantModel,
+          ragMode,
           allowExternalSource,
           answerStyle,
           students: activeStudents.map(s => ({
@@ -1457,32 +1587,95 @@ export function TeacherPortal({
         }),
       });
 
-      const data = (await res.json()) as { error?: string; answer?: string; sources?: Array<string | CitationSource> };
+      const data = (await res.json()) as {
+        error?: string;
+        answer?: string;
+        sources?: Array<string | CitationSource>;
+        model?: string;
+        provider?: string;
+        ragMode?: RagMode;
+        isFallback?: boolean;
+        finishReason?: string;
+      };
       if (!res.ok) throw new Error(data.error || 'Lỗi xử lý AI');
 
-      setAssistantChat(prev => [
-        ...prev,
+      const cleanAnswer = data.answer ? stripFluff(data.answer) : '';
+      const finalChat: ChatMessage[] = [
+        ...nextChat,
         {
           role: 'ai',
-          text: data.answer || '',
+          text: cleanAnswer,
           sources: data.sources || [],
+          model: data.model,
+          provider: data.provider,
+          ragMode: data.ragMode || ragMode,
+          isFallback: data.isFallback,
+          finishReason: data.finishReason || 'stop',
         },
-      ]);
+      ];
+      setAssistantChat(finalChat);
+      persistTeacherChatSession(finalChat, data.model);
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') return;
-      setAssistantChat(prev => [
-        ...prev,
+      const errorMsg = `⚠️ **Lỗi kết nối AI**: ${(err as Error)?.message || 'Không thể nhận phản hồi lúc này.'}`;
+      const errChat: ChatMessage[] = [
+        ...nextChat,
         {
           role: 'ai',
-          text: `⚠️ **Lỗi kết nối AI**: ${(err as Error)?.message || 'Không thể nhận phản hồi lúc này.'}`,
+          text: errorMsg,
         },
-      ]);
+      ];
+      setAssistantChat(errChat);
+      persistTeacherChatSession(errChat);
     } finally {
       if (assistantAbortRef.current === controller) {
         assistantAbortRef.current = null;
       }
       setAssistantLoading(false);
     }
+  };
+
+  // Prompt Actions on hover: Re-answer, Delete, Edit (Identical to Student side)
+  const handleTeacherReAnswer = (index: number, promptText: string) => {
+    if (assistantLoading) return;
+    const baseChat = assistantChat.slice(0, index);
+    setAssistantChat(baseChat);
+    void askAssistant(promptText, baseChat);
+  };
+
+  const handleTeacherDeletePrompt = (index: number) => {
+    if (assistantLoading) return;
+    const next = [...assistantChat];
+    if (next[index + 1] && next[index + 1].role === 'ai') {
+      next.splice(index, 2);
+    } else {
+      next.splice(index, 1);
+    }
+    setAssistantChat(next);
+    persistTeacherChatSession(next);
+    notify('Đã xóa câu hỏi khỏi cuộc trò chuyện');
+  };
+
+  const handleTeacherEditPrompt = (index: number, promptText: string) => {
+    if (assistantLoading) return;
+    const next = [...assistantChat];
+    if (next[index + 1] && next[index + 1].role === 'ai') {
+      next.splice(index, 2);
+    } else {
+      next.splice(index, 1);
+    }
+    setAssistantChat(next);
+    setAssistantInput(promptText);
+
+    setTimeout(() => {
+      if (teacherChatInputRef.current) {
+        teacherChatInputRef.current.focus();
+        const len = promptText.length;
+        teacherChatInputRef.current.setSelectionRange(len, len);
+        teacherChatInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 50);
+    notify('Đã đưa câu hỏi vào khung nhập liệu');
   };
 
   const stopGeneration = () => {
@@ -1509,6 +1702,20 @@ export function TeacherPortal({
     if (!ok) return;
 
     const curCourse = courses.find(c => String(c.id) === String(selectedCourseId) || c.code === String(selectedCourseId));
+    const cId = Number(selectedCourseId) || Number(curCourse?.id) || 1;
+    const uId = teacherUser?.id || 2;
+
+    fetch(
+      assistantSessionId
+        ? `/api/chat-sessions?sessionId=${assistantSessionId}`
+        : `/api/chat-sessions?userId=${uId}&moodleCourseId=${cId}&role=teacher`,
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ).catch(() => {});
+
+    setAssistantSessionId(null);
     setAssistantChat([
       {
         role: 'ai',
@@ -1516,7 +1723,7 @@ export function TeacherPortal({
       },
     ]);
     setAssistantInput('');
-    notify('Đã xóa lịch sử trò chuyện');
+    notify('Đã xóa lịch sử trò chuyện khỏi Firebase');
   };
 
   const transferToQuizTab = (text: string) => {
@@ -1991,7 +2198,8 @@ export function TeacherPortal({
           topic: effectiveTopic,
           documentText: quizDocumentText,
           sources: selectedSourcesList,
-          allowExternalSource: quizAllowExternalSource,
+          allowExternalSource: quizRagMode === 'creative',
+          ragMode: quizRagMode,
           count: quizCount,
           difficulty: quizDifficulty,
           questionType: quizQuestionTypes.length === 1 ? quizQuestionTypes[0] : 'mixed',
@@ -2379,16 +2587,75 @@ export function TeacherPortal({
                           <Sparkles size={16} />
                         </span>
                       )}
+
+                      {m.role === 'user' && (
+                        <div className="user-message-actions">
+                          <button
+                            type="button"
+                            className="user-action-btn"
+                            onClick={() => handleTeacherReAnswer(i, m.text)}
+                            title="Trả lời lại (Re-answer)"
+                          >
+                            <RotateCcw size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="user-action-btn delete"
+                            onClick={() => handleTeacherDeletePrompt(i)}
+                            title="Xóa (Delete)"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="user-action-btn"
+                            onClick={() => handleTeacherEditPrompt(i, m.text)}
+                            title="Chỉnh sửa (Edit)"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        </div>
+                      )}
+
                       <div id={`teacher-chat-msg-${i}`} style={{ minWidth: 0, width: '100%' }}>
                         <MarkdownRenderer content={m.text} />
 
-                        {/* External sources citation pills */}
+                        {/* Visual Grounding Citations */}
                         {m.sources && m.sources.length > 0 && (
-                          <div className="citations">
+                          <div className="citations" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
                             {m.sources.map((s, idx) => {
                               const isObj = typeof s === 'object' && s !== null;
                               const rawName = isObj ? s.name : String(s);
                               const cleanName = rawName.replace(/^(▤|➕|\+\s*|\[Mở rộng\])/, '').trim();
+                              const isFallback = isObj ? Boolean(s.isFallback || s.type === 'extended_knowledge') : rawName.includes('Kiến thức tham khảo ngoài');
+                              const isCourse = isObj ? (s.type === 'course_material' || (!s.url && !s.isExternal && !isFallback)) : rawName.startsWith('▤');
+
+                              if (isFallback) {
+                                return (
+                                  <span
+                                    key={idx}
+                                    className="citation-pill warning-citation"
+                                    title="AI sử dụng tri thức mở rộng có kiểm soát do tài liệu chưa có dữ liệu"
+                                  >
+                                    <AlertCircle size={12} style={{ color: '#f59e0b' }} />
+                                    <span className="citation-text">Kiến thức tham khảo ngoài giáo trình</span>
+                                  </span>
+                                );
+                              }
+
+                              if (isCourse) {
+                                return (
+                                  <span
+                                    key={idx}
+                                    className="citation-pill course-citation"
+                                    title="Trích xuất trực tiếp từ tài liệu khóa học"
+                                  >
+                                    <BookOpen size={12} style={{ color: '#10b981' }} />
+                                    <span className="citation-text">Nguồn: {cleanName}</span>
+                                  </span>
+                                );
+                              }
+
                               const searchTarget = cleanName.replace(/^(Kiểm chứng|Nguồn mở rộng):\s*/i, '');
                               const url = isObj && s.url ? s.url : `https://www.google.com/search?q=${encodeURIComponent(searchTarget)}`;
                               return (
@@ -2399,6 +2666,7 @@ export function TeacherPortal({
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                  title="Nguồn web liên quan"
                                 >
                                   <Globe size={12} style={{ color: '#38bdf8' }} />
                                   <span className="citation-text">{cleanName}</span>
@@ -2412,6 +2680,33 @@ export function TeacherPortal({
                         {/* Toolbar for AI message */}
                         {m.role === 'ai' && (
                           <div className="message-toolbar" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            {m.finishReason === 'length' && (
+                              <button
+                                type="button"
+                                className="continue-generate-btn"
+                                onClick={() => askAssistant('Hãy viết tiếp tục câu trả lời đang dang dở ở trên, tuyệt đối không lặp lại đoạn đã viết.')}
+                                disabled={assistantLoading}
+                                title="Câu trả lời đã đạt giới hạn độ dài token. Bấm để AI viết tiếp phần còn lại."
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '5px',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '11px',
+                                  fontWeight: 600,
+                                  background: 'linear-gradient(135deg, rgba(249, 115, 22, 0.18), rgba(234, 88, 12, 0.22))',
+                                  color: '#f97316',
+                                  border: '1px solid rgba(249, 115, 22, 0.4)',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.2s ease',
+                                }}
+                              >
+                                <Play size={11} style={{ fill: '#f97316' }} />
+                                <span>Viết tiếp</span>
+                              </button>
+                            )}
+
                             <button
                               type="button"
                               className={`copy-message-btn ${copiedMsgIdx === i ? 'copied' : ''}`}
@@ -2421,24 +2716,6 @@ export function TeacherPortal({
                             >
                               {copiedMsgIdx === i ? <Check size={13} /> : <Copy size={13} />}
                               <span>{copiedMsgIdx === i ? 'Đã sao chép' : 'Sao chép'}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              className="copy-message-btn"
-                              onClick={() => transferToQuizTab(m.text)}
-                              title="Chuyển văn bản câu hỏi này sang trình tạo đề thi Moodle XML"
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '5px',
-                                background: 'rgba(124, 109, 242, 0.15)',
-                                color: '#cfc8ff',
-                                borderColor: 'rgba(124, 109, 242, 0.35)',
-                              }}
-                            >
-                              <HelpCircle size={13} style={{ color: '#a594fd' }} />
-                              <span>Chuyển sang Tạo Đề XML</span>
                             </button>
                           </div>
                         )}
@@ -2464,6 +2741,7 @@ export function TeacherPortal({
                 {/* Chat Composer */}
                 <div className="chat-compose">
                   <textarea
+                    ref={teacherChatInputRef}
                     value={assistantInput}
                     onChange={e => setAssistantInput(e.target.value)}
                     onKeyDown={e => {
@@ -2476,34 +2754,42 @@ export function TeacherPortal({
                   />
                   <div className="chat-compose-footer">
                     <div className="chat-compose-chips">
-                      {/* External Sources Toggle Chip */}
+                      {/* 3-State RAG Mode Chip */}
                       <button
                         type="button"
                         onClick={() => {
-                          setAllowExternalSource(prev => {
-                            const next = !prev;
+                          setRagMode(prev => {
+                            const next: RagMode = prev === 'strict' ? 'hybrid' : prev === 'hybrid' ? 'creative' : 'strict';
                             notify(
-                              next
-                                ? 'Đã bật: Cho phép liên hệ kiến thức thực tiễn ngoài giáo trình'
-                                : 'Đã bật: Chế độ bám sát nghiêm ngặt tài liệu môn học'
+                              next === 'strict'
+                                ? 'Chế độ Strict: Bám sát 100% tài liệu, kích hoạt ngắt mạch khi thiếu dữ liệu'
+                                : next === 'hybrid'
+                                ? 'Chế độ Hybrid: Ưu tiên tài liệu, tự động mở rộng kèm minh bạch nguồn'
+                                : 'Chế độ Creative: Ưu tiên sáng tạo sư phạm và liên hệ thực tiễn mở rộng'
                             );
                             return next;
                           });
                         }}
-                        className={`mode-indicator-chip external-source-chip ${allowExternalSource ? 'active-external' : ''}`}
+                        className={`mode-indicator-chip mode-${ragMode}`}
                         title={
-                          allowExternalSource
-                            ? 'Chế độ mở rộng: AI kết hợp giáo trình với kiến thức thực tiễn ngoài giáo trình (Bấm để chuyển sang Bám sát tài liệu)'
-                            : 'Chế độ bám sát: AI phân tích nghiêm ngặt chỉ dựa trên các tài liệu đã chọn (Bấm để bật Nguồn mở rộng)'
+                          ragMode === 'strict'
+                            ? 'Chế độ Strict: Chỉ dùng tài liệu đã chọn, đóng băng tham số (Bấm để đổi)'
+                            : ragMode === 'hybrid'
+                            ? 'Chế độ Hybrid: Ưu tiên tài liệu, bổ sung kiến thức khi thiếu (Bấm để đổi)'
+                            : 'Chế độ Creative: Ưu tiên sáng tạo sư phạm và nguồn ngoài (Bấm để đổi)'
                         }
                         style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
                       >
-                        {allowExternalSource ? (
-                          <Globe size={13} style={{ color: '#38bdf8' }} />
-                        ) : (
-                          <Lock size={13} style={{ color: '#94a3b8' }} />
-                        )}
-                        <span>{allowExternalSource ? 'Nguồn ngoài: BẬT' : 'Bám sát tài liệu'}</span>
+                        {ragMode === 'strict' && <Lock size={13} style={{ color: '#94a3b8' }} />}
+                        {ragMode === 'hybrid' && <Zap size={13} style={{ color: '#f59e0b' }} />}
+                        {ragMode === 'creative' && <Globe size={13} style={{ color: '#38bdf8' }} />}
+                        <span>
+                          {ragMode === 'strict'
+                            ? 'Strict (Bám sát)'
+                            : ragMode === 'hybrid'
+                            ? 'Hybrid (Kết hợp)'
+                            : 'Creative (Mở rộng)'}
+                        </span>
                       </button>
 
                       {/* Answer Style Selector (Concise vs Detailed) */}
@@ -2527,6 +2813,38 @@ export function TeacherPortal({
                         {answerStyle === 'concise' ? <Zap size={13} /> : <BookOpen size={13} />}
                         <span>{answerStyle === 'concise' ? 'Nhanh / Trọng tâm' : 'Chi tiết / Chuyên sâu'}</span>
                       </button>
+
+                      {/* AI Model Selector & Healthcheck cho Giảng viên */}
+                      <select
+                        value={assistantModel}
+                        onChange={e => {
+                          setAssistantModel(e.target.value);
+                          const chosen = teacherAvailableModels.find(m => m.id === e.target.value);
+                          const label = e.target.value === 'auto'
+                            ? 'Tự động (Đề xuất)'
+                            : (chosen?.label || e.target.value);
+                          notify(`[Trợ lý Giảng dạy] Đã chọn model: ${label}`);
+                        }}
+                        className="model-selector-chip"
+                        title="[Healthcheck] Chọn model AI để kiểm tra kết nối & độ nhạy"
+                        style={{
+                          height: '28px',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          borderRadius: '8px',
+                          background: assistantModel !== 'auto' ? 'rgba(124, 109, 242, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                          borderColor: assistantModel !== 'auto' ? 'rgba(124, 109, 242, 0.5)' : 'rgba(255, 255, 255, 0.12)',
+                          color: '#e2e8f0',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <option value="auto">Model: Tự động</option>
+                        {teacherAvailableModels.map(m => (
+                          <option key={m.id} value={m.id} disabled={m.available === false}>
+                            {m.available === false ? '[Offline] ' : ''}{m.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div className="chat-compose-actions">
@@ -2588,7 +2906,7 @@ export function TeacherPortal({
                   courseTitle={curCourseTitle}
                   loading={artifactLoading}
                   selectedSourcesCount={selectedSourceNames.length}
-                  onGenerate={(lvl, top, ext) => void generateToolArtifact(tool, lvl, top, ext)}
+                  onGenerate={(lvl, top, ext, rMode) => void generateToolArtifact(tool, lvl, top, ext, rMode)}
                   onReset={() => resetToolArtifact(tool)}
                   onStop={stopArtifactGeneration}
                   copyText={copyText}
@@ -3899,52 +4217,139 @@ export function TeacherPortal({
               <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.45rem' }}>
                 5. PHẠM VI NỘI DUNG RA ĐỀ
               </label>
-              <button
-                type="button"
-                className={`level-card ${quizAllowExternalSource ? 'active' : ''}`}
-                onClick={() => setQuizAllowExternalSource(prev => !prev)}
-                style={{
-                  width: '100%',
-                  padding: isMobile ? '0.75rem' : '0.85rem 1rem',
-                  borderRadius: '12px',
-                  border: quizAllowExternalSource ? '1.5px solid #38bdf8' : '1px solid #26233a',
-                  background: quizAllowExternalSource ? 'rgba(56, 189, 248, 0.12)' : '#141220',
-                  color: quizAllowExternalSource ? '#f3f2f8' : '#9894ad',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  boxShadow: quizAllowExternalSource ? '0 0 16px rgba(56, 189, 248, 0.25)' : 'none',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.3rem',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                  <strong style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: isMobile ? '0.88rem' : '0.94rem', color: quizAllowExternalSource ? '#fff' : '#c4c1d6' }}>
-                    {quizAllowExternalSource ? <Globe size={15} style={{ color: '#38bdf8' }} /> : <Lock size={15} style={{ color: '#94a3b8' }} />}
-                    <span>{quizAllowExternalSource ? 'Cho phép câu hỏi liên hệ thực tiễn ngoài giáo trình' : 'Bám sát nghiêm ngặt tài liệu được cung cấp'}</span>
-                  </strong>
-                  <span
-                    className="level-badge"
-                    style={{
-                      background: quizAllowExternalSource ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.08)',
-                      color: quizAllowExternalSource ? '#38bdf8' : '#94a3b8',
-                      border: quizAllowExternalSource ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid #26233a',
-                      padding: '2px 8px',
-                      borderRadius: '6px',
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                    }}
-                  >
-                    {quizAllowExternalSource ? 'BẬT' : 'TẮT'}
-                  </span>
-                </div>
-                <small style={{ fontSize: isMobile ? '0.74rem' : '0.78rem', color: quizAllowExternalSource ? '#7dd3fc' : '#6b6684', lineHeight: 1.35 }}>
-                  {quizAllowExternalSource
-                    ? 'Đề thi tích hợp các câu hỏi tình huống thực tế trong ngành, ứng dụng hiện đại và câu hỏi tư duy mở rộng.'
-                    : 'Đề thi tập trung hoàn toàn vào nội dung văn bản tài liệu môn học đã chọn.'}
-                </small>
-              </button>
+              <div className="level-selector" style={{ gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0.65rem' }}>
+                <button
+                  type="button"
+                  className={`level-card ${quizRagMode === 'strict' ? 'active' : ''}`}
+                  onClick={() => setQuizRagMode('strict')}
+                  style={{
+                    padding: isMobile ? '0.75rem' : '0.85rem',
+                    borderRadius: '12px',
+                    border: quizRagMode === 'strict' ? '1.5px solid #ef4444' : '1px solid #26233a',
+                    background: quizRagMode === 'strict' ? 'rgba(239, 68, 68, 0.12)' : '#141220',
+                    color: quizRagMode === 'strict' ? '#f3f2f8' : '#9894ad',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    boxShadow: quizRagMode === 'strict' ? '0 0 16px rgba(239, 68, 68, 0.25)' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.35rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <strong style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: isMobile ? '0.84rem' : '0.9rem', color: quizRagMode === 'strict' ? '#fff' : '#c4c1d6' }}>
+                      <Lock size={15} style={{ color: '#ef4444' }} />
+                      <span>Bám sát (Strict)</span>
+                    </strong>
+                    <span
+                      className="level-badge"
+                      style={{
+                        background: quizRagMode === 'strict' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                        color: quizRagMode === 'strict' ? '#fca5a5' : '#94a3b8',
+                        border: quizRagMode === 'strict' ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid #26233a',
+                        padding: '2px 7px',
+                        borderRadius: '6px',
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      100% Giáo trình
+                    </span>
+                  </div>
+                  <small style={{ fontSize: isMobile ? '0.72rem' : '0.76rem', color: quizRagMode === 'strict' ? '#fca5a5' : '#6b6684', lineHeight: 1.35 }}>
+                    100% bám sát tài liệu bài giảng đã chọn. Tuyệt đối không suy diễn ngoài giáo trình.
+                  </small>
+                </button>
+
+                <button
+                  type="button"
+                  className={`level-card ${quizRagMode === 'hybrid' ? 'active' : ''}`}
+                  onClick={() => setQuizRagMode('hybrid')}
+                  style={{
+                    padding: isMobile ? '0.75rem' : '0.85rem',
+                    borderRadius: '12px',
+                    border: quizRagMode === 'hybrid' ? '1.5px solid #f59e0b' : '1px solid #26233a',
+                    background: quizRagMode === 'hybrid' ? 'rgba(245, 158, 11, 0.12)' : '#141220',
+                    color: quizRagMode === 'hybrid' ? '#f3f2f8' : '#9894ad',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    boxShadow: quizRagMode === 'hybrid' ? '0 0 16px rgba(245, 158, 11, 0.25)' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.35rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <strong style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: isMobile ? '0.84rem' : '0.9rem', color: quizRagMode === 'hybrid' ? '#fff' : '#c4c1d6' }}>
+                      <Sparkles size={15} style={{ color: '#f59e0b' }} />
+                      <span>RAG Lai (Hybrid)</span>
+                    </strong>
+                    <span
+                      className="level-badge"
+                      style={{
+                        background: quizRagMode === 'hybrid' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                        color: quizRagMode === 'hybrid' ? '#fcd34d' : '#94a3b8',
+                        border: quizRagMode === 'hybrid' ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #26233a',
+                        padding: '2px 7px',
+                        borderRadius: '6px',
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      Cân bằng
+                    </span>
+                  </div>
+                  <small style={{ fontSize: isMobile ? '0.72rem' : '0.76rem', color: quizRagMode === 'hybrid' ? '#fcd34d' : '#6b6684', lineHeight: 1.35 }}>
+                    Ưu tiên giáo trình; tự động mở rộng câu hỏi tình huống thực tế và bài tập áp dụng khi thiếu dữ kiện.
+                  </small>
+                </button>
+
+                <button
+                  type="button"
+                  className={`level-card ${quizRagMode === 'creative' ? 'active' : ''}`}
+                  onClick={() => setQuizRagMode('creative')}
+                  style={{
+                    padding: isMobile ? '0.75rem' : '0.85rem',
+                    borderRadius: '12px',
+                    border: quizRagMode === 'creative' ? '1.5px solid #38bdf8' : '1px solid #26233a',
+                    background: quizRagMode === 'creative' ? 'rgba(56, 189, 248, 0.12)' : '#141220',
+                    color: quizRagMode === 'creative' ? '#f3f2f8' : '#9894ad',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    boxShadow: quizRagMode === 'creative' ? '0 0 16px rgba(56, 189, 248, 0.25)' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.35rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <strong style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: isMobile ? '0.84rem' : '0.9rem', color: quizRagMode === 'creative' ? '#fff' : '#c4c1d6' }}>
+                      <Globe size={15} style={{ color: '#38bdf8' }} />
+                      <span>Sáng tạo (Creative)</span>
+                    </strong>
+                    <span
+                      className="level-badge"
+                      style={{
+                        background: quizRagMode === 'creative' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                        color: quizRagMode === 'creative' ? '#38bdf8' : '#94a3b8',
+                        border: quizRagMode === 'creative' ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid #26233a',
+                        padding: '2px 7px',
+                        borderRadius: '6px',
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      Mở rộng
+                    </span>
+                  </div>
+                  <small style={{ fontSize: isMobile ? '0.72rem' : '0.76rem', color: quizRagMode === 'creative' ? '#7dd3fc' : '#6b6684', lineHeight: 1.35 }}>
+                    Tự do mở rộng các câu hỏi thực tế ngành nghề, case study thực tế, công nghệ mới và tư duy đa chiều.
+                  </small>
+                </button>
+              </div>
             </div>
 
             {/* Footer with Big Vibrant Action Button */}
@@ -3953,8 +4358,40 @@ export function TeacherPortal({
                 Tệp xuất ra đạt chuẩn <strong>Moodle XML</strong> có sẵn CDATA, feedback, penalty và fraction 100%.
               </div>
 
-              {isGeneratingQuiz ? (
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', width: isMobile ? '100%' : 'auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', width: isMobile ? '100%' : 'auto' }}>
+                {/* AI Model Selector for Quiz */}
+                <select
+                  value={quizModel}
+                  onChange={e => {
+                    setQuizModel(e.target.value);
+                    const chosen = teacherAvailableModels.find(m => m.id === e.target.value);
+                    const label = e.target.value === 'auto' ? 'Tự động' : (chosen?.label || e.target.value);
+                    notify(`[Tạo đề thi] Đã chọn model: ${label}`);
+                  }}
+                  className="model-selector-chip"
+                  title="[Healthcheck] Chọn model AI để biên soạn đề thi"
+                  style={{
+                    height: '46px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    borderRadius: '10px',
+                    background: quizModel !== 'auto' ? 'rgba(124, 109, 242, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                    borderColor: quizModel !== 'auto' ? 'rgba(124, 109, 242, 0.55)' : 'rgba(255, 255, 255, 0.12)',
+                    color: '#e2e8f0',
+                    cursor: 'pointer',
+                    padding: '0 12px',
+                  }}
+                >
+                  <option value="auto">Model: Tự động</option>
+                  {teacherAvailableModels.map(m => (
+                    <option key={m.id} value={m.id} disabled={m.available === false}>
+                      {m.available === false ? '[Offline] ' : ''}{m.label}
+                    </option>
+                  ))}
+                </select>
+
+                {isGeneratingQuiz ? (
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', width: isMobile ? '100%' : 'auto' }}>
                   <button
                     type="button"
                     disabled
@@ -4031,6 +4468,7 @@ export function TeacherPortal({
                   <span>Tạo ngân hàng câu hỏi Moodle XML ({quizCount} câu)</span>
                 </button>
               )}
+              </div>
             </div>
           </div>
 

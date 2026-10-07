@@ -7,7 +7,13 @@ import {
   GEMINI_MODEL,
   GEMINI_BACKUP_MODELS,
 } from './gemini';
-import { getGroqClient, GROQ_MODEL, GROQ_BACKUP_MODELS } from './groq';
+import {
+  getGroqClient,
+  executeWithGroqPool,
+  isAllGroqKeysBlocked,
+  GROQ_MODEL,
+  GROQ_BACKUP_MODELS,
+} from './groq';
 import { getAnthropicClient, ANTHROPIC_MODELS } from './anthropic';
 import {
   isCohereAvailable,
@@ -17,16 +23,33 @@ import {
   COHERE_BACKUP_MODELS,
 } from './cohere';
 import {
-  callHorde,
-  callHordeStream,
-  HORDE_MODEL,
-} from './horde';
+  isOpenRouterAvailable,
+  callOpenRouter,
+  callOpenRouterStream,
+  OPENROUTER_MODEL,
+  OPENROUTER_BACKUP_MODELS,
+} from './openrouter';
+import {
+  isCloudflareAvailable,
+  callCloudflareAI,
+  callCloudflareAIStream,
+  CLOUDFLARE_DEFAULT_MODEL,
+  CLOUDFLARE_BACKUP_MODELS,
+} from './cloudflare';
+import {
+  isApmixAvailable,
+  callApmix,
+  callApmixStream,
+  APMIX_DEFAULT_MODEL,
+  APMIX_BACKUP_MODELS,
+} from './apmix';
+import { buildUniversalLanguageDirective } from '@/lib/language-detector';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type AIProvider = 'cohere' | 'gemini' | 'groq' | 'horde' | 'anthropic' | 'datacurso' | 'cache';
+export type AIProvider = 'cohere' | 'gemini' | 'groq' | 'anthropic' | 'datacurso' | 'cache' | 'openrouter' | 'cloudflare' | 'apmix';
 
 export interface ModelOption {
   /** Format: "provider:modelId" */
@@ -54,11 +77,28 @@ export interface GenerateTextOptions {
   /** Native RAG document chunks for models supporting native document grounding (Cohere) */
   documents?: Array<{ id?: string; title?: string; text: string }>;
   /**
-   * Mode: allowExternalSource
-   * - When true (Tấn công 4-3-3 / Sáng tạo): Gemini (Tiền đạo cắm) → Groq (Tiền vệ cánh) → Cohere (Dự bị chiến lược) → AI Horde (Thủ môn)
-   * - When false (Phòng ngự 5-3-2 / RAG thép): Cohere (Mũi nhọn RAG) → Gemini (Chủ lực) → Groq (Cứu trợ) → AI Horde (Thủ môn)
+   * RAG Mode:
+   * - 'strict': Groq (2 Keys) -> Cloudflare Workers AI -> Gemini (2 Keys) -> OpenRouter
+   * - 'creative': Gemini (2 Keys) -> OpenRouter -> Groq (2 Keys) -> Cloudflare Workers AI -> Cohere (Command R)
+   * - 'hybrid': Gemini (2 Keys) -> Groq (2 Keys) -> Cloudflare Workers AI -> OpenRouter
+   */
+  ragMode?: 'strict' | 'hybrid' | 'creative';
+  /**
+   * Legacy flag: allowExternalSource
+   * - When true: Maps to 'creative'
+   * - When false: Maps to 'strict'
    */
   allowExternalSource?: boolean;
+  /** Task complexity category: 'basic' (speed/concise) or 'complex' (reasoning/structure) */
+  taskCategory?: 'basic' | 'complex';
+  /** Stop sequences to halt generation early (anti-fluff / prevent rambling summaries) */
+  stop?: string[];
+  stopSequences?: string[];
+  /**
+   * When true (e.g. for Teacher manual testing), only executes the specified model.
+   * If it fails, errors are immediately thrown without falling back to cascade.
+   */
+  strictModel?: boolean;
 }
 
 export interface GenerateTextStreamOptions extends GenerateTextOptions {
@@ -73,6 +113,7 @@ export interface GenerateTextResult {
   modelId?: string;
   provider?: AIProvider;
   modelName?: string;
+  finishReason?: 'stop' | 'length' | 'content_filter' | 'error' | string;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +122,15 @@ export interface GenerateTextResult {
 
 // Tracks timestamp (ms) until which a provider is blocked due to quota/credit exhaustion
 const providerBlockedUntil = new Map<AIProvider, number>();
+const lastProviderErrors = new Map<string, string>();
+
+export function setLastProviderError(provider: string, message: string): void {
+  lastProviderErrors.set(provider, message);
+}
+
+export function getLastProviderError(provider: string): string {
+  return lastProviderErrors.get(provider) || '';
+}
 
 function getNextDayMidnight(): number {
   const tomorrow = new Date();
@@ -90,11 +140,13 @@ function getNextDayMidnight(): number {
 }
 
 export function isProviderBlocked(provider: AIProvider): boolean {
-  if (provider === 'horde') {
-    return false; // AI Horde has unlimited decentralized quota
-  }
   if (provider === 'gemini') {
     if (!isAllGeminiKeysBlocked()) {
+      return false;
+    }
+  }
+  if (provider === 'groq') {
+    if (!isAllGroqKeysBlocked()) {
       return false;
     }
   }
@@ -112,8 +164,6 @@ export function unblockProvider(provider: AIProvider) {
 }
 
 export function blockProviderUntilTomorrow(provider: AIProvider, reason?: string) {
-  if (provider === 'horde') return; // Never block unlimited safety net
-
   const str = (reason || '').toLowerCase();
   const isCreditZero = str.includes('credit balance') || str.includes('credit is too low') || str.includes('plans & billing');
 
@@ -186,8 +236,8 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
   const geminiAvailable = activeGeminiSlots.length > 0 && !isProviderBlocked('gemini');
   const geminiModels = [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS];
   const geminiLabels: Record<string, string> = {
-    'gemini-2.5-flash': 'Gemini 2.5 Flash',
-    'gemini-2.5-pro': 'Gemini 2.5 Pro',
+    'gemini-3.8-flash': 'Gemini 3.8 Flash',
+    'gemini-3.1-pro-preview': 'Gemini 3.1 Pro (Preview)',
   };
   const geminiOptions: ModelOption[] = geminiModels.map(m => ({
     id: `gemini:${m}`,
@@ -213,8 +263,8 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
   const groqAvailable = !!groqKey && !groqKey.startsWith('gsk_your') && !isProviderBlocked('groq');
   const groqModels = [GROQ_MODEL, ...GROQ_BACKUP_MODELS];
   const groqLabels: Record<string, string> = {
-    'openai/gpt-oss-120b': 'Groq GPT-OSS 120B (LPU Siêu tốc)',
-    'qwen/qwen3.8-27b': 'Groq Qwen 3.8 27B (LPU)',
+    'openai/gpt-oss-120b': 'Groq GPT-OSS 120B',
+    'qwen/qwen3.8-27b': 'Groq Qwen 3.8 27B',
   };
   const groqOptions: ModelOption[] = groqModels.map(m => ({
     id: `groq:${m}`,
@@ -224,13 +274,12 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
     available: groqAvailable,
   }));
 
-  // Cohere (Command R - Đặc trị RAG)
+  // Cohere
   const cohereAvailable = isCohereAvailable() && !isProviderBlocked('cohere');
   const cohereModels = [COHERE_MODEL, ...COHERE_BACKUP_MODELS];
   const cohereLabels: Record<string, string> = {
-    'command-r-08-2024': 'Cohere Command R (Đặc trị RAG)',
-    'command-r': 'Cohere Command R',
-    'command-r-plus-08-2024': 'Cohere Command R+ (Chuyên sâu RAG)',
+    'command-r-08-2024': 'Cohere Command R',
+    'command-r-plus-08-2024': 'Cohere Command R+',
   };
   const cohereOptions: ModelOption[] = cohereModels.map(m => ({
     id: `cohere:${m}`,
@@ -240,27 +289,67 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
     available: cohereAvailable,
   }));
 
-  // AI Horde (Lưới bảo hiểm phi tập trung - Quota Vô cực)
-  const hordeAvailable = !isProviderBlocked('horde');
-  const hordeOptions: ModelOption[] = [{
-    id: `horde:${HORDE_MODEL}`,
-    provider: 'horde',
-    modelId: HORDE_MODEL,
-    label: 'AI Horde (Mạng lưới Phi tập trung - Quota Vô cực)',
-    available: hordeAvailable,
-  }];
+  // OpenRouter
+  const openRouterAvailable = isOpenRouterAvailable() && !isProviderBlocked('openrouter');
+  const openRouterModels = [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS];
+  const openRouterLabels: Record<string, string> = {
+    'qwen/qwen3.8-27b:free': 'OpenRouter Qwen 3.8 27B (Free)',
+    'nvidia/nemotron-3.5-lightning:free': 'OpenRouter Nemotron 3.5 (Free)',
+    'liquid/lfm-2.5-2.6b:free': 'OpenRouter LFM 2.5 2.6B (Free)',
+    'google/gemma-4-31b-it:free': 'OpenRouter Gemma 4 31B (Free)',
+    'meta-llama/llama-3.1-8b-instruct:free': 'OpenRouter Qwen 3.8 27B (Free)',
+  };
+  const openRouterOptions: ModelOption[] = openRouterModels.map(m => ({
+    id: `openrouter:${m}`,
+    provider: 'openrouter',
+    modelId: m,
+    label: openRouterLabels[m] || `OpenRouter ${m.split('/').pop()?.replace(':free', '') || m}`,
+    available: openRouterAvailable,
+  }));
+
+  // Cloudflare Workers AI
+  const cfAvailable = isCloudflareAvailable() && !isProviderBlocked('cloudflare');
+  const cfModels = [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS];
+  const cfLabels: Record<string, string> = {
+    '@cf/meta/llama-3.1-8b-instruct': 'Cloudflare Llama 3.1 8B (Free / Edge)',
+    '@cf/meta/llama-3-8b-instruct': 'Cloudflare Llama 3 8B (Free / Edge)',
+    '@cf/meta/llama-3.3-70b-instruct-fp8-fast': 'Cloudflare Llama 3.3 70B Fast (Edge)',
+    '@cf/qwen/qwen1.5-14b-chat-awq': 'Cloudflare Qwen 14B (Edge)',
+  };
+  const cfOptions: ModelOption[] = cfModels.map(m => ({
+    id: `cloudflare:${m}`,
+    provider: 'cloudflare',
+    modelId: m,
+    label: cfLabels[m] || `Cloudflare ${m.split('/').pop() || m}`,
+    available: cfAvailable,
+  }));
+
+  // APMIX
+  const apmixAvailable = isApmixAvailable() && !isProviderBlocked('apmix');
+  const apmixModels = [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS];
+  const apmixLabels: Record<string, string> = {
+    'claude-sonnet-4-6-free': 'APMIX Claude Sonnet 4.6 (Free)',
+    'gpt-6-luna-free': 'APMIX GPT-6 Luna (Free - Mở 09/10)',
+  };
+  const apmixOptions: ModelOption[] = apmixModels.map(m => ({
+    id: `apmix:${m}`,
+    provider: 'apmix',
+    modelId: m,
+    label: apmixLabels[m] || `APMIX ${m}`,
+    available: apmixAvailable,
+  }));
 
   if (allowExternalSource) {
-    // ⚔️ TẤN CÔNG 4-3-3: Gemini (Chủ công) -> Groq (Phản công tốc độ) -> Cohere (Dự bị) -> AI Horde (Thủ môn)
-    models.push(...geminiOptions, ...groqOptions, ...cohereOptions, ...hordeOptions);
+    // ⚔️ External ON: Gemini -> OpenRouter -> APMIX -> Groq -> Cloudflare -> Cohere
+    models.push(...geminiOptions, ...openRouterOptions, ...apmixOptions, ...groqOptions, ...cfOptions, ...cohereOptions);
   } else {
-    // 🛡️ PHÒNG NGỰ 5-3-2: Cohere (Mũi nhọn RAG) -> Gemini (Chủ lực) -> Groq (Cứu trợ) -> AI Horde (Thủ môn)
-    models.push(...cohereOptions, ...geminiOptions, ...groqOptions, ...hordeOptions);
+    // 🛡️ External OFF: Cohere -> Groq -> Cloudflare -> APMIX -> Gemini -> OpenRouter
+    models.push(...cohereOptions, ...groqOptions, ...cfOptions, ...apmixOptions, ...geminiOptions, ...openRouterOptions);
   }
 
-  if (anthropicAvailable) {
-    models.push(...anthropicOptions);
-  }
+  // if (anthropicAvailable) {
+  //   models.push(...anthropicOptions);
+  // }
 
   return models;
 }
@@ -275,11 +364,18 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
  */
 export function parseModelSelector(selector?: string): { provider: AIProvider; modelId: string } | null {
   if (!selector || selector === 'auto') return null;
+  if (selector.startsWith('@cf/')) {
+    return { provider: 'cloudflare', modelId: selector };
+  }
   const idx = selector.indexOf(':');
   if (idx <= 0) return null;
   const provider = selector.slice(0, idx) as AIProvider;
-  const modelId = selector.slice(idx + 1);
-  if (!['cohere', 'gemini', 'groq', 'horde', 'anthropic', 'datacurso', 'cache'].includes(provider) || !modelId) return null;
+  let modelId = selector.slice(idx + 1);
+  if (!['cohere', 'gemini', 'groq', 'anthropic', 'datacurso', 'cache', 'openrouter', 'cloudflare', 'apmix'].includes(provider) || !modelId) return null;
+  // Transparent migration for legacy OpenRouter model slugs that are no longer free
+  if (provider === 'openrouter' && (modelId.includes('llama-3.1-8b') || modelId.includes('llama-3.3-70b') || modelId.includes('gemini-2.0-flash-exp'))) {
+    modelId = OPENROUTER_MODEL;
+  }
   return { provider, modelId };
 }
 
@@ -294,12 +390,27 @@ export function getModelDisplayName(provider: AIProvider | string, modelId?: str
     if (modelId?.includes('qwen')) return 'Groq Qwen 27B';
     return 'Groq LPU';
   }
-  if (provider === 'gemini') {
-    if (modelId?.includes('pro')) return 'Gemini 2.5 Pro';
-    return 'Gemini 2.5 Flash';
+  if (provider === 'cloudflare') {
+    if (modelId?.includes('70b')) return 'Cloudflare Llama 3.3 70B Fast (Edge)';
+    if (modelId?.includes('llama-3-8b')) return 'Cloudflare Llama 3 8B (Edge)';
+    if (modelId?.includes('qwen')) return 'Cloudflare Qwen 14B (Edge)';
+    return 'Cloudflare Llama 3.1 8B (Free / Edge)';
   }
-  if (provider === 'horde') {
-    return 'AI Horde (Vô cực)';
+  if (provider === 'gemini') {
+    if (modelId?.includes('pro')) return 'Gemini 3.1 Pro (Preview)';
+    return 'Gemini 3.8 Flash';
+  }
+  if (provider === 'openrouter') {
+    if (modelId?.includes('qwen')) return 'OpenRouter Qwen 3.8 27B (Free)';
+    if (modelId?.includes('nemotron')) return 'OpenRouter Nemotron 3.5 (Free)';
+    if (modelId?.includes('gemma')) return 'OpenRouter Gemma 4 31B (Free)';
+    if (modelId?.includes('liquid') || modelId?.includes('lfm')) return 'OpenRouter LFM 2.5 (Free)';
+    return `OpenRouter (${modelId?.split('/').pop()?.replace(':free', '') || modelId})`;
+  }
+  if (provider === 'apmix') {
+    if (modelId?.includes('claude-sonnet')) return 'APMIX Claude Sonnet 4.6 (Free)';
+    if (modelId?.includes('gpt-6-luna')) return 'APMIX GPT-6 Luna (Free - Mở 09/10)';
+    return 'APMIX Claude Sonnet 4.6 (Free)';
   }
   if (provider === 'anthropic') {
     if (modelId?.includes('haiku')) return 'Claude 3.5 Haiku';
@@ -335,8 +446,14 @@ async function callProvider(
     case 'groq':
       res = await callGroq(modelId, opts);
       break;
-    case 'horde':
-      res = await callHorde(modelId, opts);
+    case 'cloudflare':
+      res = await callCloudflareAI(modelId, opts);
+      break;
+    case 'openrouter':
+      res = await callOpenRouter(modelId, opts);
+      break;
+    case 'apmix':
+      res = await callApmix(modelId, opts);
       break;
     case 'anthropic':
       res = await callAnthropic(modelId, opts);
@@ -366,33 +483,161 @@ async function callProvider(
 }
 
 /**
- * Auto-Cascade Fallback Lineup
- * - External ON (Tấn công 4-3-3 / Sáng tạo tối đa):
- *   1. Tiền đạo cắm (Chủ công): Gemini (Gemini 2.5 Flash / Pro - tri thức sâu rộng, logic linh hoạt)
- *   2. Tiền vệ cánh (Phản công tốc độ): Groq (Llama-3 / Qwen - văn phong phóng khoáng, sinh text siêu tốc)
- *   3. Tiền vệ mỏ neo (Dự bị chiến lược): Cohere (Command R - bảo toàn lực lượng, giữ nhịp khi cần)
- *   4. Thủ môn (Chốt chặn an toàn): AI Horde (Lưới an toàn vĩnh cửu, Quota vô cực)
- *
- * - External OFF (Phòng ngự 5-3-2 / Kỷ luật RAG thép):
- *   1. Tiền đạo (Chuyên sâu RAG): Cohere (Command R - Đặc trị RAG)
- *   2. Chủ lực (Cân bằng): Gemini (Gemini 2.5 Flash / Pro)
- *   3. Trâu cày (Tốc độ): Groq (Llama-3 / Qwen)
- *   4. Thủ môn (Chốt chặn an toàn): AI Horde (Lưới an toàn vĩnh cửu)
+ * Trạm kiểm soát & Phân loại mục tiêu (Auto Task Classifier):
+ * 1. Mục tiêu Thí chốt & Tầm trung ('basic'):
+ *    - Định nghĩa nhanh, câu hỏi đóng, Flashcard, trắc nghiệm, tóm tắt cơ bản (< 4.000 tokens).
+ *    - Đẩy cho Groq, Cloudflare AI (Edge), APMIX xử lý chớp nhoáng với chi phí gần bằng 0.
+ * 2. Mục tiêu Chỉ huy ('complex'):
+ *    - Đọc URL phức tạp, vẽ Mindmap, tổng hợp chuyên sâu toàn giáo trình (>= 4.000 tokens).
+ *    - Rút pháo hạng nặng Gemini, OpenRouter nhờ context window khổng lồ và tư duy logic sâu.
  */
-function getCascadeLineup(isExternal: boolean): Array<{ provider: AIProvider; models: string[] }> {
-  if (isExternal) {
+export function detectTaskCategory(opts: GenerateTextOptions): 'basic' | 'complex' {
+  if (opts.taskCategory) {
+    return opts.taskCategory;
+  }
+
+  // 1. Kiểm tra URL trong prompt hoặc system
+  const textToScan = `${opts.userPrompt || ''} ${opts.system || ''}`;
+  if (/https?:\/\/[^\s]+/i.test(textToScan)) {
+    return 'complex';
+  }
+
+  // 2. Kiểm tra từ khóa yêu cầu tư duy cấu trúc / Mindmap / phân tích chuyên sâu
+  const lower = textToScan.toLowerCase();
+  const complexKeywords = [
+    'mindmap',
+    'sơ đồ tư duy',
+    'bản đồ tư duy',
+    'toàn bộ khóa học',
+    'tổng hợp giáo trình',
+    'chuyên sâu',
+    'phân tích chuyên sâu',
+    'phân tích đa chiều',
+    'in-depth',
+    'comprehensive',
+  ];
+  if (complexKeywords.some((kw) => lower.includes(kw))) {
+    return 'complex';
+  }
+
+  // 3. Ước tính tổng dung lượng token đầu vào (prompt + system + history + docs)
+  let totalChars = (opts.system?.length || 0) + (opts.userPrompt?.length || 0);
+  if (opts.history && opts.history.length > 0) {
+    for (const h of opts.history) {
+      totalChars += (h.content?.length || 0);
+    }
+  }
+  if (opts.documents && opts.documents.length > 0) {
+    for (const d of opts.documents) {
+      totalChars += (d.text?.length || 0) + (d.title?.length || 0);
+    }
+  }
+
+  const estimatedTokens = Math.round(totalChars / 3.5);
+  if (estimatedTokens >= 4000) {
+    return 'complex';
+  }
+
+  return 'basic';
+}
+
+/**
+ * Chỉ thị Tiếp ứng Dòng chảy (Stream Fallback Continuation Prompt):
+ * Kích hoạt khi mô hình đang nhả chữ bị sập (lỗi 429 rate-limit, 500, crash mạng)
+ * nhằm tiếp nối mạch văn đang viết dở mà không làm đứt trải nghiệm của sinh viên.
+ */
+export function buildContinuationPrompt(originalPrompt: string, accumulatedText: string): string {
+  const preview =
+    accumulatedText.length > 4000
+      ? '...\n' + accumulatedText.slice(-4000)
+      : accumulatedText;
+
+  return `${originalPrompt}
+
+[CHỈ THỊ TIẾP ỨNG DÒNG CHẢY - STREAM CONTINUATION]
+Bạn đang tiếp ứng câu trả lời cho người dùng vì hệ thống trước đó bị gián đoạn đường truyền mạng giữa chừng.
+Dưới đây là phần văn bản ĐÃ XUẤT RA CHO NGƯỜI DÙNG:
+---
+${preview}
+---
+
+NHIỆM VỤ BẮT BUỘC:
+HÃY TIẾP TỤC viết phần còn lại từ đúng điểm bị gián đoạn một cách hoàn toàn tự nhiên và liền mạch.
+1. TUYỆT ĐỐI KHÔNG lặp lại bất kỳ câu chữ, ý tứ hay đoạn văn nào đã xuất hiện ở trên.
+2. Bắt đầu trả lời ngay lập tức bằng các từ tiếp theo để ghép nối trực tiếp vào đoạn văn trên.
+3. Không thêm lời xin lỗi, không giải thích sự cố, không thêm bất kỳ tiêu đề/tiền tố nào như "Tiếp tục:", "Đoạn tiếp theo:".`;
+}
+
+/**
+ * Phân bổ đội hình AI theo Ma trận 2 chiều (2D Routing Matrix):
+ * Trục dọc: Mức độ phức tạp của tác vụ (Thí chốt & Tầm trung: 'basic' vs Chỉ huy: 'complex')
+ * Trục ngang: Chế độ RAG (Strict, Hybrid, Creative)
+ */
+export function getCascadeLineup(
+  modeOrExternal?: 'strict' | 'hybrid' | 'creative' | boolean,
+  taskCategory: 'basic' | 'complex' = 'complex'
+): Array<{ provider: AIProvider; models: string[] }> {
+  let mode: 'strict' | 'hybrid' | 'creative' = 'hybrid';
+  if (typeof modeOrExternal === 'string') {
+    mode = modeOrExternal;
+  } else if (typeof modeOrExternal === 'boolean') {
+    mode = modeOrExternal ? 'creative' : 'hybrid';
+  }
+
+  const isLunaUnlocked = Date.now() >= new Date('2026-10-09T17:00:00+07:00').getTime();
+
+  // =========================================================================
+  // TRẬN ĐỊA 1: "Thí Chốt" & "Tầm Trung" (taskCategory === 'basic')
+  // Đặc điểm: Slide Cơ bản/Tiêu chuẩn, Flashcard, Quiz, hỏi đáp thuật ngữ ngắn (<4.000 tokens).
+  // =========================================================================
+  if (taskCategory === 'basic') {
+    if (mode === 'strict') {
+      // Strict RAG (Temp = 0.0): Groq -> Cloudflare (Edge) -> APMIX -> OpenRouter -> Cohere -> Gemini
+      return [
+        { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
+        { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
+        { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
+        { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
+        { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
+        { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
+      ];
+    }
+
+    // Hybrid & Creative: Groq -> APMIX (chia lửa token suy luận) -> Cloudflare -> OpenRouter -> Gemini -> Cohere
     return [
-      { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
       { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
+      { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
+      { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
+      { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
+      { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
       { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
-      { provider: 'horde', models: [HORDE_MODEL] },
     ];
   }
+
+  // =========================================================================
+  // TRẬN ĐỊA 2: "Chỉ Huy" (taskCategory === 'complex')
+  // Đặc điểm: Slide Chuyên sâu, Mindmap cấu trúc lớn, URL, tổng hợp toàn khóa học (>=4.000 tokens).
+  // =========================================================================
+  if (isLunaUnlocked) {
+    // Kế hoạch sau 17:00 09/10/2026: gpt-6-luna-free mở khóa -> APMIX đứng tuyến đầu ngang hàng Gemini
+    return [
+      { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
+      { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
+      { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
+      { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
+      { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
+      { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
+    ];
+  }
+
+  // Hiện tại: Gemini (Context window khổng lồ) -> OpenRouter -> APMIX -> Cloudflare -> Groq -> Cohere
   return [
-    { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
     { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
+    { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
+    { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
+    { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
     { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
-    { provider: 'horde', models: [HORDE_MODEL] },
+    { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
   ];
 }
 
@@ -404,29 +649,70 @@ export async function generateText(
   opts: GenerateTextOptions
 ): Promise<GenerateTextResult> {
   const parsed = parseModelSelector(modelSelector);
+  const effectiveCategory = opts.taskCategory || detectTaskCategory(opts);
+  const langDirective = buildUniversalLanguageDirective(opts.userPrompt);
+  const enrichedSystem = opts.system
+    ? `${opts.system}\n\n${langDirective}`
+    : langDirective;
+  const effectiveOpts: GenerateTextOptions = {
+    ...opts,
+    system: enrichedSystem,
+    taskCategory: effectiveCategory,
+  };
 
-  // If a specific model is selected and not blocked, try it
-  if (parsed && !isProviderBlocked(parsed.provider)) {
-    try {
-      const result = await callProvider(parsed.provider, parsed.modelId, opts);
-      if (result?.text) return result;
-    } catch (err) {
-      if (opts.signal?.aborted) throw err;
-      if (isQuotaExhaustedError(err)) {
-        blockProviderUntilTomorrow(parsed.provider, String(err));
+  // If a specific model is selected
+  if (parsed) {
+    // Mode kiểm thử thủ công của giảng viên: Bắt 1 mình nó làm việc, báo lỗi công khai không cascade
+    if (opts.strictModel) {
+      if (isProviderBlocked(parsed.provider)) {
+        throw new Error(`Provider "${parsed.provider}" hiện đang tạm khóa hoặc đạt giới hạn hạn mức (Circuit Breaker active).`);
       }
-      console.warn(`Selected model ${modelSelector} failed:`, err);
+      const strictRes = await callProvider(parsed.provider, parsed.modelId, effectiveOpts);
+      if (!strictRes || !strictRes.text) {
+        const detail = getLastProviderError(parsed.provider);
+        throw new Error(
+          detail
+            ? `Model ${parsed.provider}:${parsed.modelId} không trả về kết quả.\nChi tiết lỗi từ máy chủ API: ${detail}`
+            : `Model ${parsed.provider}:${parsed.modelId} không trả về kết quả.`
+        );
+      }
+      return strictRes;
     }
-    // If the selected model fails, still try auto-fallback
-    console.warn(`Selected model ${modelSelector} failed, falling back to auto cascade`);
+
+    if (!isProviderBlocked(parsed.provider)) {
+      try {
+        const result = await callProvider(parsed.provider, parsed.modelId, effectiveOpts);
+        if (result?.text) return result;
+      } catch (err) {
+        if (opts.signal?.aborted) throw err;
+        if (isQuotaExhaustedError(err)) {
+          blockProviderUntilTomorrow(parsed.provider, String(err));
+        }
+        console.warn(`Selected model ${modelSelector} failed:`, err);
+      }
+      // If the selected model fails, still try auto-fallback
+      console.warn(`Selected model ${modelSelector} failed, falling back to auto cascade`);
+    }
   }
 
-  const isExternal = Boolean(opts.allowExternalSource ?? opts.googleSearchGrounding);
-  const cascadeProviders = getCascadeLineup(isExternal);
+  const effectiveRagMode = opts.ragMode || (opts.allowExternalSource || opts.googleSearchGrounding ? 'creative' : 'hybrid');
+  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory);
 
   for (const { provider, models } of cascadeProviders) {
     opts.signal?.throwIfAborted();
     if (provider === 'cohere' && !isCohereAvailable()) {
+      continue;
+    }
+    if (provider === 'openrouter' && !isOpenRouterAvailable()) {
+      continue;
+    }
+    if (provider === 'groq' && !getGroqClient()) {
+      continue;
+    }
+    if (provider === 'cloudflare' && !isCloudflareAvailable()) {
+      continue;
+    }
+    if (provider === 'apmix' && !isApmixAvailable()) {
       continue;
     }
     if (isProviderBlocked(provider)) {
@@ -435,7 +721,7 @@ export async function generateText(
     for (const modelId of models) {
       try {
         opts.signal?.throwIfAborted();
-        const result = await callProvider(provider, modelId, opts);
+        const result = await callProvider(provider, modelId, effectiveOpts);
         if (result?.text) return result;
       } catch (err) {
         if (opts.signal?.aborted) throw err;
@@ -460,28 +746,109 @@ export async function generateTextStream(
   opts: GenerateTextStreamOptions
 ): Promise<GenerateTextResult> {
   const parsed = parseModelSelector(modelSelector);
+  const effectiveCategory = opts.taskCategory || detectTaskCategory(opts);
+  const langDirective = buildUniversalLanguageDirective(opts.userPrompt);
+  const enrichedSystem = opts.system
+    ? `${opts.system}\n\n${langDirective}`
+    : langDirective;
+  const effectiveOpts: GenerateTextStreamOptions = {
+    ...opts,
+    system: enrichedSystem,
+    taskCategory: effectiveCategory,
+  };
 
-  // If a specific model is selected and not blocked, try it with stream
-  if (parsed && !isProviderBlocked(parsed.provider)) {
-    try {
-      const result = await callProviderStream(parsed.provider, parsed.modelId, opts);
-      if (result?.text) return result;
-    } catch (err) {
-      if (opts.signal?.aborted) throw err;
-      if (isQuotaExhaustedError(err)) {
-        blockProviderUntilTomorrow(parsed.provider, String(err));
-      }
-      console.warn(`Selected stream model ${modelSelector} failed:`, err);
+  let accumulatedText = '';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let lastGroundingMetadata: any = null;
+  let activeProvider: AIProvider | undefined = undefined;
+  let activeModelId: string | undefined = undefined;
+  let activeModelName: string | undefined = undefined;
+  let activeFinishReason: string | undefined = undefined;
+
+  const wrappedOnDelta = (delta: string) => {
+    if (delta) {
+      accumulatedText += delta;
+      opts.onDelta(delta);
     }
-    console.warn(`Selected stream model ${modelSelector} failed, falling back to auto stream cascade`);
+  };
+
+  // If a specific model is selected
+  if (parsed) {
+    // Mode kiểm thử thủ công của giảng viên: Bắt 1 mình nó làm việc, báo lỗi công khai không cascade
+    if (opts.strictModel) {
+      if (isProviderBlocked(parsed.provider)) {
+        throw new Error(`Provider "${parsed.provider}" hiện đang tạm khóa hoặc đạt giới hạn hạn mức (Circuit Breaker active).`);
+      }
+      const strictRes = await callProviderStream(parsed.provider, parsed.modelId, {
+        ...effectiveOpts,
+        onDelta: wrappedOnDelta,
+        onMeta: opts.onMeta,
+      });
+      if (!strictRes || !strictRes.text) {
+        const detail = getLastProviderError(parsed.provider);
+        throw new Error(
+          detail
+            ? `Model ${parsed.provider}:${parsed.modelId} không trả về dữ liệu stream.\nChi tiết lỗi từ máy chủ API: ${detail}`
+            : `Model ${parsed.provider}:${parsed.modelId} không trả về dữ liệu stream.`
+        );
+      }
+      return {
+        ...strictRes,
+        text: accumulatedText || strictRes.text,
+      };
+    }
+
+    if (!isProviderBlocked(parsed.provider)) {
+      try {
+        const result = await callProviderStream(parsed.provider, parsed.modelId, {
+          ...effectiveOpts,
+          onDelta: wrappedOnDelta,
+          onMeta: (meta) => {
+            activeProvider = meta.provider;
+            activeModelId = meta.modelId;
+            activeModelName = meta.modelName;
+            opts.onMeta?.(meta);
+          },
+        });
+        if (result?.text) {
+          return {
+            ...result,
+            text: accumulatedText || result.text,
+            provider: result.provider || parsed.provider,
+            modelId: result.modelId || parsed.modelId,
+            modelName: result.modelName || getModelDisplayName(parsed.provider, parsed.modelId),
+            finishReason: result.finishReason || 'stop',
+          };
+        }
+      } catch (err) {
+        if (opts.signal?.aborted) throw err;
+        if (isQuotaExhaustedError(err)) {
+          blockProviderUntilTomorrow(parsed.provider, String(err));
+        }
+        console.warn(`Selected stream model ${modelSelector} failed (streamed ${accumulatedText.length} chars so far):`, err);
+      }
+      console.warn(`Selected stream model ${modelSelector} failed, falling back to auto stream cascade`);
+    }
   }
 
-  const isExternal = Boolean(opts.allowExternalSource ?? opts.googleSearchGrounding);
-  const cascadeProviders = getCascadeLineup(isExternal);
+  const effectiveRagMode = opts.ragMode || (opts.allowExternalSource || opts.googleSearchGrounding ? 'creative' : 'hybrid');
+  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory);
 
   for (const { provider, models } of cascadeProviders) {
     opts.signal?.throwIfAborted();
     if (provider === 'cohere' && !isCohereAvailable()) {
+      continue;
+    }
+    if (provider === 'openrouter' && !isOpenRouterAvailable()) {
+      continue;
+    }
+    if (provider === 'groq' && !getGroqClient()) {
+      continue;
+    }
+    if (provider === 'cloudflare' && !isCloudflareAvailable()) {
+      continue;
+    }
+    if (provider === 'apmix' && !isApmixAvailable()) {
       continue;
     }
     if (isProviderBlocked(provider)) {
@@ -490,25 +857,90 @@ export async function generateTextStream(
     for (const modelId of models) {
       try {
         opts.signal?.throwIfAborted();
-        const result = await callProviderStream(provider, modelId, opts);
-        if (result?.text) return result;
+
+        // Cơ chế Tiếp ứng dòng chảy: nếu mô hình trước đó đã kịp nhả chữ rồi gặp sự cố,
+        // truyền lệnh cho mô hình kế tiếp viết tiếp từ đúng điểm bị gián đoạn, chống lặp chữ và gián đoạn màn hình
+        const isContinuing = accumulatedText.trim().length > 0 && !opts.jsonMode;
+        const currentPrompt = isContinuing
+          ? buildContinuationPrompt(opts.userPrompt, accumulatedText)
+          : opts.userPrompt;
+
+        const currentOpts: GenerateTextStreamOptions = {
+          ...effectiveOpts,
+          userPrompt: currentPrompt,
+          onDelta: wrappedOnDelta,
+          onMeta: (meta) => {
+            activeProvider = meta.provider;
+            activeModelId = meta.modelId;
+            activeModelName = meta.modelName;
+            opts.onMeta?.(meta);
+          },
+        };
+
+        const result = await callProviderStream(provider, modelId, currentOpts);
+        if (result?.text || accumulatedText.trim().length > 0) {
+          if (result?.groundingMetadata) lastGroundingMetadata = result.groundingMetadata;
+          if (result?.finishReason) activeFinishReason = result.finishReason;
+
+          return {
+            text: accumulatedText || result?.text || '',
+            groundingMetadata: lastGroundingMetadata,
+            provider: result?.provider || provider,
+            modelId: result?.modelId || modelId,
+            modelName: result?.modelName || getModelDisplayName(provider, modelId),
+            finishReason: activeFinishReason || result?.finishReason || 'stop',
+          };
+        }
       } catch (err) {
         if (opts.signal?.aborted) throw err;
         if (isQuotaExhaustedError(err)) {
           blockProviderUntilTomorrow(provider, String(err));
           break;
         }
-        console.warn(`Auto stream cascade: ${provider}:${modelId} failed:`, err);
+        console.warn(`Auto stream cascade: ${provider}:${modelId} failed (streamed ${accumulatedText.length} chars so far):`, err);
       }
     }
   }
 
-  // Fallback to non-streaming generateText if streaming failed
-  const fallback = await generateText(modelSelector, opts);
-  if (fallback.text) {
-    opts.onDelta(fallback.text);
+  // Fallback sang non-streaming nếu mọi luồng stream đều lỗi
+  try {
+    const isContinuing = accumulatedText.trim().length > 0 && !opts.jsonMode;
+    const fallbackPrompt = isContinuing
+      ? buildContinuationPrompt(opts.userPrompt, accumulatedText)
+      : opts.userPrompt;
+
+    const fallbackOpts: GenerateTextOptions = {
+      ...effectiveOpts,
+      userPrompt: fallbackPrompt,
+    };
+
+    const fallback = await generateText(modelSelector, fallbackOpts);
+    if (fallback.text) {
+      opts.onDelta(fallback.text);
+      accumulatedText += fallback.text;
+    }
+    return {
+      text: accumulatedText || fallback.text || '',
+      groundingMetadata: fallback.groundingMetadata || lastGroundingMetadata,
+      provider: fallback.provider || activeProvider,
+      modelId: fallback.modelId || activeModelId,
+      modelName: fallback.modelName || activeModelName,
+      finishReason: fallback.finishReason || activeFinishReason || 'stop',
+    };
+  } catch (fallbackErr) {
+    if (accumulatedText.trim().length > 0) {
+      // Dù fallback thất bại hoàn toàn, bảo toàn đoạn văn bản đã xuất ra cho học viên
+      return {
+        text: accumulatedText,
+        groundingMetadata: lastGroundingMetadata,
+        provider: activeProvider,
+        modelId: activeModelId,
+        modelName: activeModelName,
+        finishReason: 'error',
+      };
+    }
+    throw fallbackErr;
   }
-  return fallback;
 }
 
 /** Call a specific provider with streaming */
@@ -548,8 +980,14 @@ async function callProviderStream(
     case 'groq':
       res = await callGroqStream(modelId, wrappedOpts);
       break;
-    case 'horde':
-      res = await callHordeStream(modelId, wrappedOpts);
+    case 'cloudflare':
+      res = await callCloudflareAIStream(modelId, wrappedOpts);
+      break;
+    case 'openrouter':
+      res = await callOpenRouterStream(modelId, wrappedOpts);
+      break;
+    case 'apmix':
+      res = await callApmixStream(modelId, wrappedOpts);
       break;
     case 'anthropic':
       res = await callAnthropicStream(modelId, wrappedOpts);
@@ -607,7 +1045,7 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
     };
 
     if (opts.topP !== undefined) {
-      config.topP = opts.topP;
+      config.topP = opts.topP === 0 ? 0.001 : opts.topP;
     }
 
     if (opts.maxTokens !== undefined) {
@@ -620,6 +1058,11 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
 
     if (opts.googleSearchGrounding) {
       config.tools = [{ googleSearch: {} }];
+    }
+
+    const stopSequences = (opts.stopSequences || opts.stop)?.slice(0, 5);
+    if (stopSequences && stopSequences.length > 0) {
+      config.stopSequences = stopSequences;
     }
 
     return await executeWithGeminiPool(async (client) => {
@@ -649,9 +1092,16 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
       const text = (response.text || '').trim();
       if (!text) return null;
 
+      const candidate = (response as any).candidates?.[0];
+      const rawReason = candidate?.finishReason;
+      let finishReason: string | undefined = undefined;
+      if (rawReason === 'MAX_TOKENS') finishReason = 'length';
+      else if (rawReason === 'STOP') finishReason = 'stop';
+      else if (rawReason) finishReason = String(rawReason).toLowerCase();
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const groundingMetadata = (response as any).candidates?.[0]?.groundingMetadata || null;
-      return { text, groundingMetadata };
+      const groundingMetadata = candidate?.groundingMetadata || null;
+      return { text, groundingMetadata, finishReason };
     }, opts.signal);
   } catch (err) {
     if (opts.signal?.aborted) throw err;
@@ -700,13 +1150,18 @@ async function callAnthropic(modelId: string, opts: GenerateTextOptions): Promis
       anthropicParams.top_p = opts.topP;
     }
 
+    const stopSequences = (opts.stopSequences || opts.stop)?.slice(0, 4);
+    if (stopSequences && stopSequences.length > 0) {
+      anthropicParams.stop_sequences = stopSequences;
+    }
+
     const response = await client.messages.create(anthropicParams);
 
     const textBlocks = response.content.filter(b => b.type === 'text');
     const text = textBlocks.map(b => (b as { type: 'text'; text: string }).text).join('').trim();
     if (!text) return null;
 
-    return { text };
+    return { text, finishReason: (response as any)?.stop_reason === 'max_tokens' ? 'length' : 'stop' };
   } catch (err) {
     if (opts.signal?.aborted) throw err;
     if (isQuotaExhaustedError(err)) {
@@ -760,12 +1215,6 @@ function prepareGroqMessages(
 }
 
 async function callGroq(modelId: string, opts: GenerateTextOptions): Promise<GenerateTextResult | null> {
-  const client = getGroqClient();
-  if (!client) {
-    console.warn('Groq client not available (check key)');
-    return null;
-  }
-
   try {
     opts.signal?.throwIfAborted();
     const messages = prepareGroqMessages(opts.system, opts.history, opts.userPrompt);
@@ -778,7 +1227,7 @@ async function callGroq(modelId: string, opts: GenerateTextOptions): Promise<Gen
     };
 
     if (opts.topP !== undefined) {
-      createOpts.top_p = opts.topP;
+      createOpts.top_p = opts.topP === 0 ? 0.001 : opts.topP;
     }
 
     if (opts.maxTokens !== undefined) {
@@ -789,16 +1238,27 @@ async function callGroq(modelId: string, opts: GenerateTextOptions): Promise<Gen
       createOpts.response_format = { type: 'json_object' };
     }
 
-    // Do NOT pass signal to Groq SDK client call to avoid invalid request argument errors
-    const completion = await client.chat.completions.create(createOpts);
-    const text = completion.choices[0]?.message?.content?.trim() || '';
-    if (!text) return null;
+    const stopSequences = (opts.stop || opts.stopSequences)?.slice(0, 4);
+    if (stopSequences && stopSequences.length > 0) {
+      createOpts.stop = stopSequences;
+    }
 
-    return { text };
-  } catch (err) {
+    let finishReason: string | undefined = undefined;
+    const text = await executeWithGroqPool(async (client) => {
+      opts.signal?.throwIfAborted();
+      const completion = await client.chat.completions.create(createOpts);
+      finishReason = completion.choices[0]?.finish_reason || undefined;
+      return completion.choices[0]?.message?.content?.trim() || '';
+    }, opts.signal);
+
+    if (!text) return null;
+    return { text, finishReason };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    setLastProviderError('groq', errMsg);
     if (opts.signal?.aborted) throw err;
     if (isQuotaExhaustedError(err)) {
-      blockProviderUntilTomorrow('groq', String(err));
+      blockProviderUntilTomorrow('groq', errMsg);
     }
     console.warn(`callGroq (${modelId}) failed:`, err);
     return null;
@@ -806,12 +1266,6 @@ async function callGroq(modelId: string, opts: GenerateTextOptions): Promise<Gen
 }
 
 async function callGroqStream(modelId: string, opts: GenerateTextStreamOptions): Promise<GenerateTextResult | null> {
-  const client = getGroqClient();
-  if (!client) {
-    console.warn('Groq client not available (check key)');
-    return null;
-  }
-
   try {
     opts.signal?.throwIfAborted();
     const messages = prepareGroqMessages(opts.system, opts.history, opts.userPrompt);
@@ -836,26 +1290,39 @@ async function callGroqStream(modelId: string, opts: GenerateTextStreamOptions):
       createOpts.response_format = { type: 'json_object' };
     }
 
-    // Do NOT pass signal to Groq SDK client call to avoid invalid request argument errors
-    const stream = await client.chat.completions.create(createOpts);
-    let fullText = '';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for await (const chunk of stream as any) {
-      opts.signal?.throwIfAborted();
-      const delta = chunk.choices[0]?.delta?.content || '';
-      if (delta) {
-        fullText += delta;
-        opts.onDelta(delta);
-      }
+    const stopStreamSequences = (opts.stop || opts.stopSequences)?.slice(0, 4);
+    if (stopStreamSequences && stopStreamSequences.length > 0) {
+      createOpts.stop = stopStreamSequences;
     }
 
-    const trimmed = fullText.trim();
-    if (!trimmed) return null;
-    return { text: trimmed };
-  } catch (err) {
+    let finishReason: string | undefined = undefined;
+    const fullText = await executeWithGroqPool(async (client) => {
+      opts.signal?.throwIfAborted();
+      const stream = await client.chat.completions.create(createOpts);
+      let streamAccumulated = '';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for await (const chunk of stream as any) {
+        opts.signal?.throwIfAborted();
+        const delta = chunk.choices[0]?.delta?.content || '';
+        if (delta) {
+          streamAccumulated += delta;
+          opts.onDelta(delta);
+        }
+        if (chunk.choices[0]?.finish_reason) {
+          finishReason = chunk.choices[0].finish_reason;
+        }
+      }
+      return streamAccumulated.trim();
+    }, opts.signal);
+
+    if (!fullText) return null;
+    return { text: fullText, finishReason };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    setLastProviderError('groq', errMsg);
     if (opts.signal?.aborted) throw err;
     if (isQuotaExhaustedError(err)) {
-      blockProviderUntilTomorrow('groq', String(err));
+      blockProviderUntilTomorrow('groq', errMsg);
     }
     console.warn(`callGroqStream (${modelId}) failed:`, err);
     return null;
@@ -887,7 +1354,7 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
     };
 
     if (opts.topP !== undefined) {
-      config.topP = opts.topP;
+      config.topP = opts.topP === 0 ? 0.001 : opts.topP;
     }
 
     if (opts.maxTokens !== undefined) {
@@ -902,6 +1369,11 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
       config.tools = [{ googleSearch: {} }];
     }
 
+    const stopSequences = (opts.stopSequences || opts.stop)?.slice(0, 5);
+    if (stopSequences && stopSequences.length > 0) {
+      config.stopSequences = stopSequences;
+    }
+
     return await executeWithGeminiPool(async (client) => {
       const responseStream = await client.models.generateContentStream({
         model: modelId,
@@ -911,6 +1383,7 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
       });
 
       let fullText = '';
+      let finishReason: string | undefined = undefined;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let groundingMetadata: any = null;
       for await (const chunk of responseStream) {
@@ -919,6 +1392,13 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
         if (text) {
           fullText += text;
           opts.onDelta(text);
+        }
+        const cand = (chunk as any).candidates?.[0];
+        if (cand?.finishReason) {
+          const rawReason = cand.finishReason;
+          if (rawReason === 'MAX_TOKENS') finishReason = 'length';
+          else if (rawReason === 'STOP') finishReason = 'stop';
+          else finishReason = String(rawReason).toLowerCase();
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if ((chunk as any).candidates?.[0]?.groundingMetadata) {
@@ -929,7 +1409,7 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
 
       const trimmed = fullText.trim();
       if (!trimmed) return null;
-      return { text: trimmed, groundingMetadata };
+      return { text: trimmed, groundingMetadata, finishReason };
     }, opts.signal);
   } catch (err) {
     if (opts.signal?.aborted) throw err;
@@ -963,12 +1443,14 @@ async function callAnthropicStream(modelId: string, opts: GenerateTextStreamOpti
 
     messages.push({ role: 'user', content: opts.userPrompt });
 
+    const stopStreamSequences = (opts.stopSequences || opts.stop)?.slice(0, 4);
     const stream = client.messages.stream({
       model: modelId,
       max_tokens: opts.maxTokens ?? 8192,
       system: systemPrompt,
       messages,
       temperature: opts.temperature ?? 0.1,
+      ...(stopStreamSequences && stopStreamSequences.length > 0 ? { stop_sequences: stopStreamSequences } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
 

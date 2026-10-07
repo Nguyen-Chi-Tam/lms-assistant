@@ -4,6 +4,7 @@ import { chatSessions, users } from '@/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { supabaseAdmin } from '@/lib/supabase';
 import { deleteFirebaseRow, getFirebaseRows, setFirebaseRow } from '@/lib/firebase-admin';
+import { stripFluff } from '@/lib/anti-fluff';
 
 export async function GET(request: Request) {
   try {
@@ -11,6 +12,7 @@ export async function GET(request: Request) {
     const moodleCourseIdStr = searchParams.get('moodleCourseId') || searchParams.get('courseId');
     const userIdStr = searchParams.get('userId') || searchParams.get('moodleUserId');
     const sessionId = searchParams.get('sessionId') || searchParams.get('id');
+    const role = searchParams.get('role'); // 'teacher' | 'student'
 
     if (!userIdStr && !sessionId) {
       return NextResponse.json(
@@ -23,17 +25,23 @@ export async function GET(request: Request) {
     const moodleCourseId = moodleCourseIdStr ? parseInt(moodleCourseIdStr, 10) : null;
 
     try {
-      const sessions = await getFirebaseRows('chat_sessions', {
+      const filterObj: Record<string, string | number | undefined> = {
         user_id: userId || undefined,
         moodle_course_id: moodleCourseId || undefined,
-      });
+      };
+      if (role) filterObj.role = role;
+
+      const sessions = await getFirebaseRows('chat_sessions', filterObj);
       if (sessions) {
         const filtered = sessionId ? sessions.filter((session) => session.id === sessionId) : sessions;
         filtered.forEach((sess: any) => {
-          if (sess.response_model && Array.isArray(sess.messages)) {
+          if (Array.isArray(sess.messages)) {
             sess.messages.forEach((msg: any) => {
-              if ((msg.role === 'ai' || msg.role === 'assistant') && !msg.model) {
+              if (sess.response_model && (msg.role === 'ai' || msg.role === 'assistant') && !msg.model) {
                 msg.model = sess.response_model;
+              }
+              if ((msg.role === 'ai' || msg.role === 'assistant') && typeof msg.text === 'string') {
+                msg.text = stripFluff(msg.text);
               }
             });
           }
@@ -121,6 +129,7 @@ export async function POST(request: Request) {
       id?: string;
       userId?: number;
       userName?: string;
+      role?: 'teacher' | 'student';
       moodleCourseId?: number;
       response_model?: string;
       responseModel?: string;
@@ -131,29 +140,51 @@ export async function POST(request: Request) {
         text?: string;
         timestamp?: number | string;
         model?: string;
+        sources?: unknown[];
       }>;
     };
 
     const targetSessionId = body.sessionId || body.id;
     const userId = Number(body.userId) || 4; // default demo student ID
     const moodleCourseId = Number(body.moodleCourseId) || 1;
-    const messages = Array.isArray(body.messages) ? body.messages : [];
-    const lastAiMsg = [...messages].reverse().find(m => m.role === 'ai' || m.role === 'assistant');
+    const userRole = body.role || (userId === 2 ? 'teacher' : 'student');
+    const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+    const messages = rawMessages.map(msg => {
+      let text = (msg.text ?? msg.content ?? '').trim();
+      if (msg.role === 'ai' || msg.role === 'assistant' || msg.role === 'model') {
+        text = stripFluff(text);
+      }
+      const item: Record<string, unknown> = {
+        id: msg.id || crypto.randomUUID(),
+        role: msg.role === 'assistant' || msg.role === 'model' ? 'ai' : msg.role,
+        text,
+        timestamp: msg.timestamp || Date.now(),
+      };
+      if (msg.model) item.model = msg.model;
+      if (Array.isArray(msg.sources) && msg.sources.length > 0) item.sources = msg.sources;
+      return item;
+    });
+
+    const lastAiMsg = [...messages].reverse().find(m => m.role === 'ai');
     const response_model = body.response_model || body.responseModel || (lastAiMsg as any)?.model || undefined;
 
     try {
       let existingSessionId = targetSessionId;
       if (!existingSessionId) {
-        const existingRows = await getFirebaseRows('chat_sessions', {
+        const filter: Record<string, string | number | undefined> = {
           user_id: userId,
           moodle_course_id: moodleCourseId,
-        }, 1);
+        };
+        if (body.role) filter.role = body.role;
+        const existingRows = await getFirebaseRows('chat_sessions', filter, 1);
         existingSessionId = existingRows?.[0]?.id;
       }
 
       const sessionId = existingSessionId || crypto.randomUUID();
       const sessionData: Record<string, unknown> = {
         user_id: userId,
+        user_name: body.userName || (userRole === 'teacher' ? 'Giảng viên' : 'Sinh viên'),
+        role: userRole,
         moodle_course_id: moodleCourseId,
         messages,
         updated_at: new Date().toISOString(),
@@ -323,6 +354,7 @@ export async function DELETE(request: Request) {
     const sessionId = searchParams.get('sessionId') || searchParams.get('id');
     const userId = Number(searchParams.get('userId')) || 0;
     const moodleCourseId = Number(searchParams.get('moodleCourseId') || searchParams.get('courseId')) || 0;
+    const role = searchParams.get('role');
 
     if (!sessionId && (!userId || !moodleCourseId)) {
       return NextResponse.json({ error: 'Cần cung cấp sessionId hoặc userId và courseId.' }, { status: 400 });
@@ -333,10 +365,12 @@ export async function DELETE(request: Request) {
       if (sessionId) {
         firebaseAvailable = (await deleteFirebaseRow('chat_sessions', sessionId)) || false;
       } else {
-        const sessions = await getFirebaseRows('chat_sessions', {
+        const filter: Record<string, string | number | undefined> = {
           user_id: userId,
           moodle_course_id: moodleCourseId,
-        });
+        };
+        if (role) filter.role = role;
+        const sessions = await getFirebaseRows('chat_sessions', filter);
         if (sessions) {
           firebaseAvailable = true;
           await Promise.all(sessions.map((session) => deleteFirebaseRow('chat_sessions', session.id)));

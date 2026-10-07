@@ -171,4 +171,16 @@ export const documentEmbeddings = pgTable('document_embeddings', {
 export type DocumentEmbedding = typeof documentEmbeddings.$inferSelect;
 export type NewDocumentEmbedding = typeof documentEmbeddings.$inferInsert;
 
+// Bảng semantic_query_cache: Semantic Cache cho AI response theo môn học
+export const semanticQueryCache = pgTable('semantic_query_cache', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  courseId: text('course_id').notNull(),
+  queryText: text('query_text').notNull(),
+  aiResponse: text('ai_response').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export type SemanticQueryCache = typeof semanticQueryCache.$inferSelect;
+export type NewSemanticQueryCache = typeof semanticQueryCache.$inferInsert;
+
 

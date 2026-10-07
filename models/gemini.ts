@@ -297,5 +297,7 @@ export function getGeminiPoolStats() {
   };
 }
 
-export const GEMINI_MODEL = 'gemini-2.5-flash';
-export const GEMINI_BACKUP_MODELS = ['gemini-2.5-pro'];
+// Gemini 2.5 is no longer provisioned for new API users. Keep the stable
+// Flash model first and retain a Pro fallback for quality-sensitive requests.
+export const GEMINI_MODEL = 'gemini-3.8-flash';
+export const GEMINI_BACKUP_MODELS = ['gemini-3.1-pro-preview'];

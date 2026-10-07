@@ -1,7 +1,8 @@
 'use client';
 
-import { Suspense, useEffect, useState, useRef } from 'react';
+import { Suspense, useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { ShieldCheck, ExternalLink } from 'lucide-react';
 import { CourseTopBar, type NotificationItem } from '@/app/components/CourseTopBar';
 import { CoursesView } from '@/app/components/CoursesView';
 import type { Course, MoodleData, MoodleUser } from '@/app/types';
@@ -43,12 +44,12 @@ function CoursesPageContent() {
           fname.includes('giảng viên') ||
           fname.includes('thầy') ||
           fname.includes('cô');
-        if (isTeacherOrAdmin) {
+        if (isTeacherOrAdmin || u?.role === 'teacher') {
           router.replace('/home');
           return;
         }
-        if (u?.id) {
-          void registerFcmToken(u.id);
+        if (u?.id && u?.role !== 'teacher') {
+          void registerFcmToken(u.id, false, u.role);
         }
       } catch (e) {
         console.error('Error parsing stored user:', e);
@@ -135,6 +136,25 @@ function CoursesPageContent() {
     isTeacher: Boolean(c.isTeacher),
   }));
 
+  const lmsProfileUrl = useMemo(() => {
+    let baseUrl = moodle?.moodleUrl;
+    if (!baseUrl && moodle?.resources?.length) {
+      const resWithUrl = moodle.resources.find(
+        r => r.url && (r.url.startsWith('http://') || r.url.startsWith('https://'))
+      );
+      if (resWithUrl?.url) {
+        try {
+          baseUrl = new URL(resWithUrl.url).origin;
+        } catch {}
+      }
+    }
+    const cleanBase = (baseUrl || 'https://moodletvk.duckdns.org').replace(/\/$/, '');
+    if (user?.id) {
+      return `${cleanBase}/user/profile.php?id=${user.id}`;
+    }
+    return `${cleanBase}/user/profile.php`;
+  }, [moodle?.moodleUrl, moodle?.resources, user?.id]);
+
   return (
     <main className="app-shell">
       <CourseTopBar
@@ -219,23 +239,32 @@ function CoursesPageContent() {
               </span>
               <h3>{user?.fullname || 'Student'}</h3>
               <p>{user?.username || 'Sinh viên'}</p>
-              <div style={{ marginTop: '1.25rem', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
+              <div style={{ marginTop: '1.25rem', display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                <a
+                  href={lmsProfileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   onClick={() => setProfile(false)}
                   style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
                     padding: '0.5rem 1rem',
                     borderRadius: '8px',
                     border: '1px solid rgba(255, 255, 255, 0.1)',
                     background: 'rgba(255, 255, 255, 0.05)',
                     color: '#e2e8f0',
+                    textDecoration: 'none',
                     cursor: 'pointer',
+                    fontSize: '13px',
                   }}
                 >
-                  Đóng
-                </button>
+                  <ShieldCheck size={14} />
+                  Thông tin tài khoản
+                </a>
                 <button
                   type="button"
+                  className="logout-btn"
                   style={{
                     background: '#ef4444',
                     color: '#fff',
@@ -244,9 +273,14 @@ function CoursesPageContent() {
                     padding: '0.5rem 1rem',
                     cursor: 'pointer',
                     fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '13px',
                   }}
                   onClick={handleLogout}
                 >
+                  <ExternalLink size={14} />
                   Đăng xuất
                 </button>
               </div>

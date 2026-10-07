@@ -79,6 +79,9 @@ export interface UpdateArtifactParams {
   name?: string;
   orientation?: 'horizontal' | 'vertical';
   contentData?: Record<string, unknown>;
+  userId?: number;
+  moodleCourseId?: number;
+  artifactType?: string;
 }
 
 export async function updateLearningArtifact(id: string, params: UpdateArtifactParams) {
@@ -161,6 +164,23 @@ export async function updateLearningArtifact(id: string, params: UpdateArtifactP
 
       if (!error && data) {
         updatedRecord = updatedRecord || data;
+      } else if (!existingSb && params.moodleCourseId) {
+        const { data: upsertData, error: upsertErr } = await supabase
+          .from('learning_artifacts')
+          .upsert({
+            id,
+            user_id: params.userId || 4,
+            moodle_course_id: params.moodleCourseId,
+            artifact_type: params.artifactType || 'mindmap',
+            content_data: sbContent,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'id' })
+          .select()
+          .maybeSingle();
+
+        if (!upsertErr && upsertData) {
+          updatedRecord = updatedRecord || upsertData;
+        }
       }
     } catch (sbErr) {
       console.warn('Supabase updateLearningArtifact note:', sbErr);

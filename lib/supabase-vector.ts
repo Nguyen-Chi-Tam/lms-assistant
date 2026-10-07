@@ -8,6 +8,12 @@ import {
   type DocumentMetadata,
   type RetrievalOptions,
 } from '@/lib/rag';
+import { invalidateCourseCache } from '@/lib/semantic-cache';
+import {
+  saveMoodleDocumentParent,
+  getMoodleDocumentParent,
+  deleteMoodleDocumentParent,
+} from '@/lib/firebase-data';
 
 export interface DocumentEmbeddingRow {
   id?: string;
@@ -18,6 +24,54 @@ export interface DocumentEmbeddingRow {
   chunk_text: string;
   embedding?: number[] | string | null;
   created_at?: string;
+}
+
+/**
+ * Detects whether a knowledge source is a Web link, URL, HTML article, or ephemeral personal upload.
+ * Under Enterprise RAG rules, these sources MUST NEVER be stored in Supabase pgvector (0MB footprint).
+ * They must always use On-the-Fly In-Memory RAG and Cohere Rerank.
+ */
+export function isWebOrTransientSource(src: {
+  id?: string;
+  type?: string;
+  url?: string;
+  name?: string;
+  isStudentUpload?: boolean;
+}): boolean {
+  if (src.isStudentUpload) return true;
+
+  const idStr = String(src.id || '').toLowerCase();
+  if (
+    idStr.startsWith('mat-') ||
+    idStr.startsWith('upload-') ||
+    idStr.startsWith('url-') ||
+    idStr.startsWith('note-') ||
+    idStr.startsWith('web-')
+  ) {
+    return true;
+  }
+
+  const typeStr = String(src.type || '').toUpperCase();
+  if (
+    typeStr === 'LINK' ||
+    typeStr === 'URL' ||
+    typeStr === 'WEB' ||
+    typeStr === 'WEBLINK' ||
+    typeStr === 'HTML'
+  ) {
+    return true;
+  }
+
+  if (src.url) {
+    const rawUrl = src.url.split('?')[0].toLowerCase();
+    const isDocFile = /\.(pdf|docx?|pptx?|txt|xlsx?|csv)$/i.test(rawUrl);
+    // If it does not point to a document file extension and is a web URL, it's a web source!
+    if (!isDocFile && (src.url.startsWith('http://') || src.url.startsWith('https://'))) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -80,6 +134,7 @@ export async function getStoredCourseEmbeddings(
       metadata: {
         courseId: row.moodle_course_id,
         docId: String(row.moodle_file_id),
+        pageNumber: row.page_number,
       },
     }));
   } catch (err) {
@@ -114,6 +169,43 @@ export async function getExistingCourseFileIds(moodleCourseId: number): Promise<
   }
 
   return existingSet;
+}
+
+/**
+ * Parent-Child Retrieval Hydration:
+ * Given a list of retrieved DocumentChunks (from Supabase or Cohere),
+ * fetches the corresponding 100% full uncompressed text from Firebase Firestore collection `moodle_document_parents`.
+ * If parent full text exists, updates chunk.text to the complete text.
+ */
+export async function hydrateChunksWithParentText(
+  chunks: DocumentChunk[]
+): Promise<DocumentChunk[]> {
+  if (!chunks || chunks.length === 0) return chunks;
+
+  const hydrated = await Promise.all(
+    chunks.map(async chunk => {
+      const courseId = Number(chunk.metadata?.courseId);
+      const fileId = Number(chunk.metadata?.docId);
+      const pageNumber = chunk.chunkIndex;
+
+      if (courseId && fileId && pageNumber !== undefined && pageNumber >= 0) {
+        try {
+          const parentFullText = await getMoodleDocumentParent(courseId, fileId, pageNumber);
+          if (parentFullText && parentFullText.length > chunk.text.length) {
+            return {
+              ...chunk,
+              text: parentFullText,
+            };
+          }
+        } catch {
+          // Gracefully fallback to existing chunk.text
+        }
+      }
+      return chunk;
+    })
+  );
+
+  return hydrated;
 }
 
 /**
@@ -168,13 +260,33 @@ export async function saveCourseDocumentChunks(params: {
       });
     }
 
-    // Prepare rows for Supabase insertion
+    // 1. Parent-Child: Persist full parent text to Firebase Firestore collection `moodle_document_parents`
+    Promise.allSettled(
+      chunks.map((chunk, idx) =>
+        saveMoodleDocumentParent({
+          moodleCourseId,
+          moodleFileId,
+          documentTitle,
+          pageNumber: chunk.chunkIndex ?? idx + 1,
+          fullText: chunk.text,
+        })
+      )
+    ).catch(fbErr => {
+      console.warn('[Parent-Child Firestore] Warning saving parent full texts:', fbErr);
+    });
+
+    // 2. Prepare rows for Supabase insertion:
+    // Store condensed child text (max 250 chars) in Supabase to save 60-70% storage,
+    // while keeping full semantic embedding. The full text is retrieved from Firebase on demand.
     const rows: DocumentEmbeddingRow[] = chunks.map((chunk, idx) => ({
       moodle_course_id: moodleCourseId,
       moodle_file_id: moodleFileId,
       document_title: documentTitle,
       page_number: chunk.chunkIndex ?? idx + 1,
-      chunk_text: chunk.text,
+      chunk_text:
+        chunk.text.length > 250
+          ? `${chunk.text.slice(0, 240)}...`
+          : chunk.text,
       embedding: chunk.embedding || null,
     }));
 
@@ -226,6 +338,19 @@ export async function vectorizeAndStoreLmsSource(params: {
 
   if (chunks.length === 0) return [];
 
+  // Rule (Enterprise RAG): Web links must NEVER be stored into Supabase pgvector (0MB footprint)
+  if (
+    isWebOrTransientSource({
+      name: documentTitle,
+      type: metadata?.sectionName,
+    }) ||
+    documentTitle.toLowerCase().startsWith('http') ||
+    metadata?.sectionName?.toLowerCase()?.includes('liên kết web')
+  ) {
+    console.log(`[pgvector] Bypassing persistent storage for web source "${documentTitle}" (On-the-fly RAG only)`);
+    return chunks;
+  }
+
   // Save to Supabase (generates Gemini embeddings once and stores permanently)
   await saveCourseDocumentChunks({
     moodleCourseId,
@@ -238,6 +363,11 @@ export async function vectorizeAndStoreLmsSource(params: {
   // This enables complete TOC retrieval for overview queries without chunking limitations
   saveDocumentTOC({ moodleCourseId, moodleFileId, documentTitle, fullText: text }).catch(err => {
     console.warn('[pgvector TOC] Background TOC extraction warning:', err);
+  });
+
+  // Purge any existing semantic query cache for this course to prevent serving stale answers
+  invalidateCourseCache(moodleCourseId).catch(err => {
+    console.warn('[Semantic Cache] Cache invalidation warning on vectorize:', err);
   });
 
   return chunks;
@@ -296,6 +426,19 @@ export async function sweepOrphanedCourseEmbeddings(
     console.log(
       `[pgvector Sweep] Cleaned up ${orphanedFileIds.length} orphaned files successfully from Supabase.`
     );
+
+    // Purge semantic cache when course files are deleted or orphaned
+    invalidateCourseCache(moodleCourseId).catch(err => {
+      console.warn('[Semantic Cache] Cache invalidation warning on sweep:', err);
+    });
+
+    // Parent-Child: Clean up parent documents from Firebase Firestore for purged files
+    for (const fid of orphanedFileIds) {
+      for (let p = 1; p <= 50; p++) {
+        deleteMoodleDocumentParent(moodleCourseId, fid, p).catch(() => {});
+      }
+    }
+
     return orphanedFileIds.length;
   } catch (err) {
     console.warn('[pgvector Sweep] Exception during garbage collection:', err);
@@ -341,7 +484,7 @@ export async function queryCourseEmbeddings(params: {
 
       if (!rpcError && Array.isArray(rpcResults) && rpcResults.length > 0) {
         console.log(`[pgvector RPC] match_document_embeddings matched ${rpcResults.length} chunks via PostgreSQL`);
-        return rpcResults.map((r: any, idx: number) => ({
+        const mappedChunks = rpcResults.map((r: any, idx: number) => ({
           id: r.id || `rpc_${r.moodle_file_id}_${idx}`,
           docTitle: r.document_title,
           text: r.chunk_text,
@@ -353,6 +496,7 @@ export async function queryCourseEmbeddings(params: {
             docId: String(r.moodle_file_id),
           },
         }));
+        return hydrateChunksWithParentText(mappedChunks);
       }
     } catch {
       // RPC might not exist, fall through to query fallback
@@ -379,7 +523,7 @@ export async function queryCourseEmbeddings(params: {
     .filter(c => (c.similarityScore || 0) >= minSimilarity)
     .sort((a, b) => (b.similarityScore || 0) - (a.similarityScore || 0));
 
-  return scored.slice(0, topK);
+  return hydrateChunksWithParentText(scored.slice(0, topK));
 }
 
 /**

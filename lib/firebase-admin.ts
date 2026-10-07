@@ -1,3 +1,5 @@
+import { runtimeEnv } from '@/db/runtime';
+
 export type FirebaseRow = { id: string } & Record<string, unknown>;
 
 type FirestoreDocument = {
@@ -17,12 +19,21 @@ function encodeBase64Url(value: string | ArrayBuffer) {
 }
 
 async function getAccessToken() {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const env = runtimeEnv();
+  const projectId = env.FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = env.FIREBASE_CLIENT_EMAIL || process.env.FIREBASE_CLIENT_EMAIL;
+  let privateKey = env.FIREBASE_PRIVATE_KEY || process.env.FIREBASE_PRIVATE_KEY || '';
   if (!projectId || !clientEmail || !privateKey) return null;
 
   if (accessToken && accessToken.expiresAt > Date.now() + 60_000) return accessToken.value;
+
+  if (
+    (privateKey.startsWith('"') && privateKey.endsWith('"')) ||
+    (privateKey.startsWith("'") && privateKey.endsWith("'"))
+  ) {
+    privateKey = privateKey.slice(1, -1);
+  }
+  privateKey = privateKey.replace(/\\n/g, '\n').trim();
 
   const issuedAt = Math.floor(Date.now() / 1000);
   const header = encodeBase64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
@@ -66,7 +77,8 @@ async function getAccessToken() {
 }
 
 function getDocumentUrl(collectionName: string, id?: string) {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const env = runtimeEnv();
+  const projectId = env.FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
   if (!projectId) return null;
   const path = `projects/${projectId}/databases/(default)/documents/${collectionName}${id ? `/${id}` : ''}`;
   return `https://firestore.googleapis.com/v1/${path}`;
@@ -93,12 +105,20 @@ function decodeDocument(document: FirestoreDocument): FirebaseRow {
 }
 
 function encodeValue(value: unknown): FirestoreValue {
-  if (value === null) return { nullValue: null };
+  if (value === null || value === undefined) return { nullValue: null };
   if (typeof value === 'boolean') return { booleanValue: value };
   if (typeof value === 'number') return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
   if (typeof value === 'string') return { stringValue: value };
   if (Array.isArray(value)) return { arrayValue: { values: value.map(encodeValue) } };
-  if (typeof value === 'object') return { mapValue: { fields: Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, encodeValue(item)])) } };
+  if (typeof value === 'object') {
+    const fields: Record<string, FirestoreValue> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (item !== undefined) {
+        fields[key] = encodeValue(item);
+      }
+    }
+    return { mapValue: { fields } };
+  }
   return { nullValue: null };
 }
 
@@ -149,9 +169,15 @@ export async function setFirebaseRow(
     updateFields.forEach(f => params.append('updateMask.fieldPaths', f));
     url = `${url}?${params.toString()}`;
   }
+  const cleanFields: Record<string, FirestoreValue> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) {
+      cleanFields[key] = encodeValue(value);
+    }
+  }
   await firestoreRequest(url, {
     method: 'PATCH',
-    body: JSON.stringify({ fields: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encodeValue(value)])) }),
+    body: JSON.stringify({ fields: cleanFields }),
   });
   return getFirebaseRow(collectionName, id);
 }

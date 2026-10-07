@@ -39,11 +39,16 @@ export type CourseSourceItem = {
   isStudentUpload?: boolean;
 };
 
+export type RagMode = 'strict' | 'hybrid' | 'creative';
+
 export type CitationSource = {
   name: string;
   isExternal?: boolean;
-  type?: string;
+  type?: 'course_material' | 'external_web' | 'extended_knowledge' | string;
   url?: string;
+  chapter?: string | number;
+  isFallback?: boolean;
+  score?: number;
 };
 
 export type ChatMessage = {
@@ -52,6 +57,9 @@ export type ChatMessage = {
   sources?: Array<string | CitationSource>;
   model?: string;
   provider?: string;
+  ragMode?: RagMode;
+  isFallback?: boolean;
+  finishReason?: string;
 };
 
 export type MatchingPair = {
@@ -166,7 +174,7 @@ export type MoodleData = {
   latestResult?: ExamResult | null;
   syncedAt: string;
   message?: string;
-  user?: { id: number; name: string; username?: string; avatarUrl?: string | null };
+  user?: { id: number; name: string; username?: string; avatarUrl?: string | null; role?: string };
   moodleUrl?: string;
 };
 
@@ -175,6 +183,7 @@ export type MoodleUser = {
   fullname: string;
   username: string;
   avatarUrl?: string | null;
+  role?: string;
 };
 
 export type ErrorResponse = {
@@ -184,6 +193,7 @@ export type ErrorResponse = {
 export type TutorResponse = ErrorResponse & {
   answer?: string;
   sources?: Array<string | CitationSource>;
+  finishReason?: string;
 };
 
 export type StudyToolResponse = ErrorResponse & {

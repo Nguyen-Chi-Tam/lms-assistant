@@ -1,6 +1,70 @@
 import { extractText } from 'unpdf';
 import JSZip from 'jszip';
 
+const OCR_PROMPT = `Bạn là hệ thống Multimodal Vision OCR học thuật cao cấp. Hãy nhận diện và chép lại toàn bộ văn bản nhìn thấy trong ảnh theo đúng cấu trúc trực quan:
+1. Thấu hiểu ngữ cảnh, bóc tách cấu trúc chính xác tuyệt đối (giữ nguyên tiêu đề, công thức toán học LaTeX, danh sách và bảng biểu).
+2. ĐẶC BIỆT NẾU ẢNH LÀ BẢNG ĐIỂM, SỔ THEO DÕI, DANH SÁCH SINH VIÊN HOẶC ĐIỂM SỐ: Bắt buộc định dạng thành Bảng Markdown chuẩn với đầy đủ các cột (STT, Mã sinh viên, Họ và tên, Điểm số, Đánh giá/Ghi chú) để dữ liệu không bị lệch hàng lệch cột.
+3. Không thêm lời giải thích cá nhân, không thêm lời chào, không suy đoán phần bị che khuất. Nếu không có chữ, trả về chuỗi rỗng.`;
+
+function inferImageMimeType(fileName: string, supplied?: string): string | null {
+  if (supplied?.startsWith('image/')) return supplied;
+  const ext = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  const types: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
+  return ext ? types[ext] || null : null;
+}
+
+/**
+ * Vision OCR for image-only study material.  The image stays request-local:
+ * extracted text, not its base64 payload, is the only value returned to RAG.
+ */
+export async function extractTextFromImage(
+  buffer: ArrayBuffer | Uint8Array,
+  fileName: string,
+  mimeType?: string
+): Promise<string> {
+  const imageMime = inferImageMimeType(fileName, mimeType);
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (!imageMime || bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) return '';
+  const base64 = Buffer.from(bytes).toString('base64');
+
+  // Gemini is the primary multimodal OCR path; OpenAI Vision is a safe fallback.
+  try {
+    const { getGeminiClient, GEMINI_MODEL } = await import('@/models/gemini');
+    const gemini = getGeminiClient();
+    if (gemini) {
+      const response = await gemini.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [{ role: 'user', parts: [{ text: OCR_PROMPT }, { inlineData: { mimeType: imageMime, data: base64 } }] }],
+        config: { temperature: 0, maxOutputTokens: 4096 },
+      });
+      const text = response.text?.trim();
+      if (text) return text;
+    }
+  } catch (err) {
+    console.warn('Gemini Vision OCR unavailable:', err);
+  }
+
+  try {
+    const { getOpenAIClient } = await import('@/models/openai');
+    const openai = getOpenAIClient();
+    if (openai) {
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0,
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: OCR_PROMPT },
+          { type: 'image_url', image_url: { url: `data:${imageMime};base64,${base64}`, detail: 'high' } },
+        ] }],
+      });
+      return completion.choices[0]?.message?.content?.trim() || '';
+    }
+  } catch (err) {
+    console.warn('OpenAI Vision OCR unavailable:', err);
+  }
+  return '';
+}
+
 /**
  * Extracts plain text from a DOCX (Office Open XML) buffer using JSZip.
  */
@@ -185,13 +249,23 @@ export async function parseDocumentFromUrl(
       }
     }
 
-    const response = await fetch(fetchUrl, { headers, signal: AbortSignal.timeout(4000) });
+    const response = await fetch(fetchUrl, { headers, signal: AbortSignal.timeout(45000) });
     if (!response.ok) {
       console.warn(`Failed to fetch document from ${fetchUrl}: status ${response.status}`);
-      if (response.status === 403 || response.status === 404 || response.status >= 500) {
-        markUrlFailed(fetchUrl);
+      // When external websites block scrapers (403/468/500), extract topic from URL slug so RAG still retains context
+      try {
+        const urlObj = new URL(fetchUrl);
+        const lastSlug = urlObj.pathname.split('/').filter(Boolean).pop() || '';
+        const cleanSlug = decodeURIComponent(lastSlug.replace(/\.(html?|php|aspx?)$/i, ''))
+          .replace(/[-_+]+/g, ' ')
+          .trim();
+        const topicName = cleanSlug.length > 3 ? cleanSlug : fileName;
+        const semanticFallback = `[Tài liệu tham khảo chuyên môn: "${fileName}"]\nLiên kết gốc: ${fetchUrl}\nChủ đề môn học: ${topicName}\n(Tài liệu này là liên kết bài học chuyên môn do giảng viên cấu hình cho môn học về chủ đề "${topicName}". Sinh viên có thể truy cập liên kết gốc để đọc tài liệu đầy đủ hoặc yêu cầu AI giải thích và so sánh các kiến thức liên quan dựa theo chuẩn môn học).`;
+        setDocumentCache(cacheKey, semanticFallback);
+        return semanticFallback;
+      } catch {
+        return '';
       }
-      return '';
     }
 
     const contentType = response.headers.get('content-type') || '';
@@ -214,6 +288,14 @@ export async function parseDocumentFromUrl(
       if (fullText.trim()) {
         setDocumentCache(cacheKey, fullText);
         return fullText;
+      }
+    }
+
+    if (inferImageMimeType(fileName, contentType)) {
+      const ocrText = await extractTextFromImage(arrayBuffer, fileName, contentType);
+      if (ocrText) {
+        setDocumentCache(cacheKey, ocrText);
+        return ocrText;
       }
     }
 
@@ -392,7 +474,7 @@ export function extractTextFromHtml(html: string): string {
     .join('\n\n');
 }
 
-export async function parseDocumentBuffer(buffer: ArrayBuffer | Uint8Array, fileName: string): Promise<string> {
+export async function parseDocumentBuffer(buffer: ArrayBuffer | Uint8Array, fileName: string, mimeType?: string): Promise<string> {
   try {
     const lowerName = fileName.toLowerCase();
     if (lowerName.endsWith('.pdf')) {
@@ -411,6 +493,9 @@ export async function parseDocumentBuffer(buffer: ArrayBuffer | Uint8Array, file
     if (lowerName.endsWith('.txt')) {
       const decoder = new TextDecoder('utf-8');
       return decoder.decode(buffer);
+    }
+    if (inferImageMimeType(fileName, mimeType)) {
+      return await extractTextFromImage(buffer, fileName, mimeType);
     }
     return '';
   } catch (error) {

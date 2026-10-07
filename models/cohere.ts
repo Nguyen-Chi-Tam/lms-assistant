@@ -2,7 +2,7 @@ import { runtimeEnv } from '@/db/runtime';
 import type { GenerateTextOptions, GenerateTextStreamOptions, GenerateTextResult } from './registry';
 
 export const COHERE_MODEL = 'command-r-08-2024';
-export const COHERE_BACKUP_MODELS = ['command-r', 'command-r-plus-08-2024'];
+export const COHERE_BACKUP_MODELS = ['command-r-plus-08-2024'];
 
 export function getCohereApiKey(): string {
   const env = runtimeEnv();
@@ -15,6 +15,20 @@ export function getCohereApiKey(): string {
 
 export function isCohereAvailable(): boolean {
   return !!getCohereApiKey();
+}
+
+/**
+ * Cohere API strictly requires `id` length to be less than 100 characters
+ * and contain alphanumeric / underscore / hyphen characters.
+ */
+function sanitizeCohereDocId(rawId: string | undefined, index: number): string {
+  if (!rawId) return `doc_${index + 1}`;
+  const cleaned = String(rawId)
+    .replace(/[^\w-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 50);
+  return cleaned ? `doc_${index + 1}_${cleaned}`.slice(0, 70) : `doc_${index + 1}`;
 }
 
 /**
@@ -61,11 +75,22 @@ export async function callCohere(
       v2Body.max_tokens = opts.maxTokens;
     }
 
+    // Study tools require machine-readable data.  A prompt alone is not
+    // sufficient for Cohere, especially for a large slide deck.
+    if (opts.jsonMode) {
+      v2Body.response_format = { type: 'json_object' };
+    }
+
+    const stopSequences = (opts.stopSequences || opts.stop)?.slice(0, 5);
+    if (stopSequences && stopSequences.length > 0) {
+      v2Body.stop_sequences = stopSequences;
+    }
+
     if (opts.documents && opts.documents.length > 0) {
       v2Body.documents = opts.documents.slice(0, 15).map((d, idx) => ({
-        id: d.id || `doc_${idx + 1}`,
+        id: sanitizeCohereDocId(d.id, idx),
         data: {
-          title: d.title || `Tài liệu ${idx + 1}`,
+          title: (d.title || `Tài liệu ${idx + 1}`).slice(0, 200),
           text: d.text || '',
         },
       }));
@@ -114,9 +139,10 @@ export async function callCohere(
       message: h.content,
     }));
 
+    const modelV1 = modelId === 'command-r' ? 'command-r-08-2024' : modelId;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const v1Body: Record<string, any> = {
-      model: modelId.startsWith('command-r') ? 'command-r' : modelId,
+      model: modelV1,
       message: opts.userPrompt,
       preamble: opts.system,
       chat_history: chatHistory,
@@ -131,10 +157,19 @@ export async function callCohere(
       v1Body.max_tokens = opts.maxTokens;
     }
 
+    if (opts.jsonMode) {
+      v1Body.response_format = { type: 'json_object' };
+    }
+
+    const stopSequencesV1 = (opts.stopSequences || opts.stop)?.slice(0, 5);
+    if (stopSequencesV1 && stopSequencesV1.length > 0) {
+      v1Body.stop_sequences = stopSequencesV1;
+    }
+
     if (opts.documents && opts.documents.length > 0) {
       v1Body.documents = opts.documents.slice(0, 15).map((d, idx) => ({
-        id: d.id || `doc_${idx + 1}`,
-        title: d.title || `Tài liệu ${idx + 1}`,
+        id: sanitizeCohereDocId(d.id, idx),
+        title: (d.title || `Tài liệu ${idx + 1}`).slice(0, 200),
         snippet: d.text || '',
       }));
     }
@@ -214,11 +249,16 @@ export async function callCohereStream(
       streamBody.max_tokens = opts.maxTokens;
     }
 
+    const stopStreamSequences = (opts.stopSequences || opts.stop)?.slice(0, 5);
+    if (stopStreamSequences && stopStreamSequences.length > 0) {
+      streamBody.stop_sequences = stopStreamSequences;
+    }
+
     if (opts.documents && opts.documents.length > 0) {
       streamBody.documents = opts.documents.slice(0, 15).map((d, idx) => ({
-        id: d.id || `doc_${idx + 1}`,
+        id: sanitizeCohereDocId(d.id, idx),
         data: {
-          title: d.title || `Tài liệu ${idx + 1}`,
+          title: (d.title || `Tài liệu ${idx + 1}`).slice(0, 200),
           text: d.text || '',
         },
       }));
@@ -318,4 +358,156 @@ export async function callCohereStream(
 
   return { text: trimmedText };
 }
+
+export interface RerankableChunk {
+  id: string;
+  docTitle: string;
+  text: string;
+  chunkIndex: number;
+  totalChunks: number;
+  similarityScore?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  metadata?: any;
+  embedding?: number[];
+}
+
+/**
+ * Scanning Gatekeeper: Uses Cohere's dedicated Rerank API (cross-encoder)
+ * to re-score candidate chunks based on true semantic query-passage interaction.
+ * 
+ * IMPORTANT: This uses Cohere's independent RERANK quota, NOT Chat quota.
+ * It eliminates ~70% noisy/fragmented chunks before passing to the primary Chat LLM.
+ */
+export async function rerankChunksWithCohere<T extends RerankableChunk>(
+  query: string,
+  chunks: T[],
+  options: {
+    topN?: number;
+    minScore?: number;
+    model?: string;
+  } = {}
+): Promise<T[] | null> {
+  const apiKey = getCohereApiKey();
+  if (!apiKey || !query.trim() || chunks.length === 0) {
+    return null;
+  }
+
+  // If only 1-2 chunks, reranking is unnecessary
+  if (chunks.length <= 2) {
+    return chunks;
+  }
+
+  const topN = options.topN ?? 3;
+  const minScore = options.minScore ?? 0.2;
+  const rerankModel = options.model || 'rerank-multilingual-v3.0';
+
+  // Prepare input passages for Cohere (cap at top 15 candidates to keep request fast and cheap)
+  const candidatePool = chunks.slice(0, 15);
+  const documents = candidatePool.map(c => `${c.docTitle}\n${c.text}`);
+
+  try {
+    // 1. Try Cohere v2 Rerank API first
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const v2Body = {
+      model: rerankModel,
+      query: query.trim(),
+      documents,
+      top_n: topN,
+    };
+
+    const res = await fetch('https://api.cohere.com/v2/rerank', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(v2Body),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId));
+
+    if (res.ok) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = (await res.json()) as any;
+      if (Array.isArray(data.results) && data.results.length > 0) {
+        const reranked: T[] = [];
+        for (const item of data.results) {
+          const original = candidatePool[item.index];
+          const score = typeof item.relevance_score === 'number' ? item.relevance_score : 0;
+          if (original && score >= minScore) {
+            reranked.push({
+              ...original,
+              similarityScore: Math.round(score * 1000) / 1000,
+            });
+          }
+        }
+        if (reranked.length > 0) {
+          console.log(
+            `[Cohere Rerank v2] Scanned ${candidatePool.length} candidate chunks -> Selected ${reranked.length} top chunks (Top score: ${reranked[0]?.similarityScore})`
+          );
+          return reranked;
+        }
+      }
+    } else {
+      console.warn(`[Cohere Rerank] v2 failed with status ${res.status}, attempting v1 fallback...`);
+    }
+  } catch (err) {
+    console.warn('[Cohere Rerank v2] error, trying v1:', err);
+  }
+
+  // 2. Fallback to Cohere v1 Rerank API
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+    const v1Body = {
+      model: 'rerank-multilingual-v3.0',
+      query: query.trim(),
+      documents,
+      top_n: topN,
+      return_documents: false,
+    };
+
+    const resV1 = await fetch('https://api.cohere.com/v1/rerank', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(v1Body),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId));
+
+    if (resV1.ok) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dataV1 = (await resV1.json()) as any;
+      if (Array.isArray(dataV1.results) && dataV1.results.length > 0) {
+        const reranked: T[] = [];
+        for (const item of dataV1.results) {
+          const original = candidatePool[item.index];
+          const score = typeof item.relevance_score === 'number' ? item.relevance_score : 0;
+          if (original && score >= minScore) {
+            reranked.push({
+              ...original,
+              similarityScore: Math.round(score * 1000) / 1000,
+            });
+          }
+        }
+        if (reranked.length > 0) {
+          console.log(
+            `[Cohere Rerank v1] Scanned ${candidatePool.length} candidates -> Kept ${reranked.length} top chunks (Top score: ${reranked[0]?.similarityScore})`
+          );
+          return reranked;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Cohere Rerank v1] fallback failed:', err);
+  }
+
+  // Return null so calling layer falls back gracefully to vector/BM25 scoring
+  return null;
+}
+
 

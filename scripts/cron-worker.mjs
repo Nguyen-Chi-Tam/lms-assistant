@@ -9,14 +9,37 @@
  *   hoặc: npm run cron
  */
 
-// Nạp biến môi trường từ .env.local nếu có
-try {
-  if (typeof process.loadEnvFile === 'function') {
-    process.loadEnvFile('.env.local');
+import fs from 'node:fs';
+import path from 'node:path';
+
+// Nạp biến môi trường từ .dev.vars, .env.local, .env
+function loadEnvFiles() {
+  const files = ['.dev.vars', '.env.local', '.env'];
+  for (const file of files) {
+    try {
+      const fullPath = path.resolve(process.cwd(), file);
+      if (fs.existsSync(fullPath)) {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx > 0) {
+            const key = trimmed.slice(0, eqIdx).trim();
+            let val = trimmed.slice(eqIdx + 1).trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+              val = val.slice(1, -1);
+            }
+            if (key && !process.env[key]) {
+              process.env[key] = val;
+            }
+          }
+        }
+      }
+    } catch {}
   }
-} catch {
-  // Bỏ qua nếu môi trường đã thiết lập sẵn
 }
+loadEnvFiles();
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const NOTIFY_INTERVAL_MS = parseInt(process.env.NOTIFY_INTERVAL_MS || '60000', 10); // Mặc định 60 giây
@@ -49,7 +72,12 @@ async function runMoodleSync() {
     const res = await fetch(`${BASE_URL}/api/cron/sync-moodle`, { headers });
 
     if (!res.ok) {
-      console.log(`${timestamp()} ${label} ${colors.red}HTTP ${res.status}${colors.reset}`);
+      let errDetail = '';
+      try {
+        const errJson = await res.json();
+        errDetail = errJson.error ? ` — ${errJson.error}` : '';
+      } catch {}
+      console.log(`${timestamp()} ${label} ${colors.red}HTTP ${res.status}${errDetail}${colors.reset}`);
       return;
     }
 
@@ -90,7 +118,12 @@ async function runNotificationCheck() {
     }
 
     if (!res.ok) {
-      console.log(`${timestamp()} ${label} ${colors.red}HTTP ${res.status}${colors.reset}`);
+      let errDetail = '';
+      try {
+        const errJson = await res.json();
+        errDetail = errJson.error ? ` — ${errJson.error}` : '';
+      } catch {}
+      console.log(`${timestamp()} ${label} ${colors.red}HTTP ${res.status}${errDetail}${colors.reset}`);
       return;
     }
 

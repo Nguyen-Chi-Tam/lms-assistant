@@ -1,14 +1,20 @@
 import { NextResponse } from 'next/server';
 import { processNotificationEvents } from '@/lib/event-notification-service';
+import { runtimeEnv } from '@/db/runtime';
 
 export async function GET(request: Request) {
   try {
     // Optional secret check if CRON_SECRET is configured
-    const cronSecret = process.env.CRON_SECRET;
+    const { CRON_SECRET: cronSecret } = runtimeEnv();
     if (cronSecret) {
       const authHeader = request.headers.get('authorization');
-      if (authHeader !== `Bearer ${cronSecret}`) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      const { searchParams } = new URL(request.url);
+      const querySecret = searchParams.get('secret') || searchParams.get('key');
+      if (authHeader !== `Bearer ${cronSecret}` && querySecret !== cronSecret) {
+        return NextResponse.json(
+          { error: 'Unauthorized: Thiếu hoặc sai CRON_SECRET. Gắn header Authorization: Bearer <CRON_SECRET> hoặc param ?secret=<CRON_SECRET>' },
+          { status: 401 }
+        );
       }
     }
 

@@ -12,13 +12,17 @@ export type AppRuntime = {
   CLOUDINARY_API_SECRET?: string;
   CLOUDINARY_URL?: string;
   GROQ_API_KEY?: string;
+  GROQ_API_KEYS?: string;
   COHERE_API_KEY?: string;
   AI_HORDE_API_KEY?: string;
   GEMINI_API_KEY?: string;
   GEMINI_API_KEYS?: string;
   GOOGLE_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  OPENROUTER_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
   MOODLE_URL?: string;
   MOODLE_TOKEN?: string;
   MOODLE_TOKEN_ENCRYPTION_KEY?: string;
@@ -28,6 +32,12 @@ export type AppRuntime = {
   MOODLE_DB_USER?: string;
   MOODLE_DB_PASSWORD?: string;
   MOODLE_DB_NAME?: string;
+  FIREBASE_PROJECT_ID?: string;
+  FIREBASE_CLIENT_EMAIL?: string;
+  FIREBASE_PRIVATE_KEY?: string;
+  APMIX_API_KEY?: string;
+  APMIX_MODEL?: string;
+  APMIX_BASE_URL?: string;
 };
 
 function readLocalEnvFiles(): Record<string, string> {
@@ -81,6 +91,9 @@ export function runtimeEnv(): AppRuntime {
   }
 
   const getVar = (key: string) => {
+    if (process.env.NODE_ENV !== 'production' && cachedLocalEnv?.[key]) {
+      return cachedLocalEnv[key];
+    }
     return (
       (process.env[key] as string) ||
       (cfEnv[key] as string) ||
@@ -99,11 +112,16 @@ export function runtimeEnv(): AppRuntime {
     CLOUDINARY_API_SECRET: getVar('CLOUDINARY_API_SECRET'),
     CLOUDINARY_URL: getVar('CLOUDINARY_URL'),
     GROQ_API_KEY: getVar('GROQ_API_KEY'),
+    COHERE_API_KEY: getVar('COHERE_API_KEY'),
+    AI_HORDE_API_KEY: getVar('AI_HORDE_API_KEY'),
     GEMINI_API_KEY: getVar('GEMINI_API_KEY'),
     GEMINI_API_KEYS: getVar('GEMINI_API_KEYS'),
     GOOGLE_API_KEY: getVar('GOOGLE_API_KEY'),
     OPENAI_API_KEY: getVar('OPENAI_API_KEY'),
+    OPENROUTER_API_KEY: getVar('OPENROUTER_API_KEY'),
     ANTHROPIC_API_KEY: getVar('ANTHROPIC_API_KEY'),
+    CLOUDFLARE_ACCOUNT_ID: getVar('CLOUDFLARE_ACCOUNT_ID'),
+    CLOUDFLARE_API_TOKEN: getVar('CLOUDFLARE_API_TOKEN'),
     MOODLE_URL: getVar('MOODLE_URL'),
     MOODLE_TOKEN: getVar('MOODLE_TOKEN'),
     MOODLE_TOKEN_ENCRYPTION_KEY: getVar('MOODLE_TOKEN_ENCRYPTION_KEY'),
@@ -113,7 +131,28 @@ export function runtimeEnv(): AppRuntime {
     MOODLE_DB_USER: getVar('MOODLE_DB_USER') || 'root',
     MOODLE_DB_PASSWORD: getVar('MOODLE_DB_PASSWORD') || '',
     MOODLE_DB_NAME: getVar('MOODLE_DB_NAME') || 'moodle',
+    APMIX_API_KEY: getVar('APMIX_API_KEY'),
+    APMIX_MODEL: getVar('APMIX_MODEL'),
+    APMIX_BASE_URL: getVar('APMIX_BASE_URL'),
   };
+}
+
+/**
+ * Access native Cloudflare Workers AI binding (`env.AI`) when deployed on Cloudflare Pages / Workers.
+ * Native binding executes directly at the edge with zero HTTP request overhead.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getCloudflareAIBinding(): any {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { env } = require('cloudflare:workers');
+    if (env && env.AI) {
+      return env.AI;
+    }
+  } catch {
+    // Not running inside a Cloudflare Workers environment
+  }
+  return null;
 }
 
 export async function currentUserId() {

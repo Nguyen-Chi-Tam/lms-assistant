@@ -53,7 +53,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as FcmRequestBody;
+    const body = (await request.json()) as FcmRequestBody & { role?: string };
     const userId = Number(body?.userId);
     const token = body?.token?.trim();
     const deviceId = body?.deviceId?.trim() || 'web-browser';
@@ -61,6 +61,52 @@ export async function POST(request: Request) {
 
     if (!userId || !token) {
       return NextResponse.json({ error: 'userId và token là bắt buộc' }, { status: 400 });
+    }
+
+    // Notifications and FCM tokens are strictly for STUDENTS.
+    // Skip teachers completely as notifications are designed for students.
+    if (body.role === 'teacher' || userId === 2) {
+      return NextResponse.json({
+        success: true,
+        message: 'FCM token registration skipped for teachers (students only)',
+        skipped: true,
+      });
+    }
+
+    if (supabaseAdmin) {
+      try {
+        const { data: userRec } = await supabaseAdmin
+          .from('users')
+          .select('role')
+          .eq('moodle_user_id', userId)
+          .maybeSingle();
+
+        if (userRec?.role === 'teacher') {
+          return NextResponse.json({
+            success: true,
+            message: 'FCM token registration skipped for teachers (students only)',
+            skipped: true,
+          });
+        }
+      } catch (checkErr) {
+        console.warn('Check user role warning in FCM:', checkErr);
+      }
+    }
+
+    const db = getDb();
+    if (db) {
+      try {
+        const dbUsers = await db.select({ role: users.role }).from(users).where(eq(users.moodleUserId, userId)).limit(1);
+        if (dbUsers[0]?.role === 'teacher') {
+          return NextResponse.json({
+            success: true,
+            message: 'FCM token registration skipped for teachers (students only)',
+            skipped: true,
+          });
+        }
+      } catch (dbCheckErr) {
+        console.warn('Check db user role warning in FCM:', dbCheckErr);
+      }
     }
 
     // 1. Ensure user exists in users table (due to foreign key constraint)
@@ -110,7 +156,6 @@ export async function POST(request: Request) {
       }
     }
 
-    const db = getDb();
     if (db) {
       try {
         await db

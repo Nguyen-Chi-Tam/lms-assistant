@@ -1,5 +1,7 @@
 import { getGeminiClient, executeWithGeminiPool } from '@/models/gemini';
 import { isProviderBlocked, blockProviderUntilTomorrow, isQuotaExhaustedError } from '@/models/registry';
+import { generateCloudflareEmbeddings, isCloudflareAvailable } from '@/models/cloudflare';
+import { reformulateQueryWithGroq, cleanQueryRuleBased, type QueryReformulationResult } from './query-reformulation';
 
 export interface DocumentMetadata {
   sectionId?: string | number;
@@ -19,6 +21,7 @@ export interface DocumentChunk {
   totalChunks: number;
   embedding?: number[];
   similarityScore?: number;
+  rerankScore?: number;
   metadata?: DocumentMetadata;
 }
 
@@ -42,7 +45,13 @@ export interface RetrievalOptions {
   // Dynamic Top-K options
   dynamicTopK?: boolean;
   highConfidenceThreshold?: number;
+  // Query Reformulation / Intent Extraction options
+  searchQuery?: string;
+  reformulatedQuery?: string;
+  autoReformulate?: boolean;
 }
+
+export { reformulateQueryWithGroq, cleanQueryRuleBased, type QueryReformulationResult } from './query-reformulation';
 
 // In-memory document chunk & embedding cache: hash -> DocumentChunk[]
 const MAX_CACHED_DOCS = 50;
@@ -108,6 +117,158 @@ export function extractChapterNumber(text: string): string | null {
   if (!text) return null;
   const match = text.match(/(?:chương|chuong|bài|bai|chapter|section|ch)\s*([0-9]+|[ivxlcdm]+)/i);
   return match ? match[1].toLowerCase() : null;
+}
+
+function removeDiacritics(str: string): string {
+  return (str || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D');
+}
+
+/**
+ * Metadata Filtering ("Judge the book by its cover"):
+ * Pre-filters candidate sources by matching prompt keywords against document titles,
+ * URL slugs, section names, and chapter numbers BEFORE full-text fetching, chunking,
+ * or requesting embeddings from Gemini.
+ *
+ * This saves 80-90% of Gemini embedding quota by skipping irrelevant documents
+ * (e.g., when asked about "Python framework", immediately skips HTML/CSS slides and keeps
+ * only the web link or guide discussing Python frameworks).
+ */
+export function filterSourcesByPromptMetadata<T extends {
+  name: string;
+  url?: string;
+  sectionName?: string;
+  chapter?: string | number;
+}>(
+  sources: T[],
+  prompt: string
+): T[] {
+  if (!sources || sources.length <= 1 || !prompt || !prompt.trim()) {
+    return sources;
+  }
+
+  const cleanPrompt = prompt.toLowerCase().trim();
+
+  // 1. Overview / Meta queries bypass filtering (need all sources)
+  const isDocOverviewQuery =
+    cleanPrompt.includes('mục lục') ||
+    cleanPrompt.includes('tóm tắt') ||
+    cleanPrompt.includes('tổng hợp') ||
+    cleanPrompt.includes('tổng quan') ||
+    cleanPrompt.includes('tất cả tài liệu') ||
+    cleanPrompt.includes('tài liệu trên') ||
+    cleanPrompt.includes('tài liệu này') ||
+    cleanPrompt.includes('bao nhiêu chương') ||
+    cleanPrompt.includes('các chương') ||
+    cleanPrompt.includes('nội dung của tài liệu') ||
+    cleanPrompt.includes('gồm những gì') ||
+    cleanPrompt.includes('table of contents') ||
+    cleanPrompt.includes('overview') ||
+    cleanPrompt.includes('outline');
+
+  if (isDocOverviewQuery) {
+    return sources;
+  }
+
+  // 2. Extract technical and conceptual keywords from prompt
+  const stopWords = new Set([
+    'ưu', 'nhược', 'điểm', 'của', 'loại', 'là', 'gì', 'như', 'thế', 'nào',
+    'hãy', 'cho', 'biết', 'tại', 'sao', 'so', 'sánh', 'và', 'các', 'những',
+    'một', 'có', 'không', 'được', 'trong', 'về', 'với', 'khi', 'ai', 'làm',
+    'phân', 'tích', 'giải', 'thích', 'trình', 'bày', 'chi', 'tiết', 'đánh', 'giá',
+    'giúp', 'tôi', 'em', 'mình', 'bạn', 'thầy', 'cô', 'xin', 'cần', 'muốn'
+  ]);
+
+  const rawTokens = tokenize(cleanPrompt);
+  const keywords = rawTokens.filter(t => t.length > 1 && !stopWords.has(t));
+
+  if (keywords.length === 0) {
+    return sources;
+  }
+
+  const promptUnaccented = removeDiacritics(cleanPrompt);
+  const unaccentedKeywords = keywords.map(k => removeDiacritics(k));
+
+  // 3. Score each source by its "Cover" (name, URL slug, chapter, sectionName)
+  const scoredSources: Array<{ source: T; score: number; matchReasons: string[] }> = [];
+
+  for (const src of sources) {
+    let score = 0;
+    const matchReasons: string[] = [];
+
+    const cleanName = (src.name || '').toLowerCase().replace(/\.(pdf|docx?|pptx?|html?|txt)$/i, '');
+    let cleanUrlSlug = '';
+    if (src.url) {
+      try {
+        const u = new URL(src.url);
+        cleanUrlSlug = decodeURIComponent(u.pathname)
+          .toLowerCase()
+          .replace(/[-_+/.]/g, ' ');
+      } catch {
+        cleanUrlSlug = (src.url || '').toLowerCase();
+      }
+    }
+    const cleanSection = (src.sectionName || '').toLowerCase();
+    const cleanChapter = String(src.chapter || '').toLowerCase();
+
+    const accentedCover = `${cleanName} ${cleanUrlSlug} ${cleanSection} ${cleanChapter}`;
+    const unaccentedCover = removeDiacritics(accentedCover);
+
+    // Exact keyword hits
+    for (let i = 0; i < keywords.length; i++) {
+      const kw = keywords[i];
+      const ukw = unaccentedKeywords[i];
+
+      if (accentedCover.includes(kw) || unaccentedCover.includes(ukw)) {
+        score += 3;
+        matchReasons.push(kw);
+      }
+    }
+
+    // Multi-word phrase hits
+    for (let i = 0; i < keywords.length - 1; i++) {
+      const phrase = `${keywords[i]} ${keywords[i + 1]}`;
+      const uPhrase = `${unaccentedKeywords[i]} ${unaccentedKeywords[i + 1]}`;
+      if (accentedCover.includes(phrase) || unaccentedCover.includes(uPhrase)) {
+        score += 6;
+        matchReasons.push(phrase);
+      }
+    }
+
+    // Specific chapter hit if mentioned in prompt
+    const promptChapter = extractChapterNumber(cleanPrompt);
+    if (promptChapter && cleanChapter === promptChapter) {
+      score += 10;
+      matchReasons.push(`Chương ${promptChapter}`);
+    }
+
+    if (score > 0) {
+      scoredSources.push({ source: src, score, matchReasons });
+    }
+  }
+
+  // If any source matches the prompt keywords on its cover
+  if (scoredSources.length > 0) {
+    scoredSources.sort((a, b) => b.score - a.score);
+
+    // If top match has a distinctively high score, keep top relevant sources
+    const maxScore = scoredSources[0].score;
+    const filtered = scoredSources
+      .filter(s => s.score >= Math.max(3, maxScore * 0.35))
+      .map(s => s.source);
+
+    console.log(
+      `[Metadata Filtering] "Judging book by cover": Prompt "${prompt.slice(0, 40)}..." matched ${filtered.length}/${sources.length} sources (saving ${(1 - filtered.length / sources.length) * 100}% Gemini calls): ` +
+      scoredSources.map(s => `"${s.source.name}" (score: ${s.score}, hits: ${s.matchReasons.join(', ')})`).join('; ')
+    );
+    return filtered;
+  }
+
+  // If no source had a distinctive match on its cover, fall back to all sources
+  return sources;
 }
 
 /**
@@ -272,18 +433,44 @@ function computeBM25Score(queryTokens: string[], chunkText: string): number {
 /**
  * Generates vector embeddings for a list of texts using Gemini, OpenAI, or falls back to BM25.
  */
+// In-memory text embedding cache to prevent re-embedding identical text fragments
+const textEmbeddingCache = new Map<string, number[]>();
+let geminiEmbeddingCooldownUntil = 0;
+
+/**
+ * Generates vector embeddings for a list of texts using Gemini, or falls back to BM25.
+ */
 export async function generateEmbeddings(texts: string[]): Promise<Array<number[] | null>> {
   if (!texts || texts.length === 0) return [];
 
-  // 1. Try Gemini embedding if not blocked
-  if (!isProviderBlocked('gemini')) {
+  const results: Array<number[] | null> = new Array(texts.length).fill(null);
+  const uncachedIndices: number[] = [];
+
+  // 1. Resolve from in-memory cache first
+  texts.forEach((text, idx) => {
+    const trimmed = text.slice(0, 1000).trim();
+    if (trimmed && textEmbeddingCache.has(trimmed)) {
+      results[idx] = textEmbeddingCache.get(trimmed)!;
+    } else {
+      uncachedIndices.push(idx);
+    }
+  });
+
+  if (uncachedIndices.length === 0) {
+    return results;
+  }
+
+  // 2. Try Gemini embedding if not in temporary embedding cooldown
+  const now = Date.now();
+  if (now >= geminiEmbeddingCooldownUntil && !isProviderBlocked('gemini')) {
     try {
-      const results: Array<number[] | null> = [];
-      // Process in small batches of 8 to prevent rate limit
-      for (let i = 0; i < texts.length; i += 8) {
-        const batch = texts.slice(i, i + 8);
+      // Process in small batches of 6 with gentle pacing to respect free-tier 100 RPM quota
+      for (let i = 0; i < uncachedIndices.length; i += 6) {
+        const batchIndices = uncachedIndices.slice(i, i + 6);
+        const batchTexts = batchIndices.map(idx => texts[idx]);
+
         const batchRes = await executeWithGeminiPool(async (client) => {
-          const batchPromises = batch.map(async text => {
+          const batchPromises = batchTexts.map(async text => {
             try {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const res = await (client.models as any).embedContent({
@@ -314,7 +501,20 @@ export async function generateEmbeddings(texts: string[]): Promise<Array<number[
           });
           return await Promise.all(batchPromises);
         });
-        results.push(...batchRes);
+
+        batchRes.forEach((vec, bIdx) => {
+          const originalIdx = batchIndices[bIdx];
+          if (vec) {
+            results[originalIdx] = vec;
+            const cacheKey = texts[originalIdx].slice(0, 1000).trim();
+            if (cacheKey) textEmbeddingCache.set(cacheKey, vec);
+          }
+        });
+
+        // Small 80ms breathing room between batches to prevent quota burst
+        if (i + 6 < uncachedIndices.length) {
+          await new Promise(r => setTimeout(r, 80));
+        }
       }
 
       if (results.some(r => r !== null)) {
@@ -322,14 +522,41 @@ export async function generateEmbeddings(texts: string[]): Promise<Array<number[
       }
     } catch (err) {
       if (isQuotaExhaustedError(err)) {
-        blockProviderUntilTomorrow('gemini', String(err));
+        geminiEmbeddingCooldownUntil = Date.now() + 25000;
+        console.warn('[Gemini Embedding] Embedding quota exceeded. Pausing Gemini embeddings for 25s (Chat generation remains active).');
+      } else {
+        console.warn('Gemini embedding failed, trying Cloudflare AI:', err);
       }
-      console.warn('Gemini embedding failed, falling back to BM25:', err);
+    }
+  }
+
+  // 3. Fallback to Cloudflare Workers AI embeddings (@cf/baai/bge-m3) if Gemini is rate-limited or unavailable
+  const remainingIndices = uncachedIndices.filter(idx => results[idx] === null);
+  if (remainingIndices.length > 0 && isCloudflareAvailable()) {
+    try {
+      const cfTexts = remainingIndices.map(idx => texts[idx].slice(0, 2048));
+      const cfVectors = await generateCloudflareEmbeddings(cfTexts);
+      if (cfVectors && cfVectors.length === cfTexts.length) {
+        console.log(`[Cloudflare AI Embedding] Generated ${cfVectors.length} vector embedding(s) via @cf/baai/bge-m3`);
+        cfVectors.forEach((vec, i) => {
+          if (vec && Array.isArray(vec)) {
+            const originalIdx = remainingIndices[i];
+            results[originalIdx] = vec;
+            const cacheKey = texts[originalIdx].slice(0, 1000).trim();
+            if (cacheKey) textEmbeddingCache.set(cacheKey, vec);
+          }
+        });
+        if (results.some(r => r !== null)) {
+          return results;
+        }
+      }
+    } catch (cfErr) {
+      console.warn('[Cloudflare AI Embedding] Failed, falling back to BM25:', cfErr);
     }
   }
 
   // If embedding API is unreachable, return array of nulls (retrieval will seamlessly use BM25)
-  return texts.map(() => null);
+  return results;
 }
 
 /**
@@ -403,11 +630,27 @@ export async function retrieveRelevantChunks(
   const allChunks = await indexDocuments(rawDocs, options);
   if (allChunks.length === 0) return [];
 
+  // 1b. Intent Extraction / Query Reformulation:
+  // Use compact canonical keywords if provided, or auto-reformulate if query is noisy/long
+  let effectiveSearchQuery = (options.searchQuery || options.reformulatedQuery || '').trim();
+  if (!effectiveSearchQuery) {
+    if (options.autoReformulate !== false && cleanQuery.length > 30) {
+      try {
+        const reformulation = await reformulateQueryWithGroq(cleanQuery);
+        effectiveSearchQuery = reformulation.reformulatedQuery;
+      } catch {
+        effectiveSearchQuery = cleanQuery;
+      }
+    } else {
+      effectiveSearchQuery = cleanQuery;
+    }
+  }
+
   // 2. Metadata Filtering (Phân vùng tìm kiếm theo Chapter / Section / Topic)
   let candidateChunks = allChunks;
   const targetSectionId = options.filterSectionId;
   const targetSectionName = options.filterSectionName?.toLowerCase();
-  const queryChapter = extractChapterNumber(cleanQuery);
+  const queryChapter = extractChapterNumber(effectiveSearchQuery) || extractChapterNumber(cleanQuery);
   const targetChapter = options.filterChapter ? String(options.filterChapter).toLowerCase() : queryChapter;
 
   if (
@@ -461,16 +704,16 @@ export async function retrieveRelevantChunks(
     }
   }
 
-  // 3. Generate embedding for user query
+  // 3. Generate embedding for user query (clean canonical keywords)
   let queryEmbedding: number[] | null = null;
   try {
-    const [qEmb] = await generateEmbeddings([cleanQuery]);
+    const [qEmb] = await generateEmbeddings([effectiveSearchQuery]);
     queryEmbedding = qEmb;
   } catch {
     queryEmbedding = null;
   }
 
-  return scoreAndSelectChunks(candidateChunks, cleanQuery, options, queryEmbedding);
+  return scoreAndSelectChunks(candidateChunks, effectiveSearchQuery, options, queryEmbedding);
 }
 
 /**
@@ -538,7 +781,7 @@ export function scoreAndSelectChunks(
     }
   }
 
-  const cutoffThreshold = options.minSimilarity ?? 0.80;
+  const cutoffThreshold = options.minSimilarity ?? (queryEmbedding ? 0.75 : 0.30);
   const selected: DocumentChunk[] = [];
   let accumulatedChars = 0;
 

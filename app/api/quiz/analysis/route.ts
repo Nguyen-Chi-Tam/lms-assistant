@@ -3,11 +3,7 @@ import { runtimeEnv } from '@/db/runtime';
 import { generateText } from '@/models/registry';
 import { parseMoodleQuestion, ParsedMoodleQuestion, cleanAnswerText } from '@/lib/moodle-quiz-parser';
 import { getLearningArtifacts, getQuizAnalysisByAttempt, saveLearningArtifact } from '@/lib/learning-artifacts';
-import { getDb } from '@/db';
-import { personalMaterials } from '@/db/schema';
-import { eq } from 'drizzle-orm';
 import { getPersonalMaterials } from '@/lib/firebase-data';
-import { supabaseAdmin } from '@/lib/supabase';
 import type { QuizAnalysisData } from '@/app/types';
 
 function sanitizeQuestionsAnalysis(questions: any[]) {
@@ -220,38 +216,6 @@ export async function POST(request: Request) {
       } catch (firebaseError) {
         console.warn('Firebase course docs warning for quiz analysis:', firebaseError);
       }
-
-      if (supabaseAdmin) {
-        try {
-          const { data: mats } = await supabaseAdmin
-            .from('personal_materials')
-            .select('title, storage_url')
-            .eq('moodle_course_id', numericCourseId)
-            .limit(4);
-          if (mats && mats.length > 0) {
-            docContext = mats.map(m => `[Tài liệu: ${m.title}]`).join('\n');
-          }
-        } catch (sbErr) {
-          console.warn('Supabase course docs warning for quiz analysis:', sbErr);
-        }
-      }
-      if (!docContext) {
-        const db = getDb();
-        if (db) {
-          try {
-            const mats = await db
-              .select({ title: personalMaterials.title })
-              .from(personalMaterials)
-              .where(eq(personalMaterials.moodleCourseId, numericCourseId))
-              .limit(4);
-            if (mats.length > 0) {
-              docContext = mats.map(m => `[Tài liệu: ${m.title}]`).join('\n');
-            }
-          } catch (dbErr) {
-            console.warn('Drizzle course docs warning for quiz analysis:', dbErr);
-          }
-        }
-      }
     }
 
     // 4. Stuff context & construct pedagogical AI prompt
@@ -327,10 +291,12 @@ Không kèm markdown hay văn bản ngoài JSON.`;
 
     try {
       const aiResult = await generateText(body.model, {
-        system: 'Bạn là Cố vấn Học tập Thích ứng chuyên sâu về CNTT và sư phạm đại học. Luôn phân tích chính xác nguyên nhân sai sót và đề xuất giải pháp trọng tâm. Trả về đúng JSON schema.',
+        system:
+          'Bạn là Cố vấn Học tập Thích ứng chuyên sâu về CNTT và sư phạm đại học. Luôn phân tích chính xác nguyên nhân sai sót và đề xuất giải pháp trọng tâm bằng CHÍNH XÁC ngôn ngữ của bài thi/câu hỏi (Tiếng Việt luôn là ngôn ngữ mặc định nếu bài thi bằng tiếng Việt). Trả về đúng JSON schema.',
         userPrompt: prompt,
         temperature: 0.2,
         jsonMode: true,
+        taskCategory: 'complex',
         signal: request.signal,
       });
 

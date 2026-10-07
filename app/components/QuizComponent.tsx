@@ -31,7 +31,7 @@ import {
 import { QuizQuestion } from '@/app/api/quiz/route';
 import { MarkdownRenderer } from '@/app/components/MarkdownRenderer';
 import { convertQuestionsToMoodleXml, QuizQuestionItem } from '@/app/lib/moodle-xml';
-import type { QuizAnalysisData } from '@/app/types';
+import type { QuizAnalysisData, RagMode } from '@/app/types';
 import { QuizAnalysisModal } from '@/app/components/QuizAnalysisModal';
 import { dismissLocalNotificationByTag } from '@/app/lib/notification-client';
 import {
@@ -45,6 +45,7 @@ interface QuizComponentProps {
   courseId?: string | number;
   selectedSources: Array<{ name: string; url?: string; type?: string }>;
   allowExternalSource?: boolean;
+  ragMode?: RagMode;
   selectedModel?: string;
   hasLmsGrades?: boolean;
   initialMode?: 'comprehensive' | 'targeted';
@@ -61,6 +62,7 @@ export function QuizComponent({
   courseId,
   selectedSources,
   allowExternalSource: initialAllowExternal = false,
+  ragMode: initialRagMode,
   selectedModel,
   hasLmsGrades = false,
   initialMode = 'comprehensive',
@@ -84,7 +86,10 @@ export function QuizComponent({
     'short_answer',
   ]);
   const [customTopic, setCustomTopic] = useState<string>('');
-  const [allowExternal, setAllowExternal] = useState<boolean>(initialAllowExternal);
+  const [ragMode, setRagMode] = useState<RagMode>(
+    initialRagMode || (initialAllowExternal ? 'creative' : 'hybrid')
+  );
+  const allowExternal = ragMode === 'creative';
 
   // Execution state
   const [loading, setLoading] = useState<boolean>(false);
@@ -268,7 +273,8 @@ export function QuizComponent({
           courseCode,
           sources: selectedSources,
           sourceNames: selectedSources.map(s => s.name),
-          allowExternalSource: allowExternal,
+          allowExternalSource: ragMode === 'creative',
+          ragMode,
           model: selectedModel,
         }),
       });
@@ -814,7 +820,7 @@ export function QuizComponent({
             </div>
           </div>
 
-          <div className="level-selector" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+          <div className="level-selector" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
             {[
               {
                 id: 'multiple_choice' as SupportedQuizType,
@@ -920,27 +926,100 @@ export function QuizComponent({
         {/* Section 5: External Knowledge Option */}
         <div>
           <div className="tool-section-label">5. PHẠM VI NỘI DUNG RA ĐỀ</div>
-          <button
-            type="button"
-            className={`level-card ${allowExternal ? 'active' : ''}`}
-            onClick={() => setAllowExternal(prev => !prev)}
-            style={{ width: '100%' }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                {allowExternal ? <Globe size={15} /> : <Lock size={15} />}
-                {allowExternal ? 'Cho phép câu hỏi liên hệ thực tiễn ngoài giáo trình' : 'Bám sát nghiêm ngặt tài liệu được cung cấp'}
-              </strong>
-              <span className="level-badge" style={{ background: allowExternal ? 'rgba(56, 189, 248, 0.2)' : undefined }}>
-                {allowExternal ? 'BẬT' : 'TẮT'}
-              </span>
-            </div>
-            <small>
-              {allowExternal
-                ? 'Đề thi tích hợp các câu hỏi tình huống thực tế trong ngành, ứng dụng hiện đại và câu hỏi tư duy mở rộng.'
-                : 'Đề thi tập trung hoàn toàn vào nội dung văn bản tài liệu môn học đã chọn.'}
-            </small>
-          </button>
+          <div className="level-selector">
+            <button
+              type="button"
+              className={`level-card ${ragMode === 'strict' ? 'active' : ''}`}
+              onClick={() => setRagMode('strict')}
+              style={{
+                border: ragMode === 'strict' ? '1.5px solid #ef4444' : undefined,
+                background: ragMode === 'strict' ? 'rgba(239, 68, 68, 0.12)' : undefined,
+                boxShadow: ragMode === 'strict' ? '0 0 16px rgba(239, 68, 68, 0.25)' : undefined,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Lock size={15} style={{ color: '#ef4444' }} />
+                  <span>Bám sát (Strict)</span>
+                </strong>
+                <span
+                  className="level-badge"
+                  style={{
+                    background: ragMode === 'strict' ? 'rgba(239, 68, 68, 0.25)' : undefined,
+                    color: ragMode === 'strict' ? '#fca5a5' : undefined,
+                    border: ragMode === 'strict' ? '1px solid rgba(239, 68, 68, 0.35)' : undefined,
+                  }}
+                >
+                  100% Giáo trình
+                </span>
+              </div>
+              <small style={{ color: ragMode === 'strict' ? '#fca5a5' : undefined }}>
+                100% bám sát tài liệu bài giảng đã chọn. Không suy diễn kiến thức ngoài giáo trình.
+              </small>
+            </button>
+
+            <button
+              type="button"
+              className={`level-card ${ragMode === 'hybrid' ? 'active' : ''}`}
+              onClick={() => setRagMode('hybrid')}
+              style={{
+                border: ragMode === 'hybrid' ? '1.5px solid #f59e0b' : undefined,
+                background: ragMode === 'hybrid' ? 'rgba(245, 158, 11, 0.12)' : undefined,
+                boxShadow: ragMode === 'hybrid' ? '0 0 16px rgba(245, 158, 11, 0.25)' : undefined,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Sparkles size={15} style={{ color: '#f59e0b' }} />
+                  <span>RAG Lai (Hybrid)</span>
+                </strong>
+                <span
+                  className="level-badge"
+                  style={{
+                    background: ragMode === 'hybrid' ? 'rgba(245, 158, 11, 0.25)' : undefined,
+                    color: ragMode === 'hybrid' ? '#fcd34d' : undefined,
+                    border: ragMode === 'hybrid' ? '1px solid rgba(245, 158, 11, 0.35)' : undefined,
+                  }}
+                >
+                  Cân bằng
+                </span>
+              </div>
+              <small style={{ color: ragMode === 'hybrid' ? '#fcd34d' : undefined }}>
+                Ưu tiên giáo trình; tự động mở rộng câu hỏi tình huống thực tế và bài tập áp dụng khi thiếu dữ kiện.
+              </small>
+            </button>
+
+            <button
+              type="button"
+              className={`level-card ${ragMode === 'creative' ? 'active' : ''}`}
+              onClick={() => setRagMode('creative')}
+              style={{
+                border: ragMode === 'creative' ? '1.5px solid #38bdf8' : undefined,
+                background: ragMode === 'creative' ? 'rgba(56, 189, 248, 0.12)' : undefined,
+                boxShadow: ragMode === 'creative' ? '0 0 16px rgba(56, 189, 248, 0.25)' : undefined,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Globe size={15} style={{ color: '#38bdf8' }} />
+                  <span>Sáng tạo (Creative)</span>
+                </strong>
+                <span
+                  className="level-badge"
+                  style={{
+                    background: ragMode === 'creative' ? 'rgba(56, 189, 248, 0.25)' : undefined,
+                    color: ragMode === 'creative' ? '#38bdf8' : undefined,
+                    border: ragMode === 'creative' ? '1px solid rgba(56, 189, 248, 0.35)' : undefined,
+                  }}
+                >
+                  Mở rộng
+                </span>
+              </div>
+              <small style={{ color: ragMode === 'creative' ? '#7dd3fc' : undefined }}>
+                Tự do mở rộng các câu hỏi thực tế ngành nghề, case study thực tế, công nghệ mới và tư duy đa chiều.
+              </small>
+            </button>
+          </div>
         </div>
 
         <button

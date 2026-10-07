@@ -55,7 +55,27 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   }
 }
 
-export async function registerFcmToken(userId: number, promptIfNeeded = false): Promise<string | null> {
+export async function registerFcmToken(
+  userId: number,
+  promptIfNeeded = false,
+  userRole?: string
+): Promise<string | null> {
+  // Push notifications and FCM tokens are strictly for STUDENTS. Skip teachers completely.
+  if (userRole === 'teacher') {
+    return null;
+  }
+  try {
+    const stored = localStorage.getItem('moodleUser');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed?.role === 'teacher') {
+        return null;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return null;
   }
@@ -95,7 +115,7 @@ export async function registerFcmToken(userId: number, promptIfNeeded = false): 
     await fetch('/api/fcm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, token, deviceId: getDeviceId(), deviceType: 'web' }),
+      body: JSON.stringify({ userId, token, deviceId: getDeviceId(), deviceType: 'web', role: userRole || 'student' }),
     });
     return token;
   } catch (err) {

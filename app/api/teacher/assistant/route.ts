@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
-import { generateText } from '@/models/registry';
+import { generateText, detectTaskCategory } from '@/models/registry';
 import { supabaseAdmin } from '@/lib/supabase';
 import { parseDocumentFromUrl } from '@/lib/document-parser';
 import {
   scoreAndSelectChunks,
   formatChunksForPrompt,
   chunkDocument,
+  filterSourcesByPromptMetadata,
   type DocumentChunk,
 } from '@/lib/rag';
 import { getPersonalMaterials } from '@/lib/firebase-data';
@@ -13,7 +14,13 @@ import {
   getStoredCourseEmbeddings,
   vectorizeAndStoreLmsSource,
   getExistingCourseFileIds,
+  isWebOrTransientSource,
+  hydrateChunksWithParentText,
 } from '@/lib/supabase-vector';
+import { stripFluff, COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
+import { getCircuitBreakerNotice } from '@/lib/language-detector';
+import { findCachedAnswer, storeCachedAnswer, isPersonalQuery } from '@/lib/semantic-cache';
+import type { RagMode, CitationSource } from '@/app/types';
 
 interface ChatHistoryItem {
   role: 'user' | 'ai' | 'model' | 'assistant';
@@ -79,8 +86,11 @@ export async function POST(request: Request) {
       students,
       gradeColumns = [],
       upcomingEvents = [],
-      allowExternalSource = false,
+      ragMode: rawRagMode,
+      allowExternalSource: legacyAllowExternalSource = false,
       answerStyle = 'concise',
+      stop,
+      stopSequences,
     } = (await request.json()) as {
       question?: string;
       course?: string;
@@ -93,15 +103,49 @@ export async function POST(request: Request) {
       students?: StudentItem[] | StudentSummary;
       gradeColumns?: GradeColumnSummary[];
       upcomingEvents?: UpcomingEventItem[];
+      ragMode?: RagMode;
       allowExternalSource?: boolean;
       answerStyle?: 'concise' | 'detailed';
+      stop?: string[];
+      stopSequences?: string[];
     };
 
     if (!question.trim()) {
       return NextResponse.json({ error: 'Câu hỏi không được để trống.' }, { status: 400 });
     }
 
+    const ragMode: RagMode = rawRagMode || (legacyAllowExternalSource ? 'creative' : 'hybrid');
+    const allowExternalSource = ragMode === 'creative';
     const moodleCourseId = Number(courseId) || undefined;
+    const isManualModel = Boolean(model && model !== 'auto');
+
+    // 0. Semantic Caching (Check duplicate queries to save quota when not running manual model testing)
+    if (!isManualModel && !isPersonalQuery(question)) {
+      try {
+        const cachedHit = await findCachedAnswer({
+          question: `[mode:${ragMode}] ${question}`,
+          courseId: moodleCourseId,
+        });
+
+        if (cachedHit) {
+          const cleanCachedAnswer = stripFluff(cachedHit.answer);
+          console.log(
+            `[Teacher Assistant Semantic Cache] 0ms HIT (Similarity: ${cachedHit.similarity}, Hits: ${cachedHit.hitCount}) for: "${question.slice(0, 40)}..."`
+          );
+          return NextResponse.json({
+            answer: cleanCachedAnswer,
+            sources: [],
+            cached: true,
+            ragMode,
+            model: 'Semantic Cache (0ms)',
+            provider: 'cache',
+          });
+        }
+      } catch (cacheErr) {
+        console.warn('Teacher Assistant Semantic Cache lookup error:', cacheErr);
+      }
+    }
+
     const effectiveSources = Array.isArray(sources) ? sources : [];
     const effectiveSourceNames = Array.isArray(sourceNames) && sourceNames.length > 0
       ? sourceNames
@@ -110,17 +154,10 @@ export async function POST(request: Request) {
     // 1. Retrieve ONLY checked course documents for RAG grounding
     let documentContext = '';
     const docMap = new Map<string, string>();
-    const isStudentUploadSource = (src: SourceItem) =>
-      Boolean(
-        src.isStudentUpload ||
-        src.id?.startsWith('mat-') ||
-        src.id?.startsWith('upload-') ||
-        src.id?.startsWith('url-') ||
-        src.id?.startsWith('note-')
-      );
-
-    const checkedUploadSources = effectiveSources.filter(isStudentUploadSource);
-    const checkedLmsSources = effectiveSources.filter(s => !isStudentUploadSource(s));
+    // Metadata Filtering ("Judge the book by its cover") to skip irrelevant sources before fetch/embedding
+    const preFilteredSources = filterSourcesByPromptMetadata(effectiveSources, question);
+    const checkedUploadSources = preFilteredSources.filter(isWebOrTransientSource);
+    const checkedLmsSources = preFilteredSources.filter(s => !isWebOrTransientSource(s));
 
     // A. For checked LMS sources in Supabase pgvector:
     let storedLmsChunks: DocumentChunk[] = [];
@@ -246,7 +283,29 @@ export async function POST(request: Request) {
     });
 
     const lowerQ = question.toLowerCase();
+    const isPedagogicalTask =
+      lowerQ.includes('soạn') ||
+      lowerQ.includes('câu hỏi') ||
+      lowerQ.includes('thảo luận') ||
+      lowerQ.includes('bài tập') ||
+      lowerQ.includes('đề thi') ||
+      lowerQ.includes('giáo án') ||
+      lowerQ.includes('bài giảng') ||
+      lowerQ.includes('kế hoạch') ||
+      lowerQ.includes('gợi ý') ||
+      lowerQ.includes('rubric') ||
+      lowerQ.includes('hoạt động');
+
+    const isChapterIntent =
+      lowerQ.includes('chương') ||
+      lowerQ.includes('bài 1') ||
+      lowerQ.includes('bài đầu') ||
+      lowerQ.includes('chương 1') ||
+      lowerQ.includes('chương đầu');
+
     const isOverviewQuery =
+      isPedagogicalTask ||
+      isChapterIntent ||
       lowerQ.includes('file') ||
       lowerQ.includes('tài liệu') ||
       lowerQ.includes('slide') ||
@@ -255,54 +314,6 @@ export async function POST(request: Request) {
       lowerQ.includes('mục lục') ||
       lowerQ.includes('giới thiệu') ||
       lowerQ.includes('đề tài');
-
-    if (filteredCandidateChunks.length > 0) {
-      try {
-        const relevantChunks = scoreAndSelectChunks(filteredCandidateChunks, question, {
-          topK: 8,
-          maxTotalChars: 20000,
-          minSimilarity: 0.12,
-        });
-
-        // If the question is generic ("nội dung file", "tóm tắt", "slide này nói gì") or no chunk hit high score,
-        // guarantee lead chunks of the checked documents are included.
-        if (isOverviewQuery || relevantChunks.length < 2) {
-          // Prepend lead chunks of each checked document to give the AI full context
-          const leadChunks: DocumentChunk[] = [];
-          const seenChunkIds = new Set(relevantChunks.map(c => c.id));
-          for (const title of allowedTitles) {
-            const docChunks = filteredCandidateChunks.filter(c =>
-              c.docTitle.toLowerCase().trim() === title ||
-              c.docTitle.toLowerCase().includes(title) ||
-              title.includes(c.docTitle.toLowerCase())
-            );
-            docChunks.slice(0, 15).forEach(c => {
-              if (!seenChunkIds.has(c.id)) {
-                leadChunks.push(c);
-                seenChunkIds.add(c.id);
-              }
-            });
-          }
-          const merged = [...leadChunks, ...relevantChunks].slice(0, 24);
-          documentContext = formatChunksForPrompt(merged);
-        } else {
-          documentContext = formatChunksForPrompt(relevantChunks);
-        }
-      } catch (ragErr) {
-        console.warn('Teacher Assistant RAG retrieval error:', ragErr);
-        // Fallback: take top slices of each available doc
-        documentContext = filteredCandidateChunks
-          .slice(0, 8)
-          .map((c, idx) => `--- [${idx + 1}] "${c.docTitle}" ---\n${c.text.slice(0, 2000)}`)
-          .join('\n\n');
-      }
-    }
-
-    const ragDocuments = filteredCandidateChunks.slice(0, 15).map((c, idx) => ({
-      id: c.id || `doc_${idx + 1}`,
-      title: c.docTitle || `Tài liệu ${idx + 1}`,
-      text: c.text,
-    }));
 
     // 2. Build Upcoming Events context for Course Reference
     let eventsContext = '';
@@ -383,8 +394,135 @@ export async function POST(request: Request) {
       }
     }
 
+    const isGradeQuery =
+      lowerQ.includes('điểm') ||
+      lowerQ.includes('sinh viên') ||
+      lowerQ.includes('học lực') ||
+      lowerQ.includes('phổ điểm') ||
+      lowerQ.includes('danh sách');
+    const isEventQuery =
+      lowerQ.includes('lịch') ||
+      lowerQ.includes('hạn') ||
+      lowerQ.includes('deadline') ||
+      lowerQ.includes('sự kiện');
+
+    const hasInternalCourseData =
+      (isGradeQuery && gradebookContext.trim().length > 0) ||
+      (isEventQuery && eventsContext.trim().length > 0);
+
+    let isFallback = false;
+
+    // Strict Mode Circuit Breaker (When no candidates exist and not an internal data inquiry)
+    if (ragMode === 'strict' && filteredCandidateChunks.length === 0 && !hasInternalCourseData) {
+      console.log(`[Teacher Assistant Circuit Breaker] 0 candidate chunks in strict mode: "${question.slice(0, 50)}"`);
+      return NextResponse.json({
+        answer: getCircuitBreakerNotice(question),
+        sources: [],
+        cached: false,
+        ragMode: 'strict',
+        isFallback: false,
+        model: 'Circuit Breaker (0 tokens)',
+        provider: 'guardrail',
+      });
+    } else if (ragMode === 'hybrid' && filteredCandidateChunks.length === 0 && !hasInternalCourseData) {
+      isFallback = true;
+    }
+
+    if (filteredCandidateChunks.length > 0) {
+      try {
+        let relevantChunks = scoreAndSelectChunks(filteredCandidateChunks, question, {
+          topK: 8,
+          maxTotalChars: 20000,
+          minSimilarity: 0.10,
+        });
+
+        const topScore = relevantChunks.length > 0
+          ? Math.max(
+              relevantChunks[0].similarityScore ?? 0,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (relevantChunks[0] as any).rerankScore ?? 0
+            )
+          : 0;
+
+        // Strict Mode Circuit Breaker (Scored 0 relevant chunks or topScore < 0.5)
+        if (ragMode === 'strict' && (relevantChunks.length === 0 || topScore < 0.5) && !isOverviewQuery && !hasInternalCourseData) {
+          console.log(`[Teacher Assistant Circuit Breaker] topScore ${topScore} < 0.5 or 0 relevant chunks: "${question.slice(0, 50)}"`);
+          return NextResponse.json({
+            answer: getCircuitBreakerNotice(question),
+            sources: [],
+            cached: false,
+            ragMode: 'strict',
+            isFallback: false,
+            model: 'Circuit Breaker (0 tokens)',
+            provider: 'guardrail',
+          });
+        }
+
+        if (ragMode === 'hybrid' && (relevantChunks.length === 0 || topScore < 0.5) && !isOverviewQuery && !hasInternalCourseData) {
+          isFallback = true;
+        }
+
+        // If the question is pedagogical, overview, chapter-specific, or yielded few chunks:
+        // Guarantee lead and beginning chunks of each checked document are included!
+        if (isOverviewQuery || relevantChunks.length < 3) {
+          const leadChunks: DocumentChunk[] = [];
+          const seenChunkIds = new Set(relevantChunks.map(c => c.id));
+          for (const title of allowedTitles) {
+            const docChunks = filteredCandidateChunks
+              .filter(c =>
+                c.docTitle.toLowerCase().trim() === title ||
+                c.docTitle.toLowerCase().includes(title) ||
+                title.includes(c.docTitle.toLowerCase())
+              )
+              .sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
+
+            // Pull first 15 chunks (which cover the opening chapters, introduction, and outlines)
+            docChunks.slice(0, 15).forEach(c => {
+              if (!seenChunkIds.has(c.id)) {
+                leadChunks.push(c);
+                seenChunkIds.add(c.id);
+              }
+            });
+          }
+          relevantChunks = [...leadChunks, ...relevantChunks].slice(0, 24);
+        }
+
+        // Hydrate condensed child chunks with full parent text from Firebase
+        const hydratedChunks = await hydrateChunksWithParentText(relevantChunks);
+        documentContext = formatChunksForPrompt(hydratedChunks);
+      } catch (ragErr) {
+        console.warn('Teacher Assistant RAG retrieval error:', ragErr);
+        // Fallback: take top slices of each available doc with hydration
+        const fallbackChunks = await hydrateChunksWithParentText(filteredCandidateChunks.slice(0, 8));
+        documentContext = formatChunksForPrompt(fallbackChunks);
+      }
+    }
+
+    const ragDocuments = filteredCandidateChunks.slice(0, 15).map((c, idx) => ({
+      id: `doc_${idx + 1}`,
+      title: c.docTitle || `Tài liệu ${idx + 1}`,
+      text: c.text,
+    }));
+
     // 4. Build System Instruction with strict separation
     const subjectName = course || 'môn học hiện tại';
+
+    let modeInstruction = '';
+    if (ragMode === 'strict') {
+      modeInstruction = `Bạn là công cụ trích xuất văn bản. CHỈ trả lời dựa trên dữ liệu nằm trong thẻ <document>. Tuyệt đối không sử dụng kiến thức bên ngoài. Nếu dữ liệu trong thẻ không đủ để trả lời, bạn BẮT BUỘC phải nói chính xác: 'Không có thông tin trong tài liệu'.
+- Tuyệt đối cấm sử dụng kiến thức ngoài tài liệu, cấm suy diễn chủ quan hoặc bịa đặt số liệu (Zero Creativity).
+- Triệt tiêu hoàn toàn văn mẫu, không chào hỏi, không kết bài dư thừa.`;
+    } else if (ragMode === 'hybrid') {
+      modeInstruction = `Bạn là trợ lý học tập. Hãy ưu tiên tối đa việc sử dụng thông tin trong thẻ <document> để trả lời. Nếu thẻ <document> trống hoặc thiếu dữ kiện, bạn ĐƯỢC PHÉP dùng kiến thức nền tảng và tri thức chuyên ngành để giải thích thấu đáo cho Giảng viên.
+- QUY TẮC ANTI-FLUFF (TUYỆT ĐỐI KHÔNG PERFORMATIVE / KHÔNG MÀU MÈ NÓI VỀ NGUỒN):
+  + TUYỆT ĐỐI KHÔNG BAO GIỜ nói các câu như: "Dựa trên các tài liệu bạn cung cấp...", "Dựa trên tài liệu được cung cấp...", "Dựa trên kiến thức mở rộng ngoài khóa học...", "Dựa trên các nguồn bên ngoài tôi tìm được...", "Based on the sources provided...", "Based on the external sources I found...".
+  + ĐI THẲNG TRỰC TIẾP VÀO BẢN CHẤT VẤN ĐỀ TỪ TỪ ĐẦU TIÊN (Jump straight to the problem). Tuyệt đối không tạo banner, không tạo callout phân bua về nguồn gốc kiến thức.
+- Bám sát tài liệu đã được cung cấp trong thẻ <document> và trích dẫn chuẩn xác khi có. Cấm chào hỏi xã giao, cấm kết bài thừa thãi.`;
+    } else {
+      modeInstruction = `Bạn là một giảng viên AI uyên bác. Hãy giải thích chi tiết, cặn kẽ và mở rộng vấn đề bằng các ví dụ thực tế, code mẫu hoặc xu hướng công nghệ mới nhất. Bạn được toàn quyền sử dụng kiến thức chuyên môn của mình.
+- Dữ liệu trong thẻ <document> (nếu có) đóng vai trò tham khảo nhẹ, bạn không bị giới hạn trong thẻ này.
+- Triệt tiêu văn mẫu và tiết kiệm token: không chào hỏi, không kết bài thừa thãi.`;
+    }
 
     const systemInstruction = `Bạn là TRỢ LÝ AI CHUYÊN BIỆT CHO GIẢNG VIÊN (Teacher AI Assistant) môn "${subjectName}".
 
@@ -397,27 +535,12 @@ Bạn hỗ trợ Giảng viên với TẤT CẢ các công việc giảng dạy,
 5. PHÂN TÍCH PHỔ ĐIỂM & HIỆU QUẢ GIẢNG DẠY: Khi có dữ liệu sổ điểm, phân tích chính xác điểm số, xác định sinh viên cần hỗ trợ, đánh giá hiệu quả từng cột điểm.
 6. SOẠN NHẬN XÉT SINH VIÊN: Viết feedback chuyên nghiệp, mang tính xây dựng cho từng sinh viên hoặc nhóm dựa trên kết quả học tập.
 
-${allowExternalSource ? `CHẾ ĐỘ MỞ RỘNG KIẾN THỨC & SÁNG TẠO SƯ PHẠM / CÔNG NGHỆ TOÀN DIỆN (EXTERNAL SOURCES ALLOWED):
-- Giảng viên ĐANG BẬT chế độ mở rộng.
-- HÃY PHÁT HUY TỐI ĐA TRÍ TUỆ, TƯ DUY KIẾN TRÚC, KINH NGHIỆM THỰC CHIẾN VÀ NĂNG LỰC SƯ PHẠM CỦA BẠN:
-${answerStyle === 'concise'
-  ? `  + VÌ GIẢNG VIÊN ĐANG CHỌN "Nhanh / Trọng tâm": Khi hỏi về lựa chọn công nghệ / framework / giải pháp, BẮT BUỘC CHỌN ĐÚNG 1 PHƯƠNG ÁN TỐI ƯU NHẤT (SINGLE BEST PICK) kèm 1-2 lý do then chốt. CẤM liệt kê nhiều lựa chọn dông dài, CẤM lập bảng Markdown, CẤM mở bài tự xưng chức danh.`
-  : `  + VÌ GIẢNG VIÊN ĐANG CHỌN "Chi tiết / Chuyên sâu": Khi hỏi về kiến trúc/công nghệ/bài giảng, hãy phân tầng rõ ràng (Backend, Frontend/Mobile, Real-time/Database), phân tích ưu/nhược điểm, case study thực tế và combo stack lý tưởng.`}
-  + TUYỆT ĐỐI KHÔNG mở đầu bằng việc xưng danh "Với vai trò là...", "Tôi là kiến trúc sư...". Đi thẳng vào giải pháp.` : `BỘ QUY TẮC KHÓA KIẾN THỨC NỀN & CHỐNG ẢO GIÁC (REASONING OVER FACT):
-- Chế độ tra cứu tài liệu nghiêm ngặt ĐANG ĐƯỢC BẬT (Nguồn ngoài: TẮT).
-- SỬ DỤNG TÀI LIỆU ĐƯỢC CUNG CẤP TRONG THẺ <DOCUMENTS> LÀM NỀN TẢNG SỰ THẬT DUY NHẤT (FACTS).
-- CẤM BỊA ĐẶT số liệu, định nghĩa, thực thể hoặc kiến thức không có trong tài liệu.
-- TUY NHIÊN, BẠN ĐƯỢC PHÉP sử dụng khả năng tư duy logic và chuyên môn sư phạm của mình để giải thích, tóm tắt, so sánh hoặc ngoại suy dựa trên các sự thật đó để phục vụ công tác giảng dạy một cách tốt nhất.
-- QUY TRÌNH PHẢN HỒI:
-  + Quét thẻ <DOCUMENTS> để tìm các luận điểm, sự thật liên quan.
-  + NẾU TÌM THẤY TRONG TÀI LIỆU: Trả lời bám sát sự thật tài liệu, trích dẫn nguồn [1], [2].
-  + NẾU KHÔNG TÌM THẤY TRONG TÀI LIỆU: BẮT BUỘC trả về đúng mã [OUT_OF_CONTEXT] kèm lời giải thích:
-    "Tài liệu bạn đã tích chọn không đề cập đến nội dung này. Vui lòng tích chọn thêm tài liệu phù hợp ở danh sách bên trái hoặc bật chế độ 'Cho phép nguồn ngoài' để AI tra cứu mở rộng."`}
+${modeInstruction}
 
 QUY TẮC PHÂN ĐỊNH NGUỒN DỮ LIỆU TUYỆT ĐỐI (CỰC KỲ QUAN TRỌNG - KHÔNG ĐƯỢC NHẦM LẪN):
 1. MỤC "CÁC TÀI LIỆU BÀI GIẢNG / HỌC TẬP ĐƯỢC CHỌN TỪ CỘT TRÁI":
    - Đây là tài liệu giáo trình, bài giảng, slide PowerPoint, tài liệu đồ án... mà Giảng viên ĐÃ TÍCH CHỌN ở danh sách nguồn tài liệu bên trái màn hình.
-   - Bạn CHỈ ĐƯỢC đọc và trích dẫn kiến thức bài học từ các tài liệu ĐÃ ĐƯỢC TÍCH CHỌN trong thẻ <DOCUMENTS>.
+   - Bạn CHỈ ĐƯỢC đọc và trích dẫn kiến thức bài học từ các tài liệu ĐÃ ĐƯỢC TÍCH CHỌN trong thẻ <document>.
    - KHI GIẢNG VIÊN HỎI VỀ "file này", "slide này", "tài liệu này", "nội dung của file", "tóm tắt bài giảng" hoặc kiến thức chuyên đề: Bạn BẮT BUỘC phải đọc và trả lời từ mục tài liệu được chọn này.
    - TUYỆT ĐỐI KHÔNG ĐƯỢC nhầm lẫn giữa tài liệu bài giảng/slide với phần SỔ ĐIỂM hay LỊCH SỰ KIỆN!
    - TUYỆT ĐỐI KHÔNG đem bảng điểm số của sinh viên ra để tóm tắt cho câu hỏi về nội dung file/slide bài giảng!
@@ -431,26 +554,42 @@ QUY TẮC PHÂN ĐỊNH NGUỒN DỮ LIỆU TUYỆT ĐỐI (CỰC KỲ QUAN TR�
    - Dùng khi giảng viên hỏi về thời hạn nộp bài tập, lịch thi, sự kiện sắp diễn ra của môn học.
 
 QUY TẮC PHONG CÁCH & ĐỊNH DẠNG SƯ PHẠM (BẮT BUỘC):
-1. ĐI THẲNG VÀO NỘI DUNG YÊU CẦU: Không dùng lời chào hỏi xã giao hay kết thúc sáo rỗng. Bắt đầu trực tiếp bằng nội dung tư vấn, phân tích hoặc sản phẩm bài giảng được yêu cầu.
-2. PHONG CÁCH & MỨC ĐỘ CHI TIẾT (BẮT BUỘC TUÂN THỦ):
+1. TRIỆT TIÊU VĂN MẪU, LỜI CHÀO & THÔNG BÁO NGUỒN (ANTI-FLUFF - KHÔNG PERFORMATIVE):
+- TUYỆT ĐỐI CẤM MỌI CÂU TỪ CHÀO HỎI VÀ XÃ GIAO ĐẦU CÂU: CẤM nói "Chào anh/chị", "Chào anh", "Chào chị", "Chào bạn", "Chào thầy/cô", "Kính chào thầy cô", "Xin chào", "Dạ vâng", "Thưa thầy cô", v.v. Kèm mọi icon chào mừng (như 🎓, 👋, 😊).
+- TUYỆT ĐỐI CẤM MỌI CÂU THÔNG BÁO NGUỒN (CẤM: "Dựa trên tài liệu bạn cung cấp...", "Dựa trên kiến thức mở rộng ngoài khóa học...", "Dựa trên các nguồn bên ngoài tôi tìm được...", "Theo tài liệu...", "Based on the sources provided...", "Based on the external sources I found..."). Nguồn tài liệu đã có hệ thống trích dẫn và hiển thị ở chân trang.
+- ĐI THẲNG TRỰC TIẾP VÀO NỘI DUNG VẤN ĐỀ (Jump straight to the problem): Bắt đầu câu trả lời ngay từ từ đầu tiên bằng bản chất chuyên môn hoặc giải pháp sư phạm (Ví dụ: "ReactJS là thư viện JavaScript...", KHÔNG CÓ bất kỳ chữ chào hay chữ rào đón nguồn nào đứng trước).
+- TUYỆT ĐỐI CẤM VĂN MẪU KẾT BÀI THỪA: Cấm các câu như "Hy vọng thông tin này giúp ích cho thầy cô...", "Hy vọng giáo án...", "Chúc thầy cô...", "Tóm lại,...", "Kết luận:...". Ngắt bài ngay khi hoàn thành nội dung trọng tâm.
+2. ĐỊNH DẠNG CODE & THUẬT NGỮ CHUẨN MỰC:
+- Các thuật ngữ chuyên môn, thư viện, tên hàm, API, lệnh (như \`router.push\`, \`router.query\`, \`ReactJS\`, \`Next.js\`, \`useState\`) BẮT BUỘC đặt trong cặp backtick \`code\`. In đậm **từ khóa then chốt** để tăng tính trực quan.
+3. CHẶN ĐỨNG TỪ NGỮ ĐIỀN KHUYẾT RẬP KHUÔN (ANTI-PLACEHOLDER):
+- TUYỆT ĐỐI KHÔNG xuất các thẻ placeholder giữ chỗ rập khuôn dạng: [Tên sinh viên], [Tên bạn], [Tên giảng viên], [Ngày/tháng], [Chèn ví dụ tại đây], [Nội dung...].
+- Tự động điền dữ liệu thực tế từ ngữ cảnh môn học đã có, hoặc diễn đạt thành câu văn tự nhiên, hoàn chỉnh 100% để giảng viên có thể sử dụng được ngay mà không cần điền khuyết thủ công.
+4. ZERO-SHOT ROLEPLAY (NHẬP VAI THỰC CHIẾN TỰ NHIÊN):
+- Nhập vai Trợ lý Sư phạm Đại học cấp cao, giàu kinh nghiệm thực tế, am hiểu sâu sắc giáo trình và thực tiễn ngành nghề.
+- Trình bày sống động, chuyên nghiệp, giàu giá trị ứng dụng thực tiễn; tuyệt đối không trả lời máy móc rập khuôn sách vở.
+5. PHONG CÁCH & MỨC ĐỘ CHI TIẾT (BẮT BUỘC TUÂN THỦ):
 ${answerStyle === 'detailed'
-  ? '- Đang chọn "Chi tiết / Chuyên sâu": Phân tích toàn diện, sâu sắc, giải thích cặn kẽ nguyên lý, dẫn chứng đầy đủ, lập bảng so sánh hoặc hướng dẫn từng bước.'
-  : '- Đang chọn "Nhanh / Trọng tâm": TUÂN THỦ NGHIÊM NGẶT độ dài dưới 80-150 từ (hoặc tối đa 2-3 gạch đầu dòng), đi thẳng vào kết luận/giải pháp then chốt. KHI HỎI NÊN DÙNG GÌ, BẮT BUỘC CHỌN ĐÚNG 1 CÁI DUY NHẤT. CẤM lập bảng Markdown, CẤM chia nhiều mục La Mã, không dông dài.'}
-3. VĂN PHONG HỌC THUẬT CHUẨN MỰC: Sử dụng ngôn ngữ chuẩn sư phạm đại học, trang trọng, khúc chiết, chuẩn xác. Tuyệt đối không dùng phong cách suồng sã hay mỉa mai.
-4. TOÁN HỌC: Sử dụng LaTeX chuẩn $công_thức$ (ví dụ: $O(n \\log n)$, $\\sum_{i=1}^{n}$).
-5. BẢNG BIỂU: ${answerStyle === 'concise' ? 'Ở chế độ "Nhanh / Trọng tâm", CẤM dùng bảng Markdown Table.' : 'Dùng thẻ <br/> xuống dòng trong ô bảng Markdown. Không đặt code block bên trong ô bảng.'}
-6. Khi soạn câu hỏi trắc nghiệm, trình bày rõ đáp án đúng và lời giải thích.
-7. LIÊN KẾT NGUỒN NGOÀI: ${answerStyle === 'concise' ? 'Tối đa 1 link duy nhất nhúng inline [Tên](url). CẤM spam danh sách link.' : 'Mọi liên kết URL phải nhúng inline trực tiếp vào câu chữ dạng [Tên](https://...). TUYỆT ĐỐI KHÔNG tạo riêng từng gạch đầu dòng chỉ để dán link (như "• [Link](...)"). Tuyệt đối không tự bịa link.'}`;
+  ? '- Đang chọn "Chi tiết / Chuyên sâu": ĐẢM BẢO ĐỘ DÀI TỐI THIỂU BẰNG 1/2 GIỚI HẠN TOKEN CỦA PHONG CÁCH NHANH (tối thiểu từ 350 - 450 từ trở lên). Phân tích toàn diện, sâu sắc, giải thích cặn kẽ nguyên lý, dẫn chứng đầy đủ, lập bảng so sánh hoặc hướng dẫn từng bước chi tiết.'
+  : '- Đang chọn "Nhanh / Trọng tâm": Trình bày cô đọng, súc tích trong 1-2 đoạn văn ngắn (hoặc tối đa 2-3 gạch đầu dòng), đi thẳng vào kết luận và giải pháp then chốt. KHI HỎI NÊN DÙNG GÌ, BẮT BUỘC CHỌN ĐÚNG 1 CÁI DUY NHẤT. CẤM lập bảng Markdown, CẤM chia nhiều mục La Mã, không dông dài. TUYỆT ĐỐI KHÔNG viết nháp, không đếm từ, không phân tích yêu cầu đề bài.'}
+6. VĂN PHONG HỌC THUẬT CHUẨN MỰC: Sử dụng ngôn ngữ chuẩn sư phạm đại học, trang trọng, khúc chiết, chuẩn xác. Tuyệt đối không dùng phong cách suồng sã hay mỉa mai.
+7. QUY TẮC ĐỒNG BỘ NGÔN NGỮ (LANGUAGE CONFORMANCE - BẮT BUỘC):
+- Luôn nhận diện và phản hồi bằng CHÍNH XÁC ngôn ngữ mà Giảng viên sử dụng trong câu hỏi (English, Español, Français, Deutsch, 日本語, 中文...).
+- TIẾNG VIỆT LUÔN LÀ NGÔN NGỮ MẶC ĐỊNH (Vietnamese is always the default): Nếu câu hỏi bằng tiếng Việt, câu hỏi hỗn hợp hoặc không rõ ngôn ngữ, BẮT BUỘC phản hồi hoàn toàn bằng Tiếng Việt chuẩn mực sư phạm.
+- Toàn bộ giáo án, bài tập và tài liệu soạn thảo phải đồng nhất theo ngôn ngữ của yêu cầu.
+8. TOÁN HỌC: Sử dụng LaTeX chuẩn $công_thức$ (ví dụ: $O(n \\log n)$, $\\sum_{i=1}^{n}$).
+9. BẢNG BIỂU: ${answerStyle === 'concise' ? 'Ở chế độ "Nhanh / Trọng tâm", CẤM dùng bảng Markdown Table.' : 'Dùng thẻ <br/> xuống dòng trong ô bảng Markdown. Không đặt code block bên trong ô bảng.'}
+10. Khi soạn câu hỏi trắc nghiệm, trình bày rõ đáp án đúng và lời giải thích.
+11. LIÊN KẾT NGUỒN NGOÀI: ${answerStyle === 'concise' ? 'Tối đa 1 link duy nhất nhúng inline [Tên](url). CẤM spam danh sách link.' : 'Mọi liên kết URL phải nhúng inline trực tiếp vào câu chữ dạng [Tên](https://...). TUYỆT ĐỐI KHÔNG tạo riêng từng gạch đầu dòng chỉ để dán link (như "• [Link](...)"). Tuyệt đối không tự bịa link.'}`;
 
     // 5. Build Grounded Context Prompt
     let contextSection = `MÔN HỌC: ${course} (Mã môn: ${courseCode || 'N/A'})\n\n`;
 
-    // Document context section (Only checked sources) inside <DOCUMENTS> tags
-    contextSection += `=== CÁC TÀI LIỆU BÀI GIẢNG / HỌC TẬP ĐƯỢC CHỌN TỪ CỘT TRÁI ===\n<DOCUMENTS>\n`;
+    // Document context section (Only checked sources) inside <document> tags
+    contextSection += `=== CÁC TÀI LIỆU BÀI GIẢNG / HỌC TẬP ĐƯỢC CHỌN TỪ CỘT TRÁI ===\n<document>\n`;
     if (documentContext.trim()) {
-      contextSection += `${documentContext}\n</DOCUMENTS>\n\n`;
+      contextSection += `${documentContext}\n</document>\n\n`;
     } else {
-      contextSection += `Danh sách tài liệu đang chọn: ${effectiveSourceNames.join(', ') || '(Không có tài liệu nào được tích chọn)'}\n(Không có tài liệu nào được tích chọn hoặc tài liệu chưa có nội dung văn bản)\n</DOCUMENTS>\n\n`;
+      contextSection += `Danh sách tài liệu đang chọn: ${effectiveSourceNames.join(', ') || '(Không có tài liệu nào được tích chọn)'}\n(Không có tài liệu nào được tích chọn hoặc tài liệu chưa có nội dung văn bản)\n</document>\n\n`;
     }
 
     // Gradebook context section (Course reference)
@@ -463,13 +602,14 @@ ${answerStyle === 'detailed'
       contextSection += `=== LỊCH TRÌNH & SỰ KIỆN SẮP TỚI CỦA KHÓA HỌC (CHỈ DÙNG KHI HỎI VỀ DEADLINE / SỰ KIỆN) ===\n${eventsContext}\n\n`;
     }
 
-    const promptAnchor = answerStyle === 'concise' && !isOverviewQuery
-      ? `\n\n[LỆNH TỐI CAO - NGHIÊM NGẶT TUÂN THỦ]:
-Giảng viên đang chọn chế độ 'Nhanh / Trọng tâm'.
-1. NẾU CÂU HỎI VỀ LỰA CHỌN CÔNG NGHỆ / FRAMEWORK / GIẢI PHÁP: Bạn BẮT BUỘC CHỈ ĐƯỢC CHỌN 1 ĐÁP ÁN DUY NHẤT TỐI ƯU NHẤT (Single Best Pick). Nêu tên trực tiếp ở câu đầu và nêu 1-2 lý do then chốt. CẤM liệt kê nhiều lựa chọn, CẤM phân tầng dài dòng, CẤM tự xưng danh phận.
-2. TUYỆT ĐỐI CẤM DÙNG BẢNG BIỂU (Markdown Table). CẤM chèn danh sách nhiều link.
-3. ĐỘ DÀI TỐI ĐA: Dưới 150 từ, trả lời thẳng thắn trong 1-2 đoạn văn.`
-      : '';
+    const promptAnchor = `\n\n[LỆNH BỔ TRỢ BẮT BUỘC - ANTI-FLUFF, ANTI-PLACEHOLDER & TIẾT KIỆM TOKEN]:
+1. TUYỆT ĐỐI CẤM CHÀO HỎI VÀ CẤM THÔNG BÁO NGUỒN (CẤM: "Chào anh/chị", "Dựa trên tài liệu bạn cung cấp...", "Dựa trên kiến thức mở rộng...", "Based on the sources provided..."). ĐI THẲNG TRỰC TIẾP VÀO NỘI DUNG VẤN ĐỀ TỪ TỪ ĐẦU TIÊN (JUMP STRAIGHT TO THE PROBLEM).
+2. CẤM KẾT BÀI VĂN MẪU ("Hy vọng...", "Tóm lại...", "Kết luận:...").
+3. ANTI-PLACEHOLDER: Tuyệt đối không để lại các thẻ giữ chỗ [Tên sinh viên], [Chèn ví dụ], [Ngày/tháng]. Tự động điền dữ liệu thực tế hoặc viết câu văn hoàn chỉnh.
+4. NGÔN NGỮ: Sử dụng CHÍNH XÁC ngôn ngữ của câu hỏi (English -> English, Español -> Español, Français -> Français...), mặc định luôn là Tiếng Việt nếu câu hỏi bằng tiếng Việt hoặc không rõ ngôn ngữ.
+${answerStyle === 'concise' && !isOverviewQuery
+  ? '5. PHONG CÁCH NHANH / TRỌNG TÂM: Trả lời súc tích trong 1-2 đoạn văn ngắn, đi thẳng vào bản chất và giải pháp then chốt.\n6. Nếu hỏi về lựa chọn công nghệ/giải pháp: Chọn đúng 1 phương án tối ưu nhất kèm 1-2 lý do then chốt.\n7. CHỈ XUẤT CÂU TRẢ LỜI: Cấm xuất suy nghĩ nội tâm, cấm viết nháp, cấm đếm từ, cấm lặp lại chỉ thị.'
+  : '5. PHONG CÁCH CHI TIẾT / CHUYÊN SÂU: Đảm bảo độ dài tối thiểu bằng 1/2 giới hạn token của chế độ nhanh (tối thiểu từ 350 - 450 từ trở lên), phân tích cặn kẽ mọi khía cạnh, nguyên lý, dẫn chứng và ví dụ trực quan.'}`;
 
     const userPrompt = `${contextSection}---\nYÊU CẦU CỦA GIẢNG VIÊN: ${question}${promptAnchor}`;
 
@@ -478,25 +618,64 @@ Giảng viên đang chọn chế độ 'Nhanh / Trọng tâm'.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let groundingMetadata: any = null;
 
-    const effectiveTemperature = allowExternalSource
-      ? (answerStyle === 'concise' ? 0.35 : 0.7)
-      : 0.25;
-    const effectiveTopP = allowExternalSource
-      ? (answerStyle === 'concise' ? 0.8 : 0.95)
-      : 0.3;
-    const effectiveDocuments = allowExternalSource ? undefined : ragDocuments;
-    const outOfContextStandardMsg = `Tài liệu bạn đã tích chọn không đề cập đến nội dung này. Vui lòng tích chọn thêm tài liệu phù hợp ở danh sách bên trái hoặc bật chế độ **"Cho phép nguồn ngoài"** để AI tra cứu mở rộng.`;
+    // Dynamic Temperature & Top_P by RAG Mode:
+    // Strict: temperature = 0.0, top_p = 0.0 (Zero creativity, strictly deterministic facts)
+    // Hybrid: temperature = 0.35 (0.30 - 0.40 range), top_p = 0.5
+    // Creative: temperature = 0.80 (0.7 - 0.9 range), top_p = 0.9
+    const effectiveTemperature =
+      ragMode === 'strict'
+        ? 0.0
+        : ragMode === 'hybrid'
+          ? (isFallback ? 0.40 : 0.35)
+          : (answerStyle === 'concise' ? 0.75 : 0.85);
+
+    const effectiveTopP =
+      ragMode === 'strict'
+        ? 0.0
+        : ragMode === 'hybrid'
+          ? 0.50
+          : 0.90;
+
+    const effectiveDocuments = ragMode === 'creative' ? undefined : ragDocuments;
+    const outOfContextStandardMsg = 'Tài liệu khóa học hiện tại không chứa thông tin này.';
 
     let maxTokensLimit: number;
     if (isOverviewQuery) {
       maxTokensLimit = 1500;
     } else if (answerStyle === 'concise') {
-      maxTokensLimit = 250;
+      maxTokensLimit = 800; // Giới hạn token đối với hướng trả lời nhanh
     } else {
-      maxTokensLimit = 2500;
+      maxTokensLimit = 3000; // Hướng trả lời chi tiết: độ dài tối thiểu bằng 1/2 max_token của hướng nhanh
     }
 
+    // ── Stop Sequences (Chuỗi dừng): Triệt tiêu văn mẫu kết bài thừa ──
+    let effectiveStopSequences: string[] | undefined = stop || stopSequences;
+    if (!effectiveStopSequences || effectiveStopSequences.length === 0) {
+      effectiveStopSequences = [...COMMON_FLUFF_STOP_SEQUENCES];
+    }
+
+    let teacherModelError: string | null = null;
+    let chosenModelName = model || 'AI Assistant';
+    let chosenProviderName = model ? model.split(':')[0] : 'auto';
+    let resultFinishReason = 'stop';
+
     try {
+      const isManualModel = Boolean(model && model !== 'auto');
+      const teacherTaskCategory = isOverviewQuery
+        ? 'basic'
+        : (answerStyle === 'concise' ? 'basic' : undefined);
+
+      const effectiveCategory = detectTaskCategory({
+        system: systemInstruction,
+        userPrompt,
+        history: history.slice(-8).map(msg => ({
+          role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
+          content: msg.text,
+        })),
+        documents: effectiveDocuments,
+        taskCategory: teacherTaskCategory,
+      });
+
       const result = await generateText(model, {
         system: systemInstruction,
         userPrompt,
@@ -508,13 +687,31 @@ Giảng viên đang chọn chế độ 'Nhanh / Trọng tâm'.
         topP: effectiveTopP,
         maxTokens: maxTokensLimit,
         documents: effectiveDocuments,
-        googleSearchGrounding: allowExternalSource,
-        allowExternalSource: Boolean(allowExternalSource),
+        googleSearchGrounding: ragMode === 'creative',
+        allowExternalSource: ragMode === 'creative',
+        taskCategory: effectiveCategory,
+        stop: effectiveStopSequences,
+        strictModel: isManualModel,
+        ragMode,
       });
       aiText = result.text;
+      chosenModelName = result.modelName || chosenModelName;
+      chosenProviderName = result.provider || chosenProviderName;
       groundingMetadata = result.groundingMetadata || null;
-    } catch (err) {
-      console.warn('Teacher assistant AI generation failed:', err);
+      if (result.finishReason) resultFinishReason = result.finishReason;
+    } catch (err: unknown) {
+      teacherModelError = err instanceof Error ? err.message : String(err);
+      console.warn(`[Teacher Assistant] Model ${model} execution error:`, teacherModelError);
+    }
+
+    if (teacherModelError) {
+      return NextResponse.json({
+        answer: `⚠️ **Báo cáo lỗi hoạt động của model [${model}]:**\n\n\`\`\`\n${teacherModelError}\n\`\`\`\n\n*Hệ thống đang chạy ở chế độ Kiểm thử Giảng viên: Model này được bắt chạy độc lập (không tự động fallback) để bạn kiểm tra chính xác cách thức hoạt động và phản hồi lỗi của API.*`,
+        sources: [],
+        model: chosenModelName,
+        provider: chosenProviderName,
+        error: teacherModelError,
+      });
     }
 
     if (!aiText) {
@@ -524,13 +721,31 @@ Giảng viên đang chọn chế độ 'Nhanh / Trọng tâm'.
       });
     }
 
-    const isOutOfContext = aiText.includes('[OUT_OF_CONTEXT]');
+    const isOutOfContext =
+      ragMode === 'strict' &&
+      !isPedagogicalTask &&
+      (aiText.includes('[OUT_OF_CONTEXT]') || aiText.includes('[MISSING_CONTEXT]') || aiText.includes('Không có thông tin trong tài liệu'));
     if (isOutOfContext) {
       aiText = outOfContextStandardMsg;
+    } else if (aiText.includes('[OUT_OF_CONTEXT]')) {
+      aiText = aiText.replace(/\[OUT_OF_CONTEXT\]/gi, '').trim();
+    }
+
+    if (!isOutOfContext && aiText) {
+      aiText = stripFluff(aiText);
+    }
+
+    // Save to Semantic Cache if not personal query and not out of context
+    if (!isPersonalQuery(question) && !isOutOfContext && aiText) {
+      storeCachedAnswer({
+        question: `[mode:${ragMode}] ${question}`,
+        answer: aiText,
+        courseId: moodleCourseId,
+      }).catch(() => {});
     }
 
     // 7. Extract grounding sources
-    const citedSources: Array<{ name: string; isExternal: boolean; url: string }> = [];
+    const citedSources: CitationSource[] = [];
     if (!isOutOfContext && groundingMetadata?.groundingChunks?.length) {
       const seenUrls = new Set<string>();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -547,7 +762,12 @@ Giảng viên đang chọn chế độ 'Nhanh / Trọng tâm'.
           }
           if (!seenUrls.has(uri) && citedSources.length < 5) {
             seenUrls.add(uri);
-            citedSources.push({ name: title, isExternal: true, url: uri });
+            citedSources.push({
+              name: title,
+              isExternal: true,
+              url: uri,
+              type: 'external_web',
+            });
           }
         }
       }
@@ -561,14 +781,31 @@ Giảng viên đang chọn chế độ 'Nhanh / Trọng tâm'.
             name,
             isExternal: false,
             url: '',
+            type: 'course_material',
           });
         }
+      });
+    }
+
+    // If hybrid fallback occurred, add the orange warning badge
+    if (isFallback) {
+      citedSources.unshift({
+        name: 'Kiến thức tham khảo ngoài giáo trình',
+        isExternal: false,
+        url: '',
+        type: 'extended_knowledge',
+        isFallback: true,
       });
     }
 
     return NextResponse.json({
       answer: aiText,
       sources: citedSources,
+      model: chosenModelName,
+      provider: chosenProviderName,
+      ragMode,
+      isFallback,
+      finishReason: resultFinishReason,
     });
   } catch (error) {
     console.error('Teacher Assistant Error:', error);

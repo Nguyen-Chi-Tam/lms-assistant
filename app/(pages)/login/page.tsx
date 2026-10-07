@@ -22,16 +22,16 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
-      const data = (await response.json()) as { error?: string; moodleToken?: string; user?: { id?: number } };
+      const data = (await response.json()) as { error?: string; moodleToken?: string; user?: { id?: number; role?: string } };
       if (!response.ok || !data.moodleToken || !data.user) {
         throw new Error(data.error ?? 'Không thể đăng nhập.');
       }
       localStorage.setItem('moodleToken', data.moodleToken);
       localStorage.setItem('moodleUser', JSON.stringify(data.user));
 
-      if (data.user.id) {
+      if (data.user.id && data.user.role !== 'teacher') {
         try {
-          await registerFcmToken(data.user.id, true);
+          await registerFcmToken(data.user.id, true, data.user.role);
         } catch (fcmErr) {
           console.warn('FCM registration on login:', fcmErr);
         }

@@ -19,6 +19,7 @@ import {
   Square,
   Send,
   Plus,
+  Play,
   Search,
   ExternalLink,
   ChevronLeft,
@@ -70,6 +71,7 @@ import type {
   MoodleResource,
   MoodleUser,
   QuizAnalysisData,
+  RagMode,
   StudyToolResponse,
   TutorResponse,
 } from '@/app/types';
@@ -211,6 +213,7 @@ interface GeneratedArtifact {
   id: string;
   name: string;
   data: unknown;
+  originalData?: unknown;
   level: 'simple' | 'standard' | 'complex';
   topic: string;
   orientation?: 'horizontal' | 'vertical';
@@ -225,6 +228,7 @@ function StudyArtifact({
   onGenerate,
   onReset,
   onOrientationChange,
+  onUpdateData,
   onStop,
   copyText,
   notify,
@@ -234,16 +238,17 @@ function StudyArtifact({
   courseTitle: string;
   loading: boolean;
   selectedSourcesCount: number;
-  onGenerate: (level: 'simple' | 'standard' | 'complex', topic: string, allowExternal: boolean) => void;
+  onGenerate: (level: 'simple' | 'standard' | 'complex', topic: string, allowExternal: boolean, ragMode?: RagMode) => void;
   onReset: () => void;
   onOrientationChange?: (artifactId: string, orientation: 'horizontal' | 'vertical') => void;
+  onUpdateData?: (artifactId: string, newData: unknown) => Promise<boolean>;
   onStop?: () => void;
   copyText: (s: string) => void;
   notify: (s: string) => void;
 }) {
   const [selectedLevel, setSelectedLevel] = useState<'simple' | 'standard' | 'complex'>('standard');
   const [topicInput, setTopicInput] = useState('');
-  const [allowExternal, setAllowExternal] = useState<boolean>(false);
+  const [selectedRagMode, setSelectedRagMode] = useState<RagMode>('hybrid');
 
   const toolIcon =
     type === 'Tóm tắt' ? (
@@ -418,33 +423,49 @@ function StudyArtifact({
 
         <div>
           <div className="tool-section-label">3. PHẠM VI DỮ LIỆU THAM KHẢO</div>
-          <button
-            type="button"
-            className={`level-card ${allowExternal ? 'active' : ''}`}
-            onClick={() => setAllowExternal(prev => !prev)}
-            style={{ width: '100%' }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="level-selector">
+            <button
+              type="button"
+              className={`level-card ${selectedRagMode === 'strict' ? 'active' : ''}`}
+              onClick={() => setSelectedRagMode('strict')}
+            >
               <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                {allowExternal ? <Globe size={15} /> : <Lock size={15} />}
-                {allowExternal ? 'Cho phép liên hệ kiến thức thực tiễn bên ngoài' : 'Bám sát nghiêm ngặt tài liệu được cung cấp'}
+                <Lock size={14} style={{ color: selectedRagMode === 'strict' ? '#f87171' : undefined }} />
+                Bám sát (Strict)
               </strong>
-              <span className="level-badge" style={{ background: allowExternal ? 'rgba(56, 189, 248, 0.2)' : undefined }}>
-                {allowExternal ? 'BẬT' : 'TẮT'}
-              </span>
-            </div>
-            <small>
-              {allowExternal
-                ? 'Cho phép AI liên hệ thực tế ngành, ứng dụng hiện đại và mở rộng tư duy chuyên môn.'
-                : 'AI phân tích nghiêm ngặt chỉ dựa trên nội dung tài liệu môn học được cung cấp.'}
-            </small>
-          </button>
+              <small>100% bám sát tài liệu đã chọn, không suy diễn ngoài giáo trình</small>
+            </button>
+
+            <button
+              type="button"
+              className={`level-card ${selectedRagMode === 'hybrid' ? 'active' : ''}`}
+              onClick={() => setSelectedRagMode('hybrid')}
+            >
+              <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Sparkles size={14} style={{ color: selectedRagMode === 'hybrid' ? '#10b981' : undefined }} />
+                RAG Lai (Hybrid)
+              </strong>
+              <small>Ưu tiên giáo trình; tự động bù đắp tri thức chuyên ngành khi thiếu</small>
+            </button>
+
+            <button
+              type="button"
+              className={`level-card ${selectedRagMode === 'creative' ? 'active' : ''}`}
+              onClick={() => setSelectedRagMode('creative')}
+            >
+              <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Globe size={14} style={{ color: selectedRagMode === 'creative' ? '#38bdf8' : undefined }} />
+                Sáng tạo (Creative)
+              </strong>
+              <small>Tự do mở rộng thực tiễn ngành, xu hướng và tư duy đa chiều</small>
+            </button>
+          </div>
         </div>
 
         <button
           type="button"
           className="generate-tool-btn"
-          onClick={() => onGenerate(selectedLevel, topicInput.trim() || courseTitle, allowExternal)}
+          onClick={() => onGenerate(selectedLevel, topicInput.trim() || courseTitle, selectedRagMode === 'creative', selectedRagMode)}
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
         >
           <Sparkles size={16} />
@@ -471,12 +492,25 @@ function StudyArtifact({
   }
 
   if (type === 'Mindmap') {
-    const map = artifact.data as { root: string; branches: Array<{ title: string; items: string[] }>; orientation?: 'horizontal' | 'vertical' };
+    const map = artifact.data as {
+      root?: string;
+      branches?: Array<any>;
+      customLinks?: any[];
+      orientation?: 'horizontal' | 'vertical';
+    };
+    const origData = (artifact.originalData || (artifact.data as any)?.originalData) as {
+      root?: string;
+      branches?: Array<any>;
+      customLinks?: any[];
+    } | undefined;
     const initialOrientation = artifact.orientation || map?.orientation || 'horizontal';
     return (
       <InteractiveMindmap
-        root={map.root || courseTitle}
-        branches={map.branches || []}
+        key={artifact.id || `mindmap-${artifact.topic || 'default'}`}
+        root={map?.root || courseTitle}
+        branches={map?.branches || []}
+        customLinks={map?.customLinks || []}
+        originalData={origData}
         courseTitle={courseTitle}
         levelLabel={levelLabel}
         topic={artifact.topic}
@@ -484,6 +518,11 @@ function StudyArtifact({
         onOrientationChange={(newOrientation) => {
           if (onOrientationChange && artifact.id) {
             onOrientationChange(artifact.id, newOrientation);
+          }
+        }}
+        onSaveData={async (newData) => {
+          if (onUpdateData && artifact.id) {
+            await onUpdateData(artifact.id, newData);
           }
         }}
         onReconfigure={onReset}
@@ -706,10 +745,10 @@ function CourseDetailContent() {
   };
 
   useEffect(() => {
-    if (user?.id) {
-      void registerFcmToken(user.id);
+    if (user?.id && user?.role !== 'teacher') {
+      void registerFcmToken(user.id, false, user.role);
     }
-  }, [user?.id]);
+  }, [user?.id, user?.role]);
 
   // Sync Moodle data and read local caches
   const syncMoodleData = async (force = false) => {
@@ -950,6 +989,26 @@ function CourseDetailContent() {
     return cleanBase;
   }, [moodle, activeCourse.id]);
 
+  // Compute direct LMS URL for student profile
+  const lmsProfileUrl = useMemo(() => {
+    let baseUrl = moodle?.moodleUrl;
+    if (!baseUrl && moodle?.resources?.length) {
+      const resWithUrl = moodle.resources.find(
+        r => r.url && (r.url.startsWith('http://') || r.url.startsWith('https://'))
+      );
+      if (resWithUrl?.url) {
+        try {
+          baseUrl = new URL(resWithUrl.url).origin;
+        } catch {}
+      }
+    }
+    const cleanBase = (baseUrl || 'https://moodletvk.duckdns.org').replace(/\/$/, '');
+    if (user?.id) {
+      return `${cleanBase}/user/profile.php?id=${user.id}`;
+    }
+    return `${cleanBase}/user/profile.php`;
+  }, [moodle, user?.id]);
+
   const [sources, setSources] = useState<CourseSourceItem[]>(courseSources);
   const [checked, setChecked] = useState<boolean[]>(() => new Array(courseSources.length).fill(true));
   const [sourceQuery, setSourceQuery] = useState('');
@@ -1013,11 +1072,14 @@ function CourseDetailContent() {
   const [artifactLoading, setArtifactLoading] = useState(false);
   const artifactAbortRef = useRef<AbortController | null>(null);
   const artifactRequestIdRef = useRef<string | null>(null);
-  const [allowExternalSource, setAllowExternalSource] = useState<boolean>(false);
+  const [ragMode, setRagMode] = useState<RagMode>('hybrid');
+  const allowExternalSource = ragMode === 'creative';
   const [answerStyle, setAnswerStyle] = useState<'concise' | 'detailed'>('concise');
   const [isSourcePanelCollapsed, setIsSourcePanelCollapsed] = useState<boolean>(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-  const [selectedModel] = useState<string>('auto');
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const [selectedModel, setSelectedModel] = useState<string>('auto');
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string; provider: string; label: string; available?: boolean }>>([]);
   const [mounted, setMounted] = useState<boolean>(false);
   useEffect(() => {
     setMounted(true);
@@ -1027,6 +1089,21 @@ function CourseDetailContent() {
       }
     }
   }, []);
+
+  // Fetch available AI models for Teachers to perform Healthcheck
+  useEffect(() => {
+    if (isTeacherCourse) {
+      fetch('/api/models?all=true')
+        .then(res => res.json())
+        .then(data => {
+          const mList = (data as any)?.models;
+          if (mList && Array.isArray(mList)) {
+            setAvailableModels(mList);
+          }
+        })
+        .catch(err => console.warn('Failed to load available models for teacher:', err));
+    }
+  }, [isTeacherCourse]);
   const [showGradeHistory, setShowGradeHistory] = useState<boolean>(false);
   const [showActivityModal, setShowActivityModal] = useState<boolean>(false);
   const [teacherTab, setTeacherTab] = useState<'assistant' | 'grades' | 'quiz' | 'notifications'>('assistant');
@@ -1142,12 +1219,16 @@ function CourseDetailContent() {
                 const o = (artifactData as Record<string, unknown>).orientation;
                 if (o === 'horizontal' || o === 'vertical') orientation = o;
               }
+              const origData = (cd && typeof cd === 'object' && 'originalData' in cd)
+                ? (cd as Record<string, unknown>).originalData
+                : artifactData;
               const hydratedArtifact: GeneratedArtifact = {
                 id: String((a as { id?: string | number }).id || `${toolKey}-${Date.now()}-${Math.random()}`),
                 name: cd && typeof cd === 'object' && typeof (cd as Record<string, unknown>).name === 'string'
                   ? (cd as Record<string, unknown>).name as string
                   : topic,
                 data: artifactData,
+                originalData: origData,
                 level,
                 topic,
                 orientation,
@@ -1666,8 +1747,36 @@ function CourseDetailContent() {
 
   const selectedSourceNames = sources.filter((_, i) => checked[i]).map(s => s.name);
 
+  // Helper: Persist updated messages to chat-sessions database
+  const persistChatSession = (updatedMessages: ChatMessage[], responseModelName?: string) => {
+    const uId = user?.id || 4;
+    const cId = activeCourse.id || 1;
+    fetch('/api/chat-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: uId,
+        userName: user?.fullname || 'Sinh viên',
+        moodleCourseId: cId,
+        sessionId: chatSessionId || undefined,
+        messages: updatedMessages,
+        response_model: responseModelName,
+      }),
+    })
+      .then(response => response.json() as Promise<{ session?: { id?: string } }>)
+      .then(result => {
+        if (result.session?.id) setChatSessionId(String(result.session.id));
+      })
+      .catch(err => console.warn('Chat session persist error:', err));
+  };
+
   // Submit question to LLM
-  const ask = async (customPrompt?: string) => {
+  const ask = async (
+    customPrompt?: string,
+    baseChat?: ChatMessage[],
+    overrideExternalSource?: boolean,
+    overrideRagMode?: RagMode
+  ) => {
     if (loading) {
       stopGeneration();
       return;
@@ -1676,7 +1785,8 @@ function CourseDetailContent() {
     const q = (customPrompt ?? input).trim();
     if (!q) return;
 
-    const nextChat: ChatMessage[] = [...chat, { role: 'user', text: q }];
+    const currentBaseChat = baseChat ?? chat;
+    const nextChat: ChatMessage[] = [...currentBaseChat, { role: 'user', text: q }];
     setChat(nextChat);
     if (!customPrompt) setInput('');
     setLoading(true);
@@ -1691,6 +1801,13 @@ function CourseDetailContent() {
     abortControllerRef.current = controller;
 
     try {
+      const effectiveRagMode: RagMode =
+        overrideRagMode !== undefined
+          ? overrideRagMode
+          : overrideExternalSource !== undefined
+            ? (overrideExternalSource ? 'creative' : 'strict')
+            : ragMode;
+      const isExternalEffective = effectiveRagMode === 'creative';
       const res = await fetch('/api/tutor', {
         method: 'POST',
         headers: {
@@ -1714,14 +1831,26 @@ function CourseDetailContent() {
           })),
           sources: selectedSources,
           sourceNames: selectedSourceNames,
-          sectionId: selectedSources.find(s => s.sectionId)?.sectionId,
-          sectionName: selectedSources.find(s => s.sectionName)?.sectionName,
-          chapter: selectedSources.find(s => s.chapter)?.chapter,
-          allowExternalSource,
+          sectionId:
+            selectedSources.length === 1
+              ? selectedSources[0]?.sectionId
+              : (selectedSources.length > 1 && selectedSources.every(s => s.sectionId && s.sectionId === selectedSources[0]?.sectionId)
+                ? selectedSources[0]?.sectionId
+                : undefined),
+          sectionName:
+            selectedSources.length === 1
+              ? selectedSources[0]?.sectionName
+              : undefined,
+          chapter:
+            selectedSources.length === 1
+              ? selectedSources[0]?.chapter
+              : undefined,
+          ragMode: effectiveRagMode,
+          allowExternalSource: isExternalEffective,
           answerStyle,
           model: selectedModel,
           stream: true,
-          history: chat.slice(1).map(c => ({ role: c.role, text: c.text })),
+          history: currentBaseChat.slice(1).map(c => ({ role: c.role, text: c.text })),
         }),
       });
 
@@ -1783,7 +1912,11 @@ function CourseDetailContent() {
                 });
               }
               if (parsed.delta) {
-                fullAnswer += parsed.delta;
+                if (parsed.replace) {
+                  fullAnswer = parsed.delta;
+                } else {
+                  fullAnswer += parsed.delta;
+                }
                 setChat(v => {
                   const updated = [...v];
                   if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
@@ -1831,13 +1964,22 @@ function CourseDetailContent() {
               if (parsed.done) {
                 if (parsed.model) responseModelName = parsed.model;
                 if (parsed.provider) responseProviderName = parsed.provider;
+                if (parsed.fullText) fullAnswer = parsed.fullText;
+                const msgRagMode = (parsed.ragMode as RagMode) || effectiveRagMode;
+                const msgIsFallback = Boolean(parsed.isFallback);
+                const msgFinishReason = (parsed.finishReason as string) || 'stop';
                 setChat(v => {
                   const updated = [...v];
                   if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
                     updated[updated.length - 1] = {
                       ...updated[updated.length - 1],
+                      text: fullAnswer,
+                      sources: receivedSources.length > 0 ? receivedSources : updated[updated.length - 1].sources,
                       model: responseModelName || updated[updated.length - 1].model,
                       provider: responseProviderName || updated[updated.length - 1].provider,
+                      ragMode: msgRagMode,
+                      isFallback: msgIsFallback,
+                      finishReason: msgFinishReason,
                     };
                   }
                   return updated;
@@ -1854,11 +1996,14 @@ function CourseDetailContent() {
           }
         }
       } else {
-        const data = (await res.json()) as TutorResponse & { model?: string; provider?: string };
+        const data = (await res.json()) as TutorResponse & { model?: string; provider?: string; ragMode?: RagMode; isFallback?: boolean };
         fullAnswer = data.answer ?? '';
         receivedSources = (data.sources ?? []) as Array<string | CitationSource>;
         responseModelName = data.model || 'Groq LPU';
         responseProviderName = data.provider || 'groq';
+        const msgRagMode = data.ragMode || effectiveRagMode;
+        const msgIsFallback = Boolean(data.isFallback);
+        const msgFinishReason = data.finishReason || 'stop';
         setChat(v => {
           const updated = [...v];
           if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
@@ -1868,6 +2013,9 @@ function CourseDetailContent() {
               sources: receivedSources,
               model: responseModelName,
               provider: responseProviderName,
+              ragMode: msgRagMode,
+              isFallback: msgIsFallback,
+              finishReason: msgFinishReason,
             };
           } else {
             updated.push({
@@ -1876,6 +2024,9 @@ function CourseDetailContent() {
               sources: receivedSources,
               model: responseModelName,
               provider: responseProviderName,
+              ragMode: msgRagMode,
+              isFallback: msgIsFallback,
+              finishReason: msgFinishReason,
             });
           }
           return updated;
@@ -1883,8 +2034,6 @@ function CourseDetailContent() {
       }
 
       // Save to chat-sessions database with response_model
-      const uId = user?.id || 4;
-      const cId = activeCourse.id || 1;
       const finalChatMessages: ChatMessage[] = [
         ...nextChat,
         {
@@ -1895,24 +2044,7 @@ function CourseDetailContent() {
           provider: responseProviderName,
         },
       ];
-
-      fetch('/api/chat-sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: uId,
-          userName: user?.fullname || 'Sinh viên',
-          moodleCourseId: cId,
-          sessionId: chatSessionId || undefined,
-          messages: finalChatMessages,
-          response_model: responseModelName,
-        }),
-      })
-        .then(response => response.json() as Promise<{ session?: { id?: string } }>)
-        .then(result => {
-          if (result.session?.id) setChatSessionId(String(result.session.id));
-        })
-        .catch(err => console.warn('Chat session save note:', err));
+      persistChatSession(finalChatMessages, responseModelName);
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') {
         return;
@@ -1940,6 +2072,61 @@ function CourseDetailContent() {
       }
       setLoading(false);
     }
+  };
+
+  // Prompt Actions: Re-answer, Delete, Edit
+  const handleReAnswer = (
+    index: number,
+    promptText: string,
+    overrideExternalSource?: boolean,
+    overrideRagMode?: RagMode
+  ) => {
+    if (loading) return;
+    if (overrideRagMode) {
+      setRagMode(overrideRagMode);
+    } else if (overrideExternalSource !== undefined) {
+      setRagMode(overrideExternalSource ? 'creative' : 'strict');
+    }
+    // Slices conversation to before this prompt so previous question and previous AI answer are cleared immediately
+    const baseChat = chat.slice(0, index);
+    setChat(baseChat);
+    void ask(promptText, baseChat, overrideExternalSource, overrideRagMode);
+  };
+
+  const handleDeletePrompt = (index: number) => {
+    if (loading) return;
+    const next = [...chat];
+    if (next[index + 1] && next[index + 1].role === 'ai') {
+      next.splice(index, 2);
+    } else {
+      next.splice(index, 1);
+    }
+    setChat(next);
+    persistChatSession(next);
+    notify('Đã xóa câu hỏi khỏi cuộc trò chuyện và cơ sở dữ liệu');
+  };
+
+  const handleEditPrompt = (index: number, promptText: string) => {
+    if (loading) return;
+    const next = [...chat];
+    if (next[index + 1] && next[index + 1].role === 'ai') {
+      next.splice(index, 2);
+    } else {
+      next.splice(index, 1);
+    }
+    setChat(next);
+    persistChatSession(next);
+    setInput(promptText);
+
+    setTimeout(() => {
+      if (chatInputRef.current) {
+        chatInputRef.current.focus();
+        const len = promptText.length;
+        chatInputRef.current.setSelectionRange(len, len);
+        chatInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 50);
+    notify('Đã đưa câu hỏi vào khung nhập liệu');
   };
 
   useEffect(() => {
@@ -2002,7 +2189,8 @@ function CourseDetailContent() {
     type: string,
     level: 'simple' | 'standard' | 'complex',
     topic: string,
-    allowExternal?: boolean
+    allowExternal?: boolean,
+    toolRagMode?: RagMode
   ) => {
     setArtifactLoading(true);
     const selectedSources = sources.filter((_, i) => checked[i]);
@@ -2015,7 +2203,10 @@ function CourseDetailContent() {
         : type === 'Slide'
         ? 'slides'
         : 'flashcards';
-    const effectiveAllowExternal = allowExternal !== undefined ? allowExternal : allowExternalSource;
+    const effectiveRagMode: RagMode =
+      toolRagMode ||
+      (allowExternal !== undefined ? (allowExternal ? 'creative' : 'hybrid') : ragMode);
+    const effectiveAllowExternal = effectiveRagMode === 'creative';
 
     if (artifactAbortRef.current) {
       artifactAbortRef.current.abort();
@@ -2052,6 +2243,7 @@ function CourseDetailContent() {
           sources: selectedSources,
           sourceNames: selectedSourceNames,
           level,
+          ragMode: effectiveRagMode,
           allowExternalSource: effectiveAllowExternal,
           model: selectedModel,
         }),
@@ -2064,6 +2256,7 @@ function CourseDetailContent() {
         id: data.artifactId || `${type}-${Date.now()}`,
         name: topic || activeCourse.name,
         data: data.data,
+        originalData: data.data,
         level,
         topic: topic || activeCourse.name,
         orientation: type === 'Mindmap' ? 'horizontal' : undefined,
@@ -2168,6 +2361,51 @@ function CourseDetailContent() {
       }
     } catch (error) {
       console.warn('Lỗi khi lưu hướng sơ đồ tư duy vào cơ sở dữ liệu:', error);
+    }
+  };
+
+  const updateToolArtifactData = async (type: string, artifactId: string, newData: unknown): Promise<boolean> => {
+    // 1. Immediately update in-memory state
+    const currentItem = (artifactsMap[type] || []).find(item => item.id === artifactId);
+    const preservedOriginalData = currentItem?.originalData || (currentItem?.data as any)?.originalData || currentItem?.data;
+
+    setArtifactsMap(prev => ({
+      ...prev,
+      [type]: (prev[type] || []).map(item =>
+        item.id === artifactId
+          ? {
+              ...item,
+              data: newData,
+              originalData: item.originalData || (item.data as any)?.originalData || item.data,
+              orientation: (newData as any)?.orientation || item.orientation,
+            }
+          : item
+      ),
+    }));
+
+    // 2. Persist to Database via PATCH /api/learning-artifacts
+    try {
+      const response = await fetch(`/api/learning-artifacts?id=${encodeURIComponent(artifactId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentData: {
+            data: newData,
+            originalData: preservedOriginalData,
+          },
+          orientation: (newData as any)?.orientation,
+          userId: user?.id || 4,
+          moodleCourseId: activeCourse.id,
+          artifactType: type === 'Mindmap' ? 'mindmap' : type.toLowerCase(),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('Lỗi phản hồi từ máy chủ khi lưu học liệu.');
+      }
+      return true;
+    } catch (error) {
+      console.warn('Lỗi khi lưu dữ liệu học liệu vào CSDL:', error);
+      throw error;
     }
   };
 
@@ -2818,25 +3056,135 @@ function CourseDetailContent() {
                               <Sparkles size={16} />
                             </span>
                           )}
+
+                          {m.role === 'user' && (
+                            <div className="user-message-actions">
+                              <button
+                                type="button"
+                                className="user-action-btn"
+                                onClick={() => handleReAnswer(i, m.text)}
+                                title="Trả lời lại (Re-answer)"
+                              >
+                                <RotateCcw size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                className="user-action-btn delete"
+                                onClick={() => handleDeletePrompt(i)}
+                                title="Xóa (Delete)"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                className="user-action-btn"
+                                onClick={() => handleEditPrompt(i, m.text)}
+                                title="Chỉnh sửa (Edit)"
+                              >
+                                <Pencil size={13} />
+                              </button>
+                            </div>
+                          )}
+
                           <div id={`chat-msg-${i}`} style={{ minWidth: 0, width: '100%' }}>
-                            <MarkdownRenderer
-                              content={m.text}
-                              onAddMaterial={handleAddExternalLinkToPersonalMaterial}
-                              savedUrls={savedUrls}
-                            />
+                            {m.text.includes('[OUT_OF_CONTEXT]') ? (
+                              <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm flex flex-col gap-2.5 my-1">
+                                <div className="flex items-center gap-2 font-semibold text-amber-300">
+                                  <BookOpen size={16} />
+                                  <span>Tài liệu đã chọn chưa đề cập đến nội dung này</span>
+                                </div>
+                                <p className="text-xs text-amber-200/90 leading-relaxed">
+                                  Tài liệu bạn đã tích chọn trong môn <strong>{activeCourse.name}</strong> không có thông tin chi tiết về câu hỏi này. Bạn có thể bật chế độ <strong>Nguồn ngoài</strong> để AI tra cứu mở rộng từ kiến thức chuyên môn thực chiến.
+                                </p>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const prevUserMsg = chat.slice(0, i).reverse().find(msg => msg.role === 'user');
+                                      if (prevUserMsg) {
+                                        handleReAnswer(i - 1, prevUserMsg.text, true);
+                                      } else {
+                                        setRagMode('creative');
+                                      }
+                                    }}
+                                    className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-medium border border-amber-500/40 transition-colors flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <Globe size={13} />
+                                    <span>Bật nguồn ngoài & Trả lời lại ngay</span>
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <MarkdownRenderer
+                                content={m.text}
+                                onAddMaterial={handleAddExternalLinkToPersonalMaterial}
+                                savedUrls={savedUrls}
+                              />
+                            )}
                             {(() => {
                               if (!m.sources || m.sources.length === 0) return null;
-                              const externalSources = m.sources.filter(s => {
-                                if (typeof s === 'object' && s !== null) return Boolean(s.isExternal);
+
+                              // 1. Course document sources (Green/Emerald pills)
+                              const courseSources = m.sources.filter(s => {
+                                if (typeof s === 'object' && s !== null) {
+                                  return s.type === 'course_material' || (!s.isExternal && !s.url && s.type !== 'extended_knowledge');
+                                }
                                 const str = String(s);
-                                return str.includes('➕') || str.toLowerCase().includes('mở rộng') || str.toLowerCase().includes('kiểm chứng') || str.toLowerCase().includes('external');
+                                return !str.includes('➕') && !str.includes('http') && !str.toLowerCase().includes('mở rộng') && !str.toLowerCase().includes('kiểm chứng') && !str.toLowerCase().includes('external');
                               });
 
-                              if (externalSources.length === 0) return null;
+                              // 2. Parametric fallback / Extended knowledge indicator (Amber/Orange pill)
+                              const hasFallbackSource =
+                                Boolean(m.isFallback) ||
+                                m.sources.some(s => typeof s === 'object' && s !== null && (s.isFallback || s.type === 'extended_knowledge')) ||
+                                m.text.includes('Kiến thức mở rộng ngoài khóa học') ||
+                                m.text.includes('Kiến thức mở rộng ngoài giáo trình');
+
+                              // 3. External web sources with URLs (Blue merged pills with save action)
+                              const externalWebSources = m.sources.filter(s => {
+                                if (typeof s === 'object' && s !== null) {
+                                  return Boolean(s.isExternal) && Boolean(s.url) && s.type !== 'extended_knowledge';
+                                }
+                                const str = String(s);
+                                return (str.includes('➕') || str.toLowerCase().includes('kiểm chứng') || str.includes('http://') || str.includes('https://')) && !str.includes('Kiến thức mở rộng');
+                              });
+
+                              if (courseSources.length === 0 && !hasFallbackSource && externalWebSources.length === 0) return null;
 
                               return (
                                 <div className="citations">
-                                  {externalSources.map((s, idx) => {
+                                  {/* Green Course Document Badges */}
+                                  {courseSources.map((s, idx) => {
+                                    const isObj = typeof s === 'object' && s !== null;
+                                    const rawName = isObj ? s.name : String(s);
+                                    const cleanName = rawName.replace(/^(▤|\s*)+/, '').trim();
+                                    const chapter = isObj && s.chapter ? ` (Chương ${s.chapter})` : '';
+                                    return (
+                                      <div
+                                        key={`course-${cleanName}-${idx}`}
+                                        className="citation-pill course-citation"
+                                        title={`Tài liệu môn học được đối chiếu & bám sát: ${cleanName}${chapter}`}
+                                      >
+                                        <BookOpen size={12} style={{ color: '#10b981', flexShrink: 0 }} />
+                                        <span className="citation-text">Nguồn: {cleanName}{chapter}</span>
+                                      </div>
+                                    );
+                                  })}
+
+                                  {/* Orange Extended Knowledge Fallback Badge */}
+                                  {hasFallbackSource && (
+                                    <div
+                                      key="fallback-pill"
+                                      className="citation-pill warning-citation"
+                                      title="Câu trả lời sử dụng tri thức học thuật mở rộng do tài liệu môn học chưa đề cập nội dung này"
+                                    >
+                                      <Sparkles size={12} style={{ color: '#f59e0b', flexShrink: 0 }} />
+                                      <span className="citation-text">Kiến thức tham khảo ngoài giáo trình</span>
+                                    </div>
+                                  )}
+
+                                  {/* Blue External Web Badges with Save button */}
+                                  {externalWebSources.map((s, idx) => {
                                     const isObj = typeof s === 'object' && s !== null;
                                     const rawName = isObj ? s.name : String(s);
                                     const cleanName = rawName.replace(/^(▤|➕|\+\s*|\[Mở rộng\])/, '').trim();
@@ -2851,7 +3199,7 @@ function CourseDetailContent() {
                                     );
 
                                     return (
-                                      <div key={`${cleanName}-${idx}`} className="citation-pill-merged">
+                                      <div key={`ext-${cleanName}-${idx}`} className="citation-pill-merged">
                                         <a
                                           className="citation-link"
                                           href={url}
@@ -2909,7 +3257,6 @@ function CourseDetailContent() {
                                   const isCohere = displayModel.toLowerCase().includes('cohere');
                                   const isGemini = displayModel.toLowerCase().includes('gemini');
                                   const isGroq = displayModel.toLowerCase().includes('groq');
-                                  const isHorde = displayModel.toLowerCase().includes('horde');
                                   const isCache = displayModel.toLowerCase().includes('cache') || displayModel.toLowerCase().includes('bộ nhớ đệm');
 
                                   return (
@@ -2930,8 +3277,6 @@ function CourseDetailContent() {
                                           ? 'rgba(168, 85, 247, 0.16)'
                                           : isGroq
                                           ? 'rgba(249, 115, 22, 0.14)'
-                                          : isHorde
-                                          ? 'rgba(6, 182, 212, 0.16)'
                                           : isCache
                                           ? 'rgba(16, 185, 129, 0.16)'
                                           : 'rgba(56, 189, 248, 0.16)',
@@ -2941,8 +3286,6 @@ function CourseDetailContent() {
                                           ? '#c084fc'
                                           : isGroq
                                           ? '#fb923c'
-                                          : isHorde
-                                          ? '#22d3ee'
                                           : isCache
                                           ? '#34d399'
                                           : '#38bdf8',
@@ -2953,8 +3296,6 @@ function CourseDetailContent() {
                                             ? 'rgba(168, 85, 247, 0.35)'
                                             : isGroq
                                             ? 'rgba(249, 115, 22, 0.35)'
-                                            : isHorde
-                                            ? 'rgba(6, 182, 212, 0.35)'
                                             : isCache
                                             ? 'rgba(16, 185, 129, 0.35)'
                                             : 'rgba(56, 189, 248, 0.35)'
@@ -2970,28 +3311,57 @@ function CourseDetailContent() {
                                   <div />
                                 )}
 
-                                <button
-                                  type="button"
-                                  className={`copy-message-btn ${copiedIndex === i ? 'copied' : ''}`}
-                                  onClick={async () => {
-                                    const el = document.getElementById(`chat-msg-${i}`);
-                                    if (el) {
-                                      await copyRichHtmlForWord(el, m.text);
-                                    } else {
-                                      await navigator.clipboard.writeText(m.text);
-                                    }
-                                    setCopiedIndex(i);
-                                    notify('Đã sao chép nội dung câu trả lời');
-                                    window.setTimeout(() => {
-                                      setCopiedIndex(prev => (prev === i ? null : prev));
-                                    }, 2000);
-                                  }}
-                                  title="Sao chép câu trả lời (hỗ trợ dán vào Word hoặc Markdown)"
-                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                                >
-                                  {copiedIndex === i ? <Check size={13} /> : <Copy size={13} />}
-                                  <span>{copiedIndex === i ? 'Đã sao chép' : 'Sao chép'}</span>
-                                </button>
+                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                  {m.finishReason === 'length' && (
+                                    <button
+                                      type="button"
+                                      className="continue-generate-btn"
+                                      onClick={() => ask('Hãy viết tiếp tục câu trả lời đang dang dở ở trên, tuyệt đối không lặp lại đoạn đã viết.')}
+                                      disabled={loading}
+                                      title="Câu trả lời đã đạt giới hạn độ dài token. Bấm để AI viết tiếp phần còn lại."
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '5px',
+                                        padding: '3px 8px',
+                                        borderRadius: '6px',
+                                        fontSize: '11px',
+                                        fontWeight: 600,
+                                        background: 'linear-gradient(135deg, rgba(249, 115, 22, 0.18), rgba(234, 88, 12, 0.22))',
+                                        color: '#f97316',
+                                        border: '1px solid rgba(249, 115, 22, 0.4)',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s ease',
+                                      }}
+                                    >
+                                      <Play size={11} style={{ fill: '#f97316' }} />
+                                      <span>Viết tiếp</span>
+                                    </button>
+                                  )}
+
+                                  <button
+                                    type="button"
+                                    className={`copy-message-btn ${copiedIndex === i ? 'copied' : ''}`}
+                                    onClick={async () => {
+                                      const el = document.getElementById(`chat-msg-${i}`);
+                                      if (el) {
+                                        await copyRichHtmlForWord(el, m.text);
+                                      } else {
+                                        await navigator.clipboard.writeText(m.text);
+                                      }
+                                      setCopiedIndex(i);
+                                      notify('Đã sao chép nội dung câu trả lời');
+                                      window.setTimeout(() => {
+                                        setCopiedIndex(prev => (prev === i ? null : prev));
+                                      }, 2000);
+                                    }}
+                                    title="Sao chép câu trả lời (hỗ trợ dán vào Word hoặc Markdown)"
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                                  >
+                                    {copiedIndex === i ? <Check size={13} /> : <Copy size={13} />}
+                                    <span>{copiedIndex === i ? 'Đã sao chép' : 'Sao chép'}</span>
+                                  </button>
+                                </div>
                               </div>
                             )}
                           </div>
@@ -3110,6 +3480,7 @@ function CourseDetailContent() {
                       </div>
                     )}
                     <textarea
+                      ref={chatInputRef}
                       value={input}
                       onChange={e => setInput(e.target.value)}
                       onKeyDown={e => {
@@ -3122,34 +3493,51 @@ function CourseDetailContent() {
                     />
                     <div className="chat-compose-footer">
                       <div className="chat-compose-chips">                        
-                        {/* External Sources Toggle Chip */}
+                        {/* 3-State RAG Mode Selector Chip */}
                         <button
                           type="button"
                           onClick={() => {
-                            setAllowExternalSource(prev => {
-                              const next = !prev;
+                            setRagMode(prev => {
+                              const next: RagMode =
+                                prev === 'strict'
+                                  ? 'hybrid'
+                                  : prev === 'hybrid'
+                                    ? 'creative'
+                                    : 'strict';
                               notify(
-                                next
-                                  ? 'Đã bật: Cho phép liên hệ kiến thức thực tiễn ngoài giáo trình'
-                                  : 'Đã bật: Chế độ bám sát nghiêm ngặt tài liệu môn học'
+                                next === 'strict'
+                                  ? '🔒 Chế độ Bám sát nghiêm ngặt: 100% tài liệu môn học, ngắt mạch nếu không có'
+                                  : next === 'hybrid'
+                                    ? '⚡ Chế độ RAG Lai: Ưu tiên tài liệu, tự động mở rộng kiến thức khi thiếu'
+                                    : '🌐 Chế độ Sáng tạo: Ưu tiên tư duy thực tiễn, tra cứu & mở rộng ngoài giáo trình'
                               );
                               return next;
                             });
                           }}
-                          className={`mode-indicator-chip external-source-chip ${allowExternalSource ? 'active-external' : ''}`}
+                          className={`mode-indicator-chip mode-${ragMode}`}
                           title={
-                            allowExternalSource
-                              ? 'Chế độ mở rộng: AI kết hợp giáo trình với kiến thức thực tiễn ngoài giáo trình (Bấm để chuyển sang Bám sát tài liệu)'
-                              : 'Chế độ bám sát: AI phân tích nghiêm ngặt chỉ dựa trên các tài liệu đã chọn (Bấm để bật Nguồn mở rộng)'
+                            ragMode === 'strict'
+                              ? 'Chế độ Bám sát (Strict RAG): 100% sự thật trong tài liệu, ngắt mạch khi thiếu (Bấm để chuyển sang RAG Lai)'
+                              : ragMode === 'hybrid'
+                                ? 'Chế độ RAG Lai (Hybrid RAG): Ưu tiên tài liệu, tự động bù đắp tri thức khi thiếu (Bấm để chuyển sang Sáng tạo)'
+                                : 'Chế độ Sáng tạo (Creative Mode): Tự do mở rộng & liên hệ thực tiễn ngoài giáo trình (Bấm để chuyển sang Bám sát)'
                           }
                           style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
                         >
-                          {allowExternalSource ? (
-                            <Globe size={13} style={{ color: '#38bdf8' }} />
+                          {ragMode === 'strict' ? (
+                            <Lock size={13} style={{ color: '#f87171' }} />
+                          ) : ragMode === 'hybrid' ? (
+                            <Sparkles size={13} style={{ color: '#10b981' }} />
                           ) : (
-                            <Lock size={13} style={{ color: '#94a3b8' }} />
+                            <Globe size={13} style={{ color: '#38bdf8' }} />
                           )}
-                          <span>{allowExternalSource ? 'Nguồn ngoài: BẬT' : 'Bám sát tài liệu'}</span>
+                          <span>
+                            {ragMode === 'strict'
+                              ? 'Bám sát: 100%'
+                              : ragMode === 'hybrid'
+                                ? 'RAG Lai (Ưu tiên tài liệu)'
+                                : 'Sáng tạo (Nguồn ngoài)'}
+                          </span>
                         </button>
 
                         {/* Answer Style Selector (Concise vs Detailed) */}
@@ -3173,6 +3561,40 @@ function CourseDetailContent() {
                           {answerStyle === 'concise' ? <Zap size={13} /> : <BookOpen size={13} />}
                           <span>{answerStyle === 'concise' ? 'Nhanh / Trọng tâm' : 'Chi tiết / Chuyên sâu'}</span>
                         </button>
+
+                        {/* AI Model Selector & Healthcheck (CHỈ HIỂN THỊ VỚI GIẢNG VIÊN ĐỂ TEST / HEALTHCHECK) */}
+                        {isTeacherCourse && (
+                          <select
+                            value={selectedModel}
+                            onChange={e => {
+                              setSelectedModel(e.target.value);
+                              const chosen = availableModels.find(m => m.id === e.target.value);
+                              const label = e.target.value === 'auto'
+                                ? 'Tự động'
+                                : (chosen?.label || e.target.value);
+                              notify(`[Giảng viên] Đã chọn: ${label}`);
+                            }}
+                            className="model-selector-chip"
+                            title="Chọn model AI để kiểm tra kết nối và độ nhạy"
+                            style={{
+                              height: '28px',
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              borderRadius: '8px',
+                              background: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                              borderColor: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.5)' : 'rgba(255, 255, 255, 0.12)',
+                              color: '#e2e8f0',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <option value="auto">Model: Tự động</option>
+                            {availableModels.map(m => (
+                              <option key={m.id} value={m.id} disabled={m.available === false}>
+                                {m.available === false ? '[Offline] ' : ''}{m.label}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
                       <div className="chat-compose-actions">
                         <button
@@ -3234,6 +3656,7 @@ function CourseDetailContent() {
                       courseId={activeCourse.id}
                       selectedSources={sources.filter((_, i) => checked[i])}
                       allowExternalSource={allowExternalSource}
+                      ragMode={ragMode}
                       selectedModel={selectedModel}
                       hasLmsGrades={courseExamResults.length > 0}
                       initialMode={quizInitialMode}
@@ -3294,9 +3717,10 @@ function CourseDetailContent() {
                         courseTitle={activeCourse.name}
                         loading={artifactLoading}
                         selectedSourcesCount={selectedSourceNames.length}
-                        onGenerate={(level, customTopic, ext) => void generateToolArtifact(tool, level, customTopic, ext)}
+                        onGenerate={(level, customTopic, ext, rMode) => void generateToolArtifact(tool, level, customTopic, ext, rMode)}
                         onReset={() => resetToolArtifact(tool)}
                         onOrientationChange={(artifactId, orientation) => void updateToolArtifactOrientation(tool, artifactId, orientation)}
+                        onUpdateData={(artifactId, newData) => updateToolArtifactData(tool, artifactId, newData)}
                         onStop={stopArtifactGeneration}
                         copyText={copyText}
                         notify={notify}
@@ -3339,18 +3763,19 @@ function CourseDetailContent() {
               <h3>{displayName}</h3>
               <p>{user?.username || 'Sinh viên'}</p>
               <div>
-                <button
-                  onClick={() => {
-                    setProfile(false);
-                    notify('Hồ sơ sử dụng thông tin tài khoản đăng nhập');
-                  }}
+                <a
+                  href={lmsProfileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setProfile(false)}
                   style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                 >
                   <ShieldCheck size={14} />
                   Thông tin tài khoản
-                </button>
+                </a>
                 <button
                   onClick={handleLogout}
+                  className="logout-btn"
                   style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: '#ef4444' }}
                 >
                   <ExternalLink size={14} />

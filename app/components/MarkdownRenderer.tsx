@@ -7,6 +7,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import { Globe, ExternalLink, BookmarkPlus, Check } from 'lucide-react';
+import { PERFORMATIVE_SOURCE_FLUFF_REGEX } from '@/lib/anti-fluff';
 import 'katex/dist/katex.min.css';
 
 interface MarkdownRendererProps {
@@ -28,15 +29,26 @@ export function MarkdownRenderer({ content, onAddMaterial, savedUrls = [] }: Mar
     .replace(/\*\*([^*]+)\*\*/g, '**$1**')
     // 5. Convert backtick-wrapped URLs into markdown links so they are rendered as interactive links
     .replace(/`\s*(https?:\/\/[^\s`]+)\s*`/g, '[$1]($1)')
-    // 6. Transform citation tags (both verbose like '[HỌC LIỆU ĐÃ LƯU 2]', '[trích đoạn 5]' and concise like ' [1]', ' [2, 3]') into interactive Perplexity-style citation pill badges in a single pass
+    // 6. Anti-Fluff: Strip performative source/external filler & meta-announcements
+    .replace(PERFORMATIVE_SOURCE_FLUFF_REGEX, '\n\n')
+    // 7. Clean stray empty markdown artifacts (stray double asterisks, orphan blockquote markers)
+    .replace(/(?:\r?\n)\s*\*{2,}\s*(?:\r?\n)/g, '\n')
+    .replace(/^\s*\*{2,}\s*$/gm, '')
+    .replace(/(?:^|\n\n)\s*>\s*/g, '\n\n')
+    // 8. Transform citation tags (both verbose like '[HỌC LIỆU ĐÃ LƯU 2]', '[trích đoạn 5]' and concise like ' [1]', ' [2, 3]') into interactive Perplexity-style citation pill badges in a single pass
     .replace(/(?:\[(?:(?:học\s*liệu|tài\s*liệu)(?:\s*đã\s*lưu)?|trích\s*đoạn|đoạn\s*trích|trích|nguồn|giáo\s*trình|bài\s*giảng|cite:?)\s*\[?(\d+(?:\s*,\s*\d+)*)\]?\]|(?<=^|[\s,.:;!?)])\[(\d+(?:\s*,\s*\d+)*)\](?!\())/gi, (_match, verboseNums, conciseNums) => {
       const nums = verboseNums || conciseNums;
       if (!nums) return _match;
       const cleanNums = nums.replace(/\s+/g, '');
       return ` <span class="inline-citation-pill" title="Căn cứ tài liệu / học liệu tham khảo (${cleanNums})">[${cleanNums}]</span>`;
     })
-    // 7. Deduplicate identical citation badges repeated in immediate succession
-    .replace(/(<span class="inline-citation-pill"[^>]*>\[\d+\]<\/span>)(?:\s*(?:<br\/?>|\n|\.)?\s*\1)+/g, '$1');
+    // 9. Deduplicate identical citation badges repeated in immediate succession
+    .replace(/(<span class="inline-citation-pill"[^>]*>\[\d+\]<\/span>)(?:\s*(?:<br\/?>|\n|\.)?\s*\1)+/g, '$1')
+    .trim();
+
+  if (cleanContent.length > 0 && !cleanContent.startsWith('>') && !cleanContent.startsWith('#') && !cleanContent.startsWith('`')) {
+    cleanContent = cleanContent.charAt(0).toUpperCase() + cleanContent.slice(1);
+  }
 
   // Convert raw backtick code blocks inside table rows into inline formatted text so they don't break markdown tables
   cleanContent = cleanContent.split('\n').map(line => {

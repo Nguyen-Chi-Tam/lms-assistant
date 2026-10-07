@@ -9,6 +9,7 @@ declare namespace NodeJS {
     CLOUDINARY_API_SECRET?: string;
     CLOUDINARY_URL?: string;
     GROQ_API_KEY?: string;
+    GROQ_API_KEYS?: string;
     GEMINI_API_KEY?: string;
     GOOGLE_API_KEY?: string;
     OPENAI_API_KEY?: string;

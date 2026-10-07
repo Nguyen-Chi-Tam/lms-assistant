@@ -93,7 +93,7 @@ Khi tài khoản Moodle mang vai trò Giảng viên (`teacher`, `editingteacher`
 ### 3. Tích hợp Đa mô hình AI (Multi-LLM Engine)
 
 LMS Assistant hỗ trợ linh hoạt 4 nhà cung cấp AI hàng đầu thế giới:
-- **Google Gemini** (`gemini-2.5-flash`, `gemini-1.5-pro`): Xử lý ngữ cảnh dài, trích xuất tài liệu học tập tốc độ cao.
+- **Google Gemini** (`gemini-3.8-flash`, `gemini-3.1-pro-preview`): Xử lý ngữ cảnh dài, trích xuất tài liệu học tập tốc độ cao.
 - **Groq** (`llama-3.3-70b-versatile`, `mixtral-8x7b-32768`): Tốc độ phản hồi cực nhanh, độ trễ siêu thấp cho hội thoại gia sư.
 - **OpenAI** (`gpt-4o`, `gpt-4o-mini`): Phân tích dữ liệu học tập phức tạp, phân tích bảng điểm, suy luận toán học.
 - **Anthropic Claude** (`claude-3-5-sonnet`): Văn phong sư phạm xuất sắc, phân tích tài liệu học thuật chuyên sâu.

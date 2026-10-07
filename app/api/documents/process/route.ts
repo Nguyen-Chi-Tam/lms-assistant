@@ -5,9 +5,10 @@ import { eq, and, or, desc } from 'drizzle-orm';
 import { uploadMaterialFile, deleteMaterialFile } from '@/lib/cloudinary';
 import { supabaseAdmin } from '@/lib/supabase';
 import { indexDocuments } from '@/lib/rag';
-import { parseDocumentFromUrl } from '@/lib/document-parser';
+import { parseDocumentFromUrl, parseDocumentBuffer } from '@/lib/document-parser';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import { setFirebaseRow, getFirebaseRow, deleteFirebaseRow } from '@/lib/firebase-admin';
+import { invalidateCourseCache } from '@/lib/semantic-cache';
 
 export async function POST(request: Request) {
   try {
@@ -38,8 +39,8 @@ export async function POST(request: Request) {
       content = (formData.get('content') as string) || '';
 
       if (file) {
+        const arrayBuffer = await file.arrayBuffer();
         try {
-          const arrayBuffer = await file.arrayBuffer();
           const buffer = Buffer.from(arrayBuffer);
           const uploadResult = await uploadMaterialFile(buffer, file.name, {
             folder: uploadSource === 'student' ? `LMS Assistant/${userId}` : `course-${moodleCourseId}`,
@@ -50,17 +51,18 @@ export async function POST(request: Request) {
           console.warn('Storage upload warning:', uploadError);
         }
 
-        // If text content wasn't provided, extract text from file or parsed URL
+        // Extract locally first. This also routes image-only material through
+        // multimodal OCR before it is indexed into the transient RAM RAG.
         if (!content) {
-          if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
-            content = await file.text();
-          } else if (fileUrl) {
+          content = await parseDocumentBuffer(arrayBuffer, file.name, file.type);
+          if (!content && fileUrl) {
             try {
               content = await parseDocumentFromUrl(fileUrl, file.name);
             } catch {
               content = `[Tài liệu: ${file.name}] (URL: ${fileUrl})`;
             }
-          } else {
+          }
+          if (!content) {
             content = `[Tài liệu: ${file.name}]`;
           }
         }
@@ -118,7 +120,7 @@ export async function POST(request: Request) {
     }
 
     // Legacy fallback for local environments without Firebase credentials.
-    if (supabaseAdmin) {
+    if (!insertedMaterial && supabaseAdmin) {
       try {
         await supabaseAdmin.from('users').upsert(
           {
@@ -190,6 +192,11 @@ export async function POST(request: Request) {
         console.warn('Background RAG indexing warning:', err);
       });
     }
+
+    // Invalidate semantic query cache for this course as materials changed
+    invalidateCourseCache(moodleCourseId).catch(err => {
+      console.warn('[Semantic Cache] Cache invalidation warning on upload:', err);
+    });
 
     return NextResponse.json({
       success: true,
@@ -315,7 +322,7 @@ export async function DELETE(request: Request) {
     }
 
     // 2. Try deleting from Supabase
-    if (supabaseAdmin) {
+    if (!deleted && supabaseAdmin) {
       try {
         const { data, error } = await supabaseAdmin
           .from('personal_materials')
@@ -333,19 +340,21 @@ export async function DELETE(request: Request) {
     }
 
     // 3. Try deleting from Drizzle DB
-    const db = getDb();
-    if (db) {
-      try {
-        const conditions = [or(eq(personalMaterials.id, cleanId), eq(personalMaterials.id, id))];
-        if (userId) conditions.push(eq(personalMaterials.userId, userId));
-        const [material] = await db.select().from(personalMaterials).where(and(...conditions)).limit(1);
-        if (material) {
-          storageUrl = storageUrl || material.storageUrl;
-          await db.delete(personalMaterials).where(and(...conditions));
-          deleted = true;
+    if (!deleted) {
+      const db = getDb();
+      if (db) {
+        try {
+          const conditions = [or(eq(personalMaterials.id, cleanId), eq(personalMaterials.id, id))];
+          if (userId) conditions.push(eq(personalMaterials.userId, userId));
+          const [material] = await db.select().from(personalMaterials).where(and(...conditions)).limit(1);
+          if (material) {
+            storageUrl = storageUrl || material.storageUrl;
+            await db.delete(personalMaterials).where(and(...conditions));
+            deleted = true;
+          }
+        } catch (dbError) {
+          console.warn('Database personal material deletion warning:', dbError);
         }
-      } catch (dbError) {
-        console.warn('Database personal material deletion warning:', dbError);
       }
     }
 
@@ -357,6 +366,12 @@ export async function DELETE(request: Request) {
         console.warn('Material storage deletion warning:', storageError);
       }
     }
+
+    const courseIdParam = searchParams.get('moodleCourseId') || searchParams.get('courseId');
+    if (courseIdParam) {
+      invalidateCourseCache(courseIdParam).catch(() => {});
+    }
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error deleting personal material:', error);

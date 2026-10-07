@@ -556,7 +556,7 @@ export function GradePromptModal({
                 width: '100%',
                 boxSizing: 'border-box',
                 background: 'rgba(0, 0, 0, 0.35)',
-                border: '1px solid rgba(124, 109, 242, 0.3)',
+                border: '1.5px solid rgba(124, 109, 242, 0.5)',
                 borderRadius: '12px',
                 padding: '12px 14px',
                 color: '#f8fafc',
@@ -565,10 +565,19 @@ export function GradePromptModal({
                 fontFamily: 'inherit',
                 resize: 'vertical',
                 outline: 'none',
-                transition: 'border-color 0.15s ease',
+                transition: 'all 0.2s ease',
+                boxShadow: '0 0 15px rgba(124, 109, 242, 0.1)',
               }}
-              onFocus={e => (e.currentTarget.style.borderColor = '#8b5cf6')}
-              onBlur={e => (e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.3)')}
+              onFocus={e => {
+                e.currentTarget.style.borderColor = '#8b5cf6';
+                e.currentTarget.style.boxShadow = '0 0 20px rgba(139, 92, 246, 0.3)';
+                e.currentTarget.style.background = 'rgba(0, 0, 0, 0.2)';
+              }}
+              onBlur={e => {
+                e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.5)';
+                e.currentTarget.style.boxShadow = '0 0 15px rgba(124, 109, 242, 0.1)';
+                e.currentTarget.style.background = 'rgba(0, 0, 0, 0.35)';
+              }}
             />
             <small style={{ fontSize: '11.5px', color: '#64748b' }}>
               💡 Mẹo: Bạn có thể thêm yêu cầu cụ thể (ví dụ: "Tôi cần ôn gấp trong 2 ngày" hoặc "Hãy cho ví dụ bằng ngôn ngữ Python") ngay trong ô trên.

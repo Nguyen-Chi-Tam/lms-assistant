@@ -7,6 +7,7 @@ import { deleteMaterialFile, uploadMaterialFile } from '../../../lib/cloudinary'
 import { supabaseAdmin } from '../../../lib/supabase';
 import { deleteFirebaseRow, getFirebaseRow, setFirebaseRow } from '@/lib/firebase-admin';
 import { getPersonalMaterials } from '@/lib/firebase-data';
+import { invalidateCourseCache } from '@/lib/semantic-cache';
 
 const allowedTypes = new Set([
   'application/pdf',
@@ -200,6 +201,7 @@ export async function POST(request: Request) {
       updated_at: new Date().toISOString(),
     });
     if (data) {
+      invalidateCourseCache(1).catch(() => {});
       return NextResponse.json({ id: data.id, name: String(data.title || ''), contentType: file.type, size: file.size, source: 'personal', status: 'indexed', createdAt: Date.now(), fileUrl }, { status: 201 });
     }
   } catch (firebaseError) {
@@ -321,6 +323,7 @@ export async function DELETE(request: Request) {
           console.warn('Material storage deletion warning:', storageError);
         }
       }
+      invalidateCourseCache(1).catch(() => {});
       return NextResponse.json({ success: true });
     }
   } catch (firebaseError) {

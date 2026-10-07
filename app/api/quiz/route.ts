@@ -1,13 +1,10 @@
 import { NextResponse } from 'next/server';
 import { generateText } from '@/models/registry';
-import { getDb } from '@/db';
-import { personalMaterials } from '@/db/schema';
-import { eq } from 'drizzle-orm';
-import { supabaseAdmin } from '@/lib/supabase';
 import { parseDocumentFromUrl } from '@/lib/document-parser';
 import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag';
 import { getLatestQuizAnalysis } from '@/lib/learning-artifacts';
 import { getPersonalMaterials } from '@/lib/firebase-data';
+import { stripFluff } from '@/lib/anti-fluff';
 
 interface SourceItem {
   name: string;
@@ -49,6 +46,7 @@ export async function POST(request: Request) {
       focusWeakAreas?: boolean;
       weakTopics?: string[];
       allowExternalSource?: boolean;
+      ragMode?: 'strict' | 'hybrid' | 'creative';
       model?: string;
     };
 
@@ -82,6 +80,9 @@ export async function POST(request: Request) {
     const difficulty = body.difficulty || 'normal';
     const questionType = body.questionType || (selectedTypes.length === 1 ? selectedTypes[0] : 'mixed');
     const topic = body.topic || 'Kiểm tra kiến thức môn học';
+    const ragMode: 'strict' | 'hybrid' | 'creative' =
+      body.ragMode || (body.allowExternalSource ? 'creative' : 'hybrid');
+    const allowExternalSource = ragMode === 'creative';
 
     const effectiveSources: SourceItem[] =
       body.sources && body.sources.length > 0
@@ -112,59 +113,6 @@ export async function POST(request: Request) {
         }
       } catch (firebaseError) {
         console.warn('Firebase personal_materials query in quiz route:', firebaseError);
-      }
-
-      if (supabaseAdmin) {
-        try {
-          const { data: mats } = await supabaseAdmin
-            .from('personal_materials')
-            .select('*')
-            .eq('moodle_course_id', moodleCourseId)
-            .limit(10);
-
-          if (mats) {
-            for (const mat of mats) {
-              if (mat.storage_url && !docMap.has(mat.title.toLowerCase())) {
-                try {
-                  const text = await parseDocumentFromUrl(mat.storage_url, mat.title);
-                  if (text && text.length > 50) {
-                    docMap.set(mat.title.toLowerCase(), text);
-                  }
-                } catch {
-                  // ignore
-                }
-              }
-            }
-          }
-        } catch (sbErr) {
-          console.warn('Supabase personal_materials query in quiz route:', sbErr);
-        }
-      }
-
-      const db = getDb();
-      if (db && docMap.size === 0) {
-        try {
-          const mats = await db
-            .select()
-            .from(personalMaterials)
-            .where(eq(personalMaterials.moodleCourseId, moodleCourseId))
-            .limit(10);
-
-          for (const mat of mats) {
-            if (mat.storageUrl && !docMap.has(mat.title.toLowerCase())) {
-              try {
-                const text = await parseDocumentFromUrl(mat.storageUrl, mat.title);
-                if (text && text.length > 50) {
-                  docMap.set(mat.title.toLowerCase(), text);
-                }
-              } catch {
-                // ignore
-              }
-            }
-          }
-        } catch (dbErr) {
-          console.warn('Drizzle personal_materials query in quiz route:', dbErr);
-        }
       }
     }
 
@@ -198,6 +146,16 @@ export async function POST(request: Request) {
       if (text && text.trim() && !compiledDocs.some(d => d.title === src.name)) {
         compiledDocs.push({ title: src.name, text });
       }
+    }
+
+    if (ragMode === 'strict' && compiledDocs.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            'Chế độ Bám sát tài liệu (Strict RAG) yêu cầu tài liệu môn học. Hiện chưa có tài liệu nào được cung cấp. Vui lòng chuyển sang chế độ Hybrid hoặc Creative để tiếp tục.',
+        },
+        { status: 400 }
+      );
     }
 
     if (compiledDocs.length > 0) {
@@ -258,10 +216,21 @@ export async function POST(request: Request) {
       contextSection = `MÔN HỌC: ${body.course || 'Khóa học'}\nTÀI LIỆU: ${effectiveSourceNames.join(', ') || 'Giáo trình môn học'}\n\n`;
     }
 
-    const allowExternalSource = Boolean(body.allowExternalSource);
-    const externalRule = allowExternalSource
-      ? 'Được phép đưa thêm các câu hỏi tình huống thực tế ngành, câu hỏi ứng dụng hiện đại và câu hỏi mở rộng tư duy sáng tạo (out-of-the-box).'
-      : 'Câu hỏi bám sát tuyệt đối tài liệu môn học được cung cấp.';
+    let externalRule = '';
+    if (ragMode === 'strict') {
+      externalRule = `CHẾ ĐỘ BÁM SÁT TÀI LIỆU NGHIÊM NGẶT (STRICT RAG - 100% GIÁO TRÌNH):
+- Câu hỏi BẮT BUỘC bám sát tuyệt đối 100% nội dung tài liệu môn học được cung cấp.
+- Tuyệt đối không tự suy diễn, không đưa kiến thức hoặc thuật ngữ nằm ngoài tài liệu giáo trình.
+- Mọi đáp án đúng và lời giải thích ("explanation") PHẢI có căn cứ trực tiếp trích xuất từ tài liệu đã cung cấp.`;
+    } else if (ragMode === 'hybrid') {
+      externalRule = `CHẾ ĐỘ RAG LAI GHÉP (HYBRID RAG - ƯU TIÊN GIÁO TRÌNH & BÙ ĐẮP KHI THIẾU):
+- Ưu tiên tối đa khai thác nội dung tài liệu môn học được cung cấp.
+- Nếu tài liệu ngắn hoặc thiếu dữ kiện, bạn ĐƯỢC PHÉP vận dụng kiến thức chuyên ngành chuẩn mực để mở rộng câu hỏi tình huống thực tế và bài tập áp dụng.
+- Trong phần giải thích ("explanation"), nếu câu hỏi sử dụng kiến thức mở rộng ngoài tài liệu, hãy mở đầu bằng: "[Kiến thức mở rộng]: ..."`;
+    } else {
+      externalRule = `CHẾ ĐỘ SÁNG TẠO & MỞ RỘNG (CREATIVE / OPEN WEB):
+- Bạn ĐƯỢC TOÀN QUYỀN đưa thêm các câu hỏi tình huống thực tế ngành, câu hỏi ứng dụng hiện đại, case study thực tế và câu hỏi mở rộng tư duy sáng tạo ngoài giáo trình.`;
+    }
 
     // Adaptive Learning Remediation Mode
     const generatorMode = body.generatorMode || (body.focusWeakAreas ? 'targeted' : 'comprehensive');
@@ -291,7 +260,7 @@ YÊU CẦU BẮT BUỘC: Hãy tập trung 100% câu hỏi xoáy sâu vào các c
     }
 
     const prompt = `${contextSection}YÊU CẦU SOẠN ĐỀ TRẮC NGHIỆM:
-Hãy tạo chính xác ${count} câu hỏi trắc nghiệm tiếng Việt theo chủ đề: "${topic}".
+Hãy tạo chính xác ${count} câu hỏi trắc nghiệm theo chủ đề: "${topic}".
 ${difficultyDesc}
 ${typeDesc}
 ${externalRule}
@@ -304,7 +273,8 @@ QUY TẮC BẮT BUỘC CHO TỪNG LOẠI CÂU HỎI:
 4. "matching": "pairs" mảng 3 đến 5 cặp ghép đúng [{"left": "Khái niệm", "right": "Định nghĩa tương ứng"}].
 5. "short_answer": "answers" mảng 1 đến 3 biến thể chuỗi ngắn gọn được chấp nhận.
 6. "explanation": Lời giải thích ngắn gọn nhưng đủ ý khoa học.
-7. Trả về đúng JSON object duy nhất có thuộc tính "questions":
+7. NGÔN NGỮ ĐỀ THI (LANGUAGE CONFORMANCE): Bộ câu hỏi, phương án, đáp án và giải thích BẮT BUỘC dùng CHÍNH XÁC ngôn ngữ của chủ đề/yêu cầu (ví dụ: English nếu chủ đề bằng tiếng Anh, Español nếu bằng tiếng Tây Ban Nha...). Tiếng Việt luôn là ngôn ngữ mặc định nếu chủ đề bằng tiếng Việt hoặc không rõ ngôn ngữ.
+8. Trả về đúng JSON object duy nhất có thuộc tính "questions":
 {
   "questions": [
     {
@@ -348,13 +318,19 @@ QUY TẮC BẮT BUỘC CHO TỪNG LOẠI CÂU HỎI:
 }
 Không bao gồm markdown hay văn bản ngoài JSON.`;
 
-    // 3. AI Execution via unified model registry
+    // 3. AI Execution via unified model registry (Quiz: Basic Speed Task -> Groq forward in Strict RAG)
     try {
       const result = await generateText(body.model, {
         system: 'Bạn là chuyên gia khảo thí và sư phạm đại học. Luôn đảm bảo tuyệt đối tính chính xác của câu hỏi, đáp án đúng và lời giải thích dựa trên sự thật lịch sử và khoa học, chống ảo giác 100%. Trả về đúng JSON schema.',
         userPrompt: prompt,
-        temperature: 0.2,
+        temperature: ragMode === 'strict' ? 0.0 : ragMode === 'hybrid' ? 0.3 : 0.7,
+        topP: ragMode === 'strict' ? 0.001 : ragMode === 'hybrid' ? 0.7 : 0.9,
         jsonMode: true,
+        googleSearchGrounding: ragMode === 'creative',
+        allowExternalSource: ragMode === 'creative',
+        ragMode,
+        taskCategory: 'basic',
+        signal: request.signal,
       });
 
       if (result.text) {
@@ -404,7 +380,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
                 q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
                 answers: validAnswers.length > 0 ? validAnswers : ['Đáp án đúng'],
                 answer: validAnswers[0] || 'Đáp án đúng',
-                explanation: item.explanation || '',
+                explanation: item.explanation ? stripFluff(item.explanation) : '',
               };
             }
 
@@ -421,7 +397,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
                 q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
                 choices: ['Đúng', 'Sai'],
                 answer: ans === 1 ? 1 : 0,
-                explanation: item.explanation || '',
+                explanation: item.explanation ? stripFluff(item.explanation) : '',
               };
             }
 
@@ -458,7 +434,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
                 q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
                 choices,
                 answers: validAnswers,
-                explanation: item.explanation || '',
+                explanation: item.explanation ? stripFluff(item.explanation) : '',
               };
             }
 
@@ -471,7 +447,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
               q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
               choices,
               answer: Math.min(choices.length - 1, Math.max(0, ans)),
-              explanation: item.explanation || '',
+              explanation: item.explanation ? stripFluff(item.explanation) : '',
             };
           });
 

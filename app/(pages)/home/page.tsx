@@ -22,6 +22,7 @@ import {
   Search,
   MessageSquare,
   CalendarDays,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   defaultQuiz,
@@ -325,8 +326,16 @@ function Dashboard({
         } catch {}
       }
     }
-    return (baseUrl || 'http://moodle.test').replace(/\/$/, '');
+    return (baseUrl || 'https://moodletvk.duckdns.org').replace(/\/$/, '');
   }, [moodle?.moodleUrl, moodle?.resources]);
+
+  const lmsProfileUrl = useMemo(() => {
+    const cleanBase = lmsHomeUrl || 'https://moodletvk.duckdns.org';
+    if (user?.id) {
+      return `${cleanBase}/user/profile.php?id=${user.id}`;
+    }
+    return `${cleanBase}/user/profile.php`;
+  }, [lmsHomeUrl, user?.id]);
 
   const filteredCourses = useMemo(() => {
     let list = courses;
@@ -2233,6 +2242,25 @@ function HomeContent() {
   const [selectedHomework, setSelectedHomework] = useState<DeadlineItem | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const lmsProfileUrl = useMemo(() => {
+    let baseUrl = moodle?.moodleUrl;
+    if (!baseUrl && moodle?.resources?.length) {
+      const resWithUrl = moodle.resources.find(
+        r => r.url && (r.url.startsWith('http://') || r.url.startsWith('https://'))
+      );
+      if (resWithUrl?.url) {
+        try {
+          baseUrl = new URL(resWithUrl.url).origin;
+        } catch {}
+      }
+    }
+    const cleanBase = (baseUrl || 'https://moodletvk.duckdns.org').replace(/\/$/, '');
+    if (user?.id) {
+      return `${cleanBase}/user/profile.php?id=${user.id}`;
+    }
+    return `${cleanBase}/user/profile.php`;
+  }, [moodle?.moodleUrl, moodle?.resources, user?.id]);
+
   const notify = (text: string) => {
     setToast(text);
     window.setTimeout(() => setToast(''), 2600);
@@ -2340,10 +2368,10 @@ function HomeContent() {
   };
 
   useEffect(() => {
-    if (user?.id) {
-      void registerFcmToken(user.id);
+    if (user?.id && user?.role !== 'teacher') {
+      void registerFcmToken(user.id, false, user.role);
     }
-  }, [user?.id]);
+  }, [user?.id, user?.role]);
 
   useEffect(() => {
     const storedUser = localStorage.getItem('moodleUser');
@@ -2546,16 +2574,19 @@ function HomeContent() {
             <h3>{user?.fullname || 'Minh Nguyễn'}</h3>
             <p>{user?.username || 'Sinh viên'}</p>
             <div>
-              <button
-                onClick={() => {
-                  setProfile(false);
-                  notify('Hồ sơ đang dùng dữ liệu tài khoản đăng nhập');
-                }}
+              <a
+                href={lmsProfileUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setProfile(false)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
+                <ShieldCheck size={14} />
                 Thông tin tài khoản
-              </button>
+              </a>
               <button
                 type="button"
+                className="logout-btn"
                 style={{
                   background: '#ef4444',
                   color: '#fff',
@@ -2565,9 +2596,13 @@ function HomeContent() {
                   cursor: 'pointer',
                   fontWeight: 600,
                   transition: 'background 0.2s',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
                 }}
                 onClick={handleLogout}
               >
+                <ExternalLink size={14} />
                 Đăng xuất
               </button>
             </div>

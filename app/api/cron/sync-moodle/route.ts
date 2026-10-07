@@ -3,6 +3,7 @@ import { runtimeEnv } from '@/db/runtime';
 import { supabaseAdmin } from '@/lib/supabase';
 import { getMoodlePool } from '@/lib/moodle-db';
 import { sweepOrphanedCourseEmbeddings } from '@/lib/supabase-vector';
+import { purgeExpiredSemanticCache } from '@/lib/semantic-cache';
 
 interface MoodleCalendarEvent {
   id: number;
@@ -35,8 +36,18 @@ export async function GET(request: Request) {
     const { MOODLE_URL, MOODLE_TOKEN, CRON_SECRET } = runtimeEnv();
 
     const authHeader = request.headers.get('authorization');
-    if (CRON_SECRET && authHeader && authHeader !== `Bearer ${CRON_SECRET}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { searchParams } = new URL(request.url);
+    const querySecret = searchParams.get('secret') || searchParams.get('key');
+    const isAuthorized =
+      !CRON_SECRET ||
+      authHeader === `Bearer ${CRON_SECRET}` ||
+      querySecret === CRON_SECRET;
+
+    if (!isAuthorized) {
+      return NextResponse.json(
+        { error: 'Unauthorized: Thiếu hoặc sai CRON_SECRET. Gắn header Authorization: Bearer <CRON_SECRET> hoặc param ?secret=<CRON_SECRET>' },
+        { status: 401 }
+      );
     }
 
     if (!MOODLE_URL || !MOODLE_TOKEN) {
@@ -46,37 +57,120 @@ export async function GET(request: Request) {
       );
     }
 
-    const moodleBase = `${MOODLE_URL.replace(/\/$/, '')}/webservice/rest/server.php`;
+    const moodleBase = `${MOODLE_URL.replace(/\/+$/, '')}/webservice/rest/server.php`;
     const SCAN_DAYS = 7;
     const nowTimestamp = Math.floor(Date.now() / 1000);
     const maxFutureTimestamp = nowTimestamp + SCAN_DAYS * 24 * 60 * 60;
 
-    // 1. Kéo các sự kiện lịch / bài tập tương lai từ Moodle
-    const calParams = new URLSearchParams({
+    // 0. Xác thực Token & Kiểm tra quyền truy cập Web Service Moodle
+    const siteParams = new URLSearchParams({
       wstoken: MOODLE_TOKEN,
-      wsfunction: 'core_calendar_get_action_events_by_timesort',
+      wsfunction: 'core_webservice_get_site_info',
       moodlewsrestformat: 'json',
-      timesortfrom: String(nowTimestamp),
-      timesortto: String(maxFutureTimestamp),
-      limitnum: '50',
     });
 
-    const moodleRes = await fetch(`${moodleBase}?${calParams.toString()}`);
-    if (!moodleRes.ok) {
-      throw new Error(`Moodle API error: HTTP ${moodleRes.status}`);
+    const siteRes = await fetch(`${moodleBase}?${siteParams.toString()}`);
+    if (!siteRes.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Không thể kết nối tới Moodle server: HTTP ${siteRes.status}`,
+          code: 'MOODLE_HTTP_ERROR',
+        },
+        { status: 502 }
+      );
     }
 
-    const data = (await moodleRes.json()) as {
-      events?: MoodleCalendarEvent[];
+    const siteData = (await siteRes.json()) as {
+      userid?: number;
+      fullname?: string;
+      sitename?: string;
       exception?: string;
+      errorcode?: string;
       message?: string;
     };
 
-    if (data.exception) {
-      throw new Error(data.message || data.exception);
+    if (siteData.exception || siteData.errorcode === 'invalidtoken') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `MOODLE_TOKEN không hợp lệ hoặc chưa được tạo trên Moodle (${siteData.message || siteData.exception || 'invalidtoken'}). Vui lòng tạo token mới trên ${MOODLE_URL.replace(/\/+$/, '')} (Site administration -> Server -> Web services -> Manage tokens) và cập nhật vào .env.local / .dev.vars.`,
+          code: 'INVALID_MOODLE_TOKEN',
+          moodleError: siteData.message || siteData.exception,
+        },
+        { status: 502 }
+      );
     }
 
-    const rawEvents = data.events || [];
+    // 1. Kéo các sự kiện lịch / bài tập tương lai từ Moodle
+    let rawEvents: MoodleCalendarEvent[] = [];
+    try {
+      const calParams = new URLSearchParams({
+        wstoken: MOODLE_TOKEN,
+        wsfunction: 'core_calendar_get_action_events_by_timesort',
+        moodlewsrestformat: 'json',
+        timesortfrom: String(nowTimestamp),
+        timesortto: String(maxFutureTimestamp),
+        limitnum: '50',
+      });
+
+      const moodleRes = await fetch(`${moodleBase}?${calParams.toString()}`);
+      if (moodleRes.ok) {
+        const calData = (await moodleRes.json()) as {
+          events?: MoodleCalendarEvent[];
+          exception?: string;
+          message?: string;
+        };
+
+        if (!calData.exception && Array.isArray(calData.events)) {
+          rawEvents = calData.events;
+        } else if (calData.exception) {
+          console.warn('[sync-moodle] core_calendar_get_action_events_by_timesort warning:', calData.message || calData.exception);
+        }
+      }
+    } catch (calErr) {
+      console.warn('[sync-moodle] Lỗi khi gọi core_calendar_get_action_events_by_timesort:', calErr);
+    }
+
+    // Fallback: Tra cứu sự kiện qua core_calendar_get_calendar_upcoming_view nếu hàm trên chưa được add vào Service
+    if (rawEvents.length === 0) {
+      try {
+        const upcomingParams = new URLSearchParams({
+          wstoken: MOODLE_TOKEN,
+          wsfunction: 'core_calendar_get_calendar_upcoming_view',
+          moodlewsrestformat: 'json',
+        });
+        const upcomingRes = await fetch(`${moodleBase}?${upcomingParams.toString()}`);
+        if (upcomingRes.ok) {
+          const upcomingData = (await upcomingRes.json()) as {
+            events?: Array<{
+              id: number;
+              name: string;
+              timestart: number;
+              timeduration?: number;
+              modulename?: string;
+              eventtype?: string;
+              course?: { id?: number; fullname?: string; shortname?: string };
+            }>;
+            exception?: string;
+          };
+          if (!upcomingData.exception && Array.isArray(upcomingData.events)) {
+            rawEvents = upcomingData.events.map((ev) => ({
+              id: ev.id,
+              name: ev.name,
+              modulename: ev.modulename,
+              eventtype: ev.eventtype,
+              timestart: ev.timestart,
+              timesort: ev.timestart,
+              timeduration: ev.timeduration,
+              course: ev.course,
+            }));
+          }
+        }
+      } catch (upcomingErr) {
+        console.warn('[sync-moodle] Lỗi fallback core_calendar_get_calendar_upcoming_view:', upcomingErr);
+      }
+    }
 
     // Lọc sự kiện tương lai của học viên (bỏ qua sự kiện chấm điểm của giáo viên)
     const futureEvents = rawEvents.filter((ev) => {
@@ -90,12 +184,18 @@ export async function GET(request: Request) {
     });
 
     // 2. Lấy danh sách users từ bảng users
-    let targetUserIds: number[] = [4];
+    let targetUserIds: number[] = [];
     if (supabaseAdmin) {
       const { data: userRows } = await supabaseAdmin.from('users').select('moodle_user_id');
       if (userRows && userRows.length > 0) {
-        targetUserIds = userRows.map((u) => u.moodle_user_id);
+        targetUserIds = userRows.map((u) => u.moodle_user_id).filter(Boolean);
       }
+    }
+
+    // Nếu bảng users trên Supabase chưa có ai, mặc định lấy userId của chủ Token Moodle
+    if (targetUserIds.length === 0) {
+      const adminId = siteData?.userid ? Number(siteData.userid) : 2;
+      targetUserIds = [adminId];
     }
 
     // 3. Đồng bộ ánh xạ môn học của từng sinh viên (user_courses)
@@ -556,6 +656,7 @@ export async function GET(request: Request) {
 
     // 8. Garbage Collection: Dọn rác vector pgvector cho các khóa học đã đóng / tài liệu đã bị xóa
     let vectorOrphanedFilesCleaned = 0;
+    let semanticCachePurgedCount = 0;
     if (supabaseAdmin && allEnrolledCourseIds.size > 0) {
       try {
         const allowedExtensions = new Set(['pdf', 'doc', 'docx', 'ppt', 'pptx', 'txt']);
@@ -603,6 +704,13 @@ export async function GET(request: Request) {
       } catch (sweepErr) {
         console.warn('Lỗi dọn rác vector trong sync-moodle cron:', sweepErr);
       }
+
+      // 5b. TTL Maintenance: Purge semantic query cache rows older than 30 days
+      try {
+        semanticCachePurgedCount = await purgeExpiredSemanticCache(30);
+      } catch (cacheTtlErr) {
+        console.warn('Lỗi dọn dẹp semantic cache TTL:', cacheTtlErr);
+      }
     }
 
     return NextResponse.json({
@@ -615,6 +723,7 @@ export async function GET(request: Request) {
       deletedCount,
       expiredDeletedCount,
       vectorOrphanedFilesCleaned,
+      semanticCachePurgedCount,
       events: syncedDetails,
     });
   } catch (error) {
