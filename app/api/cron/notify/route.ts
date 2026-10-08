@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { processNotificationEvents } from '@/lib/event-notification-service';
 import { runtimeEnv } from '@/db/runtime';
 
+export const maxDuration = 60; // Nới lỏng thời gian chạy tối đa lên 60 giây (tối đa của Vercel Hobby)
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
   try {
     // Optional secret check if CRON_SECRET is configured

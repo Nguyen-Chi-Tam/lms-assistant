@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
 import { runtimeEnv } from '@/db/runtime';
 import { supabaseAdmin } from '@/lib/supabase';
-import { getMoodlePool } from '@/lib/moodle-db';
+import { getMoodlePool, isMoodleDbAvailable } from '@/lib/moodle-db';
 import { sweepOrphanedCourseEmbeddings } from '@/lib/supabase-vector';
 import { purgeExpiredSemanticCache } from '@/lib/semantic-cache';
+
+export const maxDuration = 60; // Nới lỏng thời gian chạy tối đa lên 60 giây (tối đa của Vercel Hobby)
+export const dynamic = 'force-dynamic';
 
 interface MoodleCalendarEvent {
   id: number;
@@ -241,59 +244,64 @@ export async function GET(request: Request) {
 
     // 3b. Kéo các buổi điểm danh (attendance sessions) từ Moodle
     const attendanceEvents: MoodleCalendarEvent[] = [];
-    try {
-      const pool = getMoodlePool();
-      // Quét các buổi điểm danh đang diễn ra hoặc mở trong SCAN_DAYS
-      const [attRows] = await pool.query(
-        `SELECT 
-           COALESCE(e.id, sess.id + 100000) AS id,
-           a.name AS attendance_name,
-           sess.description AS session_desc,
-           sess.sessdate AS timestart,
-           sess.duration AS timeduration,
-           sess.attendanceid AS instance,
-           a.course AS courseid,
-           c.fullname AS course_fullname,
-           c.shortname AS course_shortname
-         FROM mdl_attendance_sessions sess
-         JOIN mdl_attendance a ON a.id = sess.attendanceid
-         JOIN mdl_course c ON c.id = a.course
-         LEFT JOIN mdl_event e ON (e.id = sess.caleventid OR (e.instance = a.id AND e.modulename = 'attendance' AND e.timestart = sess.sessdate))
-         WHERE (sess.sessdate + sess.duration) >= ? AND sess.sessdate <= ?`,
-        [nowTimestamp, maxFutureTimestamp]
-      );
+    if (isMoodleDbAvailable()) {
+      try {
+        const pool = getMoodlePool();
+        // Quét các buổi điểm danh đang diễn ra hoặc mở trong SCAN_DAYS
+        const [attRows] = await pool.query(
+          `SELECT 
+             COALESCE(e.id, sess.id + 100000) AS id,
+             a.name AS attendance_name,
+             sess.description AS session_desc,
+             sess.sessdate AS timestart,
+             sess.duration AS timeduration,
+             sess.attendanceid AS instance,
+             a.course AS courseid,
+             c.fullname AS course_fullname,
+             c.shortname AS course_shortname
+           FROM mdl_attendance_sessions sess
+           JOIN mdl_attendance a ON a.id = sess.attendanceid
+           JOIN mdl_course c ON c.id = a.course
+           LEFT JOIN mdl_event e ON (e.id = sess.caleventid OR (e.instance = a.id AND e.modulename = 'attendance' AND e.timestart = sess.sessdate))
+           WHERE (sess.sessdate + sess.duration) >= ? AND sess.sessdate <= ?`,
+          [nowTimestamp, maxFutureTimestamp]
+        );
 
-      if (Array.isArray(attRows)) {
-        for (const row of attRows as any[]) {
-          const courseId = Number(row.courseid);
-          if (!allEnrolledCourseIds.has(courseId)) continue;
+        if (Array.isArray(attRows)) {
+          for (const row of attRows as any[]) {
+            const courseId = Number(row.courseid);
+            if (!allEnrolledCourseIds.has(courseId)) continue;
 
-          const attName = row.attendance_name || 'Điểm danh';
-          const sessDesc = (row.session_desc || '').trim();
-          const cleanName = sessDesc && sessDesc !== 'Regular class session'
-            ? `${attName} - ${sessDesc}`
-            : attName;
+            const attName = row.attendance_name || 'Điểm danh';
+            const sessDesc = (row.session_desc || '').trim();
+            const cleanName = sessDesc && sessDesc !== 'Regular class session'
+              ? `${attName} - ${sessDesc}`
+              : attName;
 
-          attendanceEvents.push({
-            id: Number(row.id),
-            name: cleanName,
-            modulename: 'attendance',
-            eventtype: 'attendance',
-            timestart: Number(row.timestart),
-            timesort: Number(row.timestart),
-            timeduration: Number(row.timeduration || 600),
-            instance: Number(row.instance),
-            course: {
-              id: courseId,
-              fullname: row.course_fullname || courseMap.get(courseId) || '',
-              shortname: row.course_shortname || '',
-            },
-          });
+            attendanceEvents.push({
+              id: Number(row.id),
+              name: cleanName,
+              modulename: 'attendance',
+              eventtype: 'attendance',
+              timestart: Number(row.timestart),
+              timesort: Number(row.timestart),
+              timeduration: Number(row.timeduration || 600),
+              instance: Number(row.instance),
+              course: {
+                id: courseId,
+                fullname: row.course_fullname || courseMap.get(courseId) || '',
+                shortname: row.course_shortname || '',
+              },
+            });
+          }
         }
+      } catch (attDbErr) {
+        console.warn('[sync-moodle] Tra cứu điểm danh qua MySQL thất bại, thử qua REST API:', attDbErr);
       }
-    } catch (attDbErr) {
-      console.warn('[sync-moodle] Tra cứu điểm danh qua MySQL thất bại, thử qua REST API:', attDbErr);
-      // Fallback: Tra cứu qua core_calendar_get_calendar_events
+    }
+
+    // Fallback: Tra cứu qua core_calendar_get_calendar_events nếu MySQL không khả dụng hoặc không có sự kiện
+    if (attendanceEvents.length === 0) {
       try {
         if (allEnrolledCourseIds.size > 0 && MOODLE_URL && MOODLE_TOKEN) {
           for (const cid of allEnrolledCourseIds) {
@@ -424,27 +432,35 @@ export async function GET(request: Request) {
 
       if (isQuiz) {
         // Đối với Quiz: Thời gian delivered_time PHẢI là giờ mở đề (opens), KHÔNG PHẢI giờ đóng (closes)
-        try {
-          const pool = getMoodlePool();
-          const [quizRows] = await pool.query(
-            `SELECT e.id as open_event_id, e.timestart as open_time, q.id as quiz_id, q.timeopen, q.timeclose
-             FROM mdl_event e_orig
-             JOIN mdl_quiz q ON q.id = e_orig.instance
-             LEFT JOIN mdl_event e ON e.instance = q.id AND e.modulename = 'quiz' AND e.eventtype = 'open'
-             WHERE e_orig.id = ?`,
-            [ev.id]
-          );
-          const r = Array.isArray(quizRows) && (quizRows[0] as any);
-          if (r) {
-            const openTimestamp = Number(r.open_time || r.timeopen || 0);
-            if (openTimestamp > 0) {
-              time = openTimestamp;
-              if (r.open_event_id) {
-                targetMoodleEventId = Number(r.open_event_id);
+        let quizResolved = false;
+        if (isMoodleDbAvailable()) {
+          try {
+            const pool = getMoodlePool();
+            const [quizRows] = await pool.query(
+              `SELECT e.id as open_event_id, e.timestart as open_time, q.id as quiz_id, q.timeopen, q.timeclose
+               FROM mdl_event e_orig
+               JOIN mdl_quiz q ON q.id = e_orig.instance
+               LEFT JOIN mdl_event e ON e.instance = q.id AND e.modulename = 'quiz' AND e.eventtype = 'open'
+               WHERE e_orig.id = ?`,
+              [ev.id]
+            );
+            const r = Array.isArray(quizRows) && (quizRows[0] as any);
+            if (r) {
+              const openTimestamp = Number(r.open_time || r.timeopen || 0);
+              if (openTimestamp > 0) {
+                time = openTimestamp;
+                if (r.open_event_id) {
+                  targetMoodleEventId = Number(r.open_event_id);
+                }
+                quizResolved = true;
               }
             }
+          } catch {
+            // MySQL error, proceed to REST fallback
           }
-        } catch {
+        }
+
+        if (!quizResolved) {
           // Fallback: Tra cứu qua Moodle REST API nếu MySQL không trực tiếp khả dụng
           try {
             if (moodleCourseId && MOODLE_URL && MOODLE_TOKEN) {

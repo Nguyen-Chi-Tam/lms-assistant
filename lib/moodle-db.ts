@@ -4,6 +4,20 @@ import { runtimeEnv } from '@/db/runtime';
 let moodlePool: mysql.Pool | null = null;
 
 /**
+ * Kiểm tra xem database Moodle (MySQL) có thể truy cập được từ môi trường hiện tại hay không.
+ * Trên cloud Vercel / Serverless, host 127.0.0.1 hoặc localhost không thể kết nối tới máy local (Laragon),
+ * nên tự động bỏ qua để chuyển thẳng sang Moodle REST API, tránh treo kết nối (timeout).
+ */
+export function isMoodleDbAvailable(): boolean {
+  const env = runtimeEnv();
+  const host = env.MOODLE_DB_HOST || process.env.MOODLE_DB_HOST || '127.0.0.1';
+  if (process.env.VERCEL && (host === '127.0.0.1' || host === 'localhost')) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Lấy hoặc khởi tạo MySQL Connection Pool kết nối tới database Moodle (Laragon).
  */
 export function getMoodlePool(): mysql.Pool {
@@ -18,6 +32,7 @@ export function getMoodlePool(): mysql.Pool {
       waitForConnections: true,
       connectionLimit: 5,
       queueLimit: 0,
+      connectTimeout: 2500,
     });
   }
   return moodlePool;
@@ -33,8 +48,9 @@ export async function getEnrolledUserIdsFromMoodleDb(courseId: number): Promise<
   if (!courseId) return [];
 
   // 1. Thử MySQL trực tiếp: Lọc CHỈ LẤY SINH VIÊN (role = 'student'), tuyệt đối không lấy giáo viên/trợ giảng
-  try {
-    const pool = getMoodlePool();
+  if (isMoodleDbAvailable()) {
+    try {
+      const pool = getMoodlePool();
     const queryStr = `
       SELECT DISTINCT ue.userid
       FROM mdl_user_enrolments ue
@@ -46,12 +62,13 @@ export async function getEnrolledUserIdsFromMoodleDb(courseId: number): Promise<
         AND ue.status = 0 
         AND r.shortname = 'student'
     `;
-    const [rows] = await pool.query(queryStr, [courseId]);
-    if (Array.isArray(rows) && rows.length > 0) {
-      return (rows as Array<{ userid: number | string }>).map(r => Number(r.userid)).filter(Boolean);
+      const [rows] = await pool.query(queryStr, [courseId]);
+      if (Array.isArray(rows) && rows.length > 0) {
+        return (rows as Array<{ userid: number | string }>).map(r => Number(r.userid)).filter(Boolean);
+      }
+    } catch (mysqlErr) {
+      // Nếu MySQL bị hạn chế (EvalError trong worker sandbox) hoặc mất kết nối, tiếp tục fallback
     }
-  } catch (mysqlErr) {
-    // Nếu MySQL bị hạn chế (EvalError trong worker sandbox) hoặc mất kết nối, tiếp tục fallback
   }
 
   // 2. Fallback sang Moodle REST API: Chỉ lấy tài khoản có role 'student'
@@ -197,8 +214,9 @@ export async function getSubmittedUserIdsForEvent(
   }
 
   // TẦNG 1: Truy vấn MySQL Moodle trực tiếp
-  try {
-    const pool = getMoodlePool();
+  if (isMoodleDbAvailable()) {
+    try {
+      const pool = getMoodlePool();
     let queryStr = '';
     let params: unknown[] = [];
 
@@ -294,6 +312,7 @@ export async function getSubmittedUserIdsForEvent(
   } catch (error) {
     // EvalError trong worker sandbox hoặc lỗi kết nối -> kích hoạt fallback tầng 2
   }
+}
 
   // TẦNG 2: Fallback sang Moodle REST API (luôn hoạt động ổn định trong mọi runtime)
   return await getSubmittedUserIdsViaApi(userIds, courseId, title);
@@ -310,8 +329,9 @@ export async function getSubmittedEventIdsForUser(
     return new Set();
   }
 
-  try {
-    const pool = getMoodlePool();
+  if (isMoodleDbAvailable()) {
+    try {
+      const pool = getMoodlePool();
     const queryStr = `
       SELECT e.id AS moodle_event_id
       FROM mdl_event e
@@ -375,6 +395,8 @@ export async function getSubmittedEventIdsForUser(
   } catch (error) {
     return new Set();
   }
+}
+  return new Set();
 }
 
 /**
