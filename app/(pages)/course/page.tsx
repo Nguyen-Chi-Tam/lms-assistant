@@ -760,7 +760,11 @@ function CourseDetailContent() {
       const res = await fetch('/api/moodle', {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      const data = (await res.json()) as MoodleData & ErrorResponse;
+      const data = (await res.json()) as MoodleData & ErrorResponse & { clientTokenExpired?: boolean };
+      if (res.status === 401 || data.clientTokenExpired) {
+        localStorage.removeItem('moodleToken');
+        localStorage.removeItem('moodleUser');
+      }
       if (res.ok && data) {
         setMoodle(data);
         localStorage.setItem('moodleData', JSON.stringify(data));

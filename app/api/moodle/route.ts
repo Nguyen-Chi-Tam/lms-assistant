@@ -2,11 +2,14 @@ import { NextResponse } from 'next/server';
 import { runtimeEnv } from '../../../db/runtime';
 import { getStudentFeedback } from '@/lib/feedback-store';
 
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
   const { MOODLE_URL, MOODLE_TOKEN } = runtimeEnv();
   const authorization = request.headers.get('authorization');
   const clientToken = authorization?.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
-  const moodleToken = clientToken || MOODLE_TOKEN;
+  let moodleToken = clientToken || MOODLE_TOKEN;
   if (!MOODLE_URL || !moodleToken) {
     return NextResponse.json({
       mode: 'demo',
@@ -24,12 +27,30 @@ export async function GET(request: Request) {
     const params=new URLSearchParams({wstoken:moodleToken,wsfunction:fn,moodlewsrestformat:'json',...extra});
     const response=await fetch(`${base}?${params}`,{headers:{Accept:'application/json'}});
     if(!response.ok)throw new Error(`Moodle ${response.status}`);
-    const data=await response.json() as T & {exception?:string;message?:string};
-    if(data&&typeof data==='object'&&'exception' in data)throw new Error(data.message??'Moodle API error');
+    const data=await response.json() as T & {exception?:string;errorcode?:string;message?:string};
+    if(data&&typeof data==='object'&&('exception' in data || 'errorcode' in data)) {
+      const err = new Error(data.message ?? 'Moodle API error');
+      if (data.errorcode === 'invalidtoken' || data.message?.toLowerCase().includes('token')) {
+        (err as any).code = 'INVALID_TOKEN';
+      }
+      throw err;
+    }
     return data;
   };
+  let clientTokenExpired = false;
   try {
-    const site=await call<{userid:number;fullname:string;username?:string;userpictureurl?:string;userissiteadmin?:boolean}>('core_webservice_get_site_info');
+    let site: {userid:number;fullname:string;username?:string;userpictureurl?:string;userissiteadmin?:boolean};
+    try {
+      site = await call<{userid:number;fullname:string;username?:string;userpictureurl?:string;userissiteadmin?:boolean}>('core_webservice_get_site_info');
+    } catch (firstErr: any) {
+      if (clientToken && MOODLE_TOKEN && clientToken !== MOODLE_TOKEN && (firstErr?.code === 'INVALID_TOKEN' || firstErr?.message?.toLowerCase().includes('token'))) {
+        moodleToken = MOODLE_TOKEN;
+        clientTokenExpired = true;
+        site = await call<{userid:number;fullname:string;username?:string;userpictureurl?:string;userissiteadmin?:boolean}>('core_webservice_get_site_info');
+      } else {
+        throw firstErr;
+      }
+    }
     const courses=await call<Array<{id:number;shortname:string;fullname:string;progress?:number;startdate?:number;lastaccess?:number}>>('core_enrol_get_users_courses',{userid:String(site.userid)});
     const [upcoming, gradeResults, courseEnrolledUsers, moodleUrlsRes, moodlePagesRes, ...contents] = await Promise.all([
       call<{events?:Array<{id:number;name:string;description?:string;timestart:number;url?:string;course?:{fullname?:string};modulename?:string;eventtype?:string}>}>('core_calendar_get_calendar_upcoming_view'),
@@ -389,8 +410,17 @@ export async function GET(request: Request) {
       latestResult,
       syncedAt: new Date().toISOString(),
       moodleUrl: MOODLE_URL ? MOODLE_URL.replace(/\/$/, '') : 'http://moodle.test',
+      clientTokenExpired,
     });
-  } catch (error) {
-    return NextResponse.json({error:error instanceof Error?error.message:'Không thể đồng bộ Moodle.'},{status:502});
+  } catch (error: any) {
+    const isTokenErr = error?.code === 'INVALID_TOKEN' || error?.message?.toLowerCase().includes('token');
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : 'Không thể đồng bộ Moodle.',
+        code: isTokenErr ? 'INVALID_TOKEN' : 'MOODLE_SYNC_ERROR',
+        tokenExpired: isTokenErr,
+      },
+      { status: isTokenErr ? 401 : 502 }
+    );
   }
 }

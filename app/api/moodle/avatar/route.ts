@@ -7,9 +7,9 @@ export async function GET(request: Request) {
   const authorization = request.headers.get('authorization');
   const clientToken = authorization?.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
   const { MOODLE_URL, MOODLE_TOKEN } = runtimeEnv();
-  const token = tokenFromQuery || clientToken || MOODLE_TOKEN;
+  let activeToken = tokenFromQuery || clientToken || MOODLE_TOKEN;
 
-  if (!MOODLE_URL || !token) {
+  if (!MOODLE_URL || !activeToken) {
     return new NextResponse('Missing Moodle credentials', { status: 401 });
   }
 
@@ -17,12 +17,20 @@ export async function GET(request: Request) {
 
   try {
     // 1. Get site info to retrieve user id & default userpictureurl
-    const siteUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(token)}&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json`;
-    const siteRes = await fetch(siteUrl);
-    if (!siteRes.ok) {
+    let siteUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(activeToken)}&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json`;
+    let siteRes = await fetch(siteUrl);
+    let siteData = siteRes.ok ? ((await siteRes.json()) as { userid?: number; userpictureurl?: string; errorcode?: string; exception?: string }) : null;
+
+    if ((!siteData || siteData.errorcode === 'invalidtoken' || siteData.exception) && MOODLE_TOKEN && activeToken !== MOODLE_TOKEN) {
+      activeToken = MOODLE_TOKEN;
+      siteUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(activeToken)}&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json`;
+      siteRes = await fetch(siteUrl);
+      siteData = siteRes.ok ? ((await siteRes.json()) as { userid?: number; userpictureurl?: string }) : null;
+    }
+
+    if (!siteRes.ok || !siteData) {
       return new NextResponse('Failed to connect to Moodle', { status: 502 });
     }
-    const siteData = (await siteRes.json()) as { userid?: number; userpictureurl?: string };
     const userid = siteData.userid;
 
     let targetUrl = siteData.userpictureurl;
@@ -30,7 +38,7 @@ export async function GET(request: Request) {
     // 2. Try fetching full user profile to get high-res profileimageurl
     if (userid) {
       try {
-        const userUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(token)}&wsfunction=core_user_get_users_by_field&field=id&values[0]=${userid}&moodlewsrestformat=json`;
+        const userUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(activeToken)}&wsfunction=core_user_get_users_by_field&field=id&values[0]=${userid}&moodlewsrestformat=json`;
         const userRes = await fetch(userUrl);
         if (userRes.ok) {
           const users = (await userRes.json()) as Array<{ profileimageurl?: string; profileimageurlsmall?: string }>;
@@ -53,7 +61,7 @@ export async function GET(request: Request) {
       fetchUrl = fetchUrl.replace('/pluginfile.php', '/webservice/pluginfile.php');
     }
     if (!fetchUrl.includes('token=')) {
-      fetchUrl += (fetchUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+      fetchUrl += (fetchUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(activeToken)}`;
     }
 
     // 4. Fetch the image directly from Moodle
@@ -61,7 +69,7 @@ export async function GET(request: Request) {
     if (!imgRes.ok) {
       // If webservice/pluginfile.php failed, try original URL with token
       if (fetchUrl !== targetUrl) {
-        const altUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+        const altUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(activeToken)}`;
         const altRes = await fetch(altUrl);
         if (altRes.ok) {
           const contentType = altRes.headers.get('content-type') || 'image/jpeg';

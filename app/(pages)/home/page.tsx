@@ -2326,7 +2326,11 @@ function HomeContent() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         cache: 'no-store',
       });
-      const data = (await res.json()) as MoodleData & ErrorResponse;
+      const data = (await res.json()) as MoodleData & ErrorResponse & { clientTokenExpired?: boolean };
+      if (res.status === 401 || data.clientTokenExpired) {
+        localStorage.removeItem('moodleToken');
+        localStorage.removeItem('moodleUser');
+      }
       if (!res.ok) throw new Error(data.error);
       setMoodle(data);
       localStorage.setItem('moodleData', JSON.stringify(data));
