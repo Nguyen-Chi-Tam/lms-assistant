@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   const { MOODLE_URL, MOODLE_TOKEN } = runtimeEnv();
   const authorization = request.headers.get('authorization');
   const clientToken = authorization?.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
-  let moodleToken = clientToken || MOODLE_TOKEN;
+  let moodleToken: string = clientToken || MOODLE_TOKEN || '';
   if (!MOODLE_URL || !moodleToken) {
     return NextResponse.json({
       mode: 'demo',
@@ -44,7 +44,7 @@ export async function GET(request: Request) {
       site = await call<{userid:number;fullname:string;username?:string;userpictureurl?:string;userissiteadmin?:boolean}>('core_webservice_get_site_info');
     } catch (firstErr: any) {
       if (clientToken && MOODLE_TOKEN && clientToken !== MOODLE_TOKEN && (firstErr?.code === 'INVALID_TOKEN' || firstErr?.message?.toLowerCase().includes('token'))) {
-        moodleToken = MOODLE_TOKEN;
+        moodleToken = MOODLE_TOKEN || '';
         clientTokenExpired = true;
         site = await call<{userid:number;fullname:string;username?:string;userpictureurl?:string;userissiteadmin?:boolean}>('core_webservice_get_site_info');
       } else {

@@ -1,13 +1,17 @@
 import { NextResponse } from 'next/server';
 import { runtimeEnv } from '../../../../db/runtime';
 
+export const maxDuration = 30;
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const tokenFromQuery = searchParams.get('token');
+  const requestedId = searchParams.get('id') || searchParams.get('userId') || searchParams.get('v');
   const authorization = request.headers.get('authorization');
   const clientToken = authorization?.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
   const { MOODLE_URL, MOODLE_TOKEN } = runtimeEnv();
-  let activeToken = tokenFromQuery || clientToken || MOODLE_TOKEN;
+  let activeToken: string = tokenFromQuery || clientToken || MOODLE_TOKEN || '';
 
   if (!MOODLE_URL || !activeToken) {
     return new NextResponse('Missing Moodle credentials', { status: 401 });
@@ -16,30 +20,49 @@ export async function GET(request: Request) {
   const moodleBase = MOODLE_URL.replace(/\/$/, '');
 
   try {
-    // 1. Get site info to retrieve user id & default userpictureurl
-    let siteUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(activeToken)}&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json`;
-    let siteRes = await fetch(siteUrl);
-    let siteData = siteRes.ok ? ((await siteRes.json()) as { userid?: number; userpictureurl?: string; errorcode?: string; exception?: string }) : null;
+    // 1. Check if token works via core_webservice_get_site_info
+    let siteParams = new URLSearchParams({
+      wstoken: activeToken,
+      wsfunction: 'core_webservice_get_site_info',
+      moodlewsrestformat: 'json',
+    });
+    let siteRes = await fetch(`${moodleBase}/webservice/rest/server.php?${siteParams.toString()}`);
+    let siteData = siteRes.ok
+      ? ((await siteRes.json()) as { userid?: number; userpictureurl?: string; errorcode?: string; exception?: string })
+      : null;
 
+    // Fallback to server MOODLE_TOKEN if client token is invalid or expired
     if ((!siteData || siteData.errorcode === 'invalidtoken' || siteData.exception) && MOODLE_TOKEN && activeToken !== MOODLE_TOKEN) {
       activeToken = MOODLE_TOKEN;
-      siteUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(activeToken)}&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json`;
-      siteRes = await fetch(siteUrl);
-      siteData = siteRes.ok ? ((await siteRes.json()) as { userid?: number; userpictureurl?: string }) : null;
+      siteParams = new URLSearchParams({
+        wstoken: activeToken,
+        wsfunction: 'core_webservice_get_site_info',
+        moodlewsrestformat: 'json',
+      });
+      siteRes = await fetch(`${moodleBase}/webservice/rest/server.php?${siteParams.toString()}`);
+      siteData = siteRes.ok
+        ? ((await siteRes.json()) as { userid?: number; userpictureurl?: string; errorcode?: string; exception?: string })
+        : null;
     }
 
-    if (!siteRes.ok || !siteData) {
+    if (!siteRes.ok || !siteData || siteData.errorcode || siteData.exception) {
       return new NextResponse('Failed to connect to Moodle', { status: 502 });
     }
-    const userid = siteData.userid;
 
-    let targetUrl = siteData.userpictureurl;
+    const userid = requestedId ? Number(requestedId) : siteData.userid;
+    let targetUrl = !requestedId || Number(requestedId) === siteData.userid ? siteData.userpictureurl : undefined;
 
-    // 2. Try fetching full user profile to get high-res profileimageurl
+    // 2. Fetch full user profile to get high-res profileimageurl
     if (userid) {
       try {
-        const userUrl = `${moodleBase}/webservice/rest/server.php?wstoken=${encodeURIComponent(activeToken)}&wsfunction=core_user_get_users_by_field&field=id&values[0]=${userid}&moodlewsrestformat=json`;
-        const userRes = await fetch(userUrl);
+        const userParams = new URLSearchParams({
+          wstoken: activeToken,
+          wsfunction: 'core_user_get_users_by_field',
+          field: 'id',
+          'values[0]': String(userid),
+          moodlewsrestformat: 'json',
+        });
+        const userRes = await fetch(`${moodleBase}/webservice/rest/server.php?${userParams.toString()}`);
         if (userRes.ok) {
           const users = (await userRes.json()) as Array<{ profileimageurl?: string; profileimageurlsmall?: string }>;
           if (users?.[0]?.profileimageurl) {
@@ -47,7 +70,7 @@ export async function GET(request: Request) {
           }
         }
       } catch {
-        // fallback to siteData.userpictureurl
+        // fallback to targetUrl
       }
     }
 
@@ -65,23 +88,17 @@ export async function GET(request: Request) {
     }
 
     // 4. Fetch the image directly from Moodle
-    const imgRes = await fetch(fetchUrl);
-    if (!imgRes.ok) {
-      // If webservice/pluginfile.php failed, try original URL with token
-      if (fetchUrl !== targetUrl) {
-        const altUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(activeToken)}`;
-        const altRes = await fetch(altUrl);
-        if (altRes.ok) {
-          const contentType = altRes.headers.get('content-type') || 'image/jpeg';
-          const buffer = await altRes.arrayBuffer();
-          return new NextResponse(buffer, {
-            headers: {
-              'Content-Type': contentType,
-              'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
-            },
-          });
-        }
+    let imgRes = await fetch(fetchUrl);
+    if (!imgRes.ok && fetchUrl !== targetUrl) {
+      // Try original URL with token as fallback
+      const altUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(activeToken)}`;
+      const altRes = await fetch(altUrl);
+      if (altRes.ok) {
+        imgRes = altRes;
       }
+    }
+
+    if (!imgRes.ok) {
       return new NextResponse('Could not fetch avatar from Moodle', { status: imgRes.status });
     }
 
@@ -94,8 +111,7 @@ export async function GET(request: Request) {
         'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
       },
     });
-  } catch {
-    return new NextResponse('Internal server error fetching avatar', { status: 500 });
+  } catch (error: any) {
+    return new NextResponse(`Error fetching avatar: ${error?.message || 'Internal server error'}`, { status: 500 });
   }
 }
-
