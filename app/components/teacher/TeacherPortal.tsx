@@ -904,13 +904,23 @@ export function TeacherPortal({
 
     try {
       setCreateNotifLoading(true);
+
+      // Khởi tạo Date trên trình duyệt (trình duyệt tự tính theo múi giờ địa phương, VD: GMT+7)
+      const eventDate = new Date(notifDeliverTime);
+      if (isNaN(eventDate.getTime())) {
+        notify('Thời gian diễn ra không hợp lệ');
+        return;
+      }
+      // Chuyển sang chuẩn ISO 8601 UTC trước khi gửi API (tự động bù trừ múi giờ thành chuẩn Z)
+      const isoDeliverTime = eventDate.toISOString();
+
       const res = await fetch('/api/teacher/notifications', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           courseId: selectedCourseId,
           title: notifTitle.trim(),
-          deliverTime: notifDeliverTime,
+          deliverTime: isoDeliverTime,
           eventDetails: notifDetails.trim(),
           customReminders: selectedReminders,
         }),

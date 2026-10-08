@@ -65,7 +65,7 @@ export async function POST(request: Request) {
     const moodleCourseId = courseId ? Number(courseId) : null;
     const title = body.title?.trim();
     const eventDetails = body.eventDetails?.trim() || null;
-    const rawTime = body.deliverTime;
+    const rawTime = body.deliverTime?.trim();
 
     if (!title) {
       return NextResponse.json({ success: false, error: 'Tiêu đề thông báo không được để trống' }, { status: 400 });
@@ -75,7 +75,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Thời gian diễn ra không được để trống' }, { status: 400 });
     }
 
-    const deliverTime = new Date(rawTime).toISOString();
+    // Xử lý múi giờ:
+    // 1. Nếu client đã gửi ISO 8601 có timezone (VD: kết thúc bằng 'Z' hoặc offset '+07:00'):
+    //    chuyển đổi trực tiếp về UTC.
+    // 2. Nếu là chuỗi thô không có timezone (VD: "2026-10-08T09:00"):
+    //    trên môi trường máy chủ Vercel (UTC), new Date() sẽ hiểu lầm là UTC gây lệch 7 tiếng.
+    //    Do đó tự động bổ sung múi giờ Việt Nam (+07:00).
+    let deliverTime: string;
+    const parsedDate = new Date(rawTime);
+    if (isNaN(parsedDate.getTime())) {
+      return NextResponse.json({ success: false, error: 'Thời gian diễn ra không hợp lệ' }, { status: 400 });
+    }
+
+    if (rawTime.endsWith('Z') || /[+-]\d{2}(:?\d{2})?$/.test(rawTime)) {
+      deliverTime = parsedDate.toISOString();
+    } else {
+      const vnDate = new Date(`${rawTime}+07:00`);
+      deliverTime = !isNaN(vnDate.getTime()) ? vnDate.toISOString() : parsedDate.toISOString();
+    }
 
     const rawReminders = body.customReminders || body.reminders || [60, 0];
     const reminders = Array.isArray(rawReminders) && rawReminders.length > 0

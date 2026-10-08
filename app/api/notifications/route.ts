@@ -223,10 +223,24 @@ export async function POST(request: Request) {
     const body = (await request.json()) as CreateEventBody;
     const moodleEventId = body?.moodleEventId ? Number(body.moodleEventId) : null;
     const moodleCourseId = body?.moodleCourseId ? Number(body.moodleCourseId) : null;
+    const rawVal = body?.deliverTime ?? body?.endTime ?? body?.startTime;
+    let deliverTime = new Date().toISOString();
+    if (rawVal instanceof Date) {
+      deliverTime = !isNaN(rawVal.getTime()) ? rawVal.toISOString() : deliverTime;
+    } else if (typeof rawVal === 'string' && rawVal.trim()) {
+      const rawTime = rawVal.trim();
+      const parsedDate = new Date(rawTime);
+      if (!isNaN(parsedDate.getTime())) {
+        if (rawTime.endsWith('Z') || /[+-]\d{2}(:?\d{2})?$/.test(rawTime)) {
+          deliverTime = parsedDate.toISOString();
+        } else {
+          const vnDate = new Date(`${rawTime}+07:00`);
+          deliverTime = !isNaN(vnDate.getTime()) ? vnDate.toISOString() : parsedDate.toISOString();
+        }
+      }
+    }
     const eventType = body?.eventType || 'assign';
     const title = body?.title || 'Thông báo mới';
-    const rawTime = body?.deliverTime || body?.endTime || body?.startTime;
-    const deliverTime = rawTime ? new Date(rawTime).toISOString() : new Date().toISOString();
     const eventDetails = body?.eventDetails || null;
 
     const rawReminders = body?.reminders || body?.sentReminders || body?.customReminders;

@@ -105,7 +105,7 @@ export const events = pgTable('events', {
   moodleEventId: integer('moodle_event_id').unique(),
   eventType: varchar('event_type', { length: 50 }).notNull(),
   title: varchar('title', { length: 255 }).notNull(),
-  deliverTime: timestamp('deliver_time', { withTimezone: true }).notNull(),
+  deliverTime: timestamp('deliver_time', { withTimezone: true, mode: 'date' }).notNull(),
   sentReminders: integer('sent_reminders').array().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   moodleCourseId: integer('moodle_course_id'),
