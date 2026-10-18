@@ -1,0 +1,56 @@
+{
+  "version": "5",
+  "redirects": {
+    "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.116.0"
+  },
+  "remote": {
+    "https://esm.sh/@supabase/supabase-js@2.116.0": "a38014743786a06c7dbf095a99e9ef3b38c0ec16bff076fc7cd403991192b34e"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@anthropic-ai/sdk@0.122",
+        "npm:@cloudflare/vite-plugin@1.37.1",
+        "npm:@cloudflare/workers-types@4.20260515.1",
+        "npm:@google/genai@^2.19.0",
+        "npm:@openai/sites-vite-plugin@0.1 || 0.2",
+        "npm:@supabase/supabase-js@^2.112.4",
+        "npm:@tailwindcss/postcss@4.2.1",
+        "npm:@types/node@22.19.19",
+        "npm:@types/react-dom@19.2.3",
+        "npm:@types/react@19.2.14",
+        "npm:@vitejs/plugin-react@6.0.2",
+        "npm:@vitejs/plugin-rsc@0.5.26",
+        "npm:cloudinary@^2.11.0",
+        "npm:docx@^9.7.1",
+        "npm:drizzle-kit@0.31.10",
+        "npm:drizzle-orm@0.45.2",
+        "npm:eslint-config-next@16.2.6",
+        "npm:eslint@9.39.4",
+        "npm:groq-sdk@^1.6.0",
+        "npm:html-to-image@^1.11.13",
+        "npm:katex@~0.18.4",
+        "npm:lucide-react@^1.39.0",
+        "npm:next@16.2.6",
+        "npm:openai@^7.8.0",
+        "npm:postgres@^3.4.9",
+        "npm:pptxgenjs@^4.0.1",
+        "npm:react-dom@19.2.6",
+        "npm:react-markdown@^10.1.0",
+        "npm:react-server-dom-webpack@19.2.6",
+        "npm:react@19.2.6",
+        "npm:rehype-katex@^7.0.1",
+        "npm:rehype-raw@7",
+        "npm:remark-gfm@^4.0.1",
+        "npm:remark-math@6",
+        "npm:tailwindcss@4.2.1",
+        "npm:typescript@5.9.3",
+        "npm:unpdf@^1.8.1",
+        "npm:vinext@1.0.0-beta.3",
+        "npm:vite@8.0.13",
+        "npm:wrangler@4.92.0",
+        "npm:xlsx@~0.18.5"
+      ]
+    }
+  }
+}
