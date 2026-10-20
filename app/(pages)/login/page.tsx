@@ -10,33 +10,99 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [stepMessage, setStepMessage] = useState('');
   const [error, setError] = useState('');
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
     setError('');
+    setStepMessage('Đang xác thực thông tin và phân loại vai trò...');
+
+    // Clear any previous session / cached data to prevent cross-account contamination
     try {
+      localStorage.removeItem('moodleToken');
+      localStorage.removeItem('moodleUser');
+      localStorage.removeItem('moodleData');
+      localStorage.removeItem('moodleDataSyncedAt');
+    } catch {}
+
+    try {
+      // Step 1: Divide role first via /api/login
       const response = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
-      const data = (await response.json()) as { error?: string; moodleToken?: string; user?: { id?: number; role?: string } };
+      const data = (await response.json()) as {
+        error?: string;
+        moodleToken?: string;
+        user?: { id?: number; role?: string; fullname?: string; username?: string; avatarUrl?: string };
+      };
       if (!response.ok || !data.moodleToken || !data.user) {
         throw new Error(data.error ?? 'Không thể đăng nhập.');
       }
-      localStorage.setItem('moodleToken', data.moodleToken);
-      localStorage.setItem('moodleUser', JSON.stringify(data.user));
 
-      if (data.user.id && data.user.role !== 'teacher') {
+      const token = data.moodleToken;
+      const user = data.user;
+      const role = user.role === 'teacher' ? 'teacher' : 'student';
+
+      localStorage.setItem('moodleToken', token);
+      localStorage.setItem('moodleUser', JSON.stringify({ ...user, role }));
+
+      // Step 2: Sync Moodle data during login
+      setStepMessage(`Vai trò: ${role === 'teacher' ? 'Giảng viên' : 'Học viên'}. Đang đồng bộ Moodle...`);
+
+      try {
+        const syncRes = await fetch('/api/moodle?force=true', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'x-force-sync': 'true',
+          },
+          cache: 'no-store',
+        });
+
+        if (syncRes.ok) {
+          const moodleData = (await syncRes.json()) as any;
+          if (moodleData?.courses && Array.isArray(moodleData.courses)) {
+            // Guarantee student accounts have no teacher flags
+            if (role === 'student') {
+              moodleData.courses = moodleData.courses.map((c: any) => ({
+                ...c,
+                isTeacher: false,
+                role: 'student',
+              }));
+            }
+          }
+          localStorage.setItem('moodleData', JSON.stringify(moodleData));
+          localStorage.setItem('moodleDataSyncedAt', String(Date.now()));
+
+          if (moodleData?.user) {
+            localStorage.setItem(
+              'moodleUser',
+              JSON.stringify({
+                ...user,
+                ...moodleData.user,
+                role,
+              })
+            );
+          }
+        }
+      } catch (syncErr) {
+        console.warn('Moodle sync during login warning:', syncErr);
+      }
+
+      // Register Web Push notification token for students
+      if (user.id && role === 'student') {
         try {
-          await registerFcmToken(data.user.id, true, data.user.role);
+          await registerFcmToken(user.id, true, role);
         } catch (fcmErr) {
           console.warn('FCM registration on login:', fcmErr);
         }
       }
 
+      // Step 3: Lastly enter the home page
+      setStepMessage('Đăng nhập thành công! Đang chuyển hướng...');
       router.push('/home');
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : 'Không thể đăng nhập.');
@@ -67,7 +133,14 @@ export default function LoginPage() {
             <label>Email hoặc tên đăng nhập<input type="text" value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" inputMode="email" placeholder="student@example.com" required /></label>
             <label>Mật khẩu<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" required /></label>
             {error && <p className="auth-error" role="alert">{error}</p>}
-            <button className="auth-submit" type="submit" disabled={loading}>{loading ? 'Đang đăng nhập...' : 'Đăng nhập'}</button>
+            <button className="auth-submit" type="submit" disabled={loading}>
+              {loading ? (stepMessage || 'Đang đăng nhập...') : 'Đăng nhập'}
+            </button>
+            {loading && stepMessage && (
+              <p style={{ marginTop: '8px', fontSize: '12px', color: '#c4b5fd', textAlign: 'center' }}>
+                {stepMessage}
+              </p>
+            )}
           </form>
         )}
         <p className="auth-footer">Kết nối bảo mật với Moodle</p>

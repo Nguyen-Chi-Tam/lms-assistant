@@ -3052,10 +3052,12 @@ button {
 .chat-compose>div,
 .chat-compose-footer {
   display: flex;
+  flex-direction: row;
   justify-content: space-between;
   align-items: center;
   margin-top: 6px;
   gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .chat-compose-chips {
@@ -3063,6 +3065,17 @@ button {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  order: 1;
+}
+
+.chat-compose-footer > .model-selector-chip {
+  order: 2;
+  box-sizing: border-box;
+  height: 28px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 8px;
+  flex-shrink: 0;
 }
 
 .chat-compose-actions {
@@ -3070,6 +3083,8 @@ button {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  order: 3;
+  margin-left: auto;
 }
 
 .chat-compose span {
@@ -4475,28 +4490,36 @@ button {
   /* Mobile Chat Compose */
   .chat-compose {
     margin: 0 8px 12px !important;
-    padding: 10px 12px !important;
-    border-radius: 12px !important;
+    padding: 10px 12px 8px !important;
+    border-radius: 14px !important;
   }
   .chat-compose textarea {
-    font-size: 13px !important;
-    height: 44px !important;
+    font-size: 14px !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    max-height: 110px !important;
   }
   .chat-compose-footer {
     display: flex !important;
-    flex-direction: column !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
     gap: 8px !important;
-    align-items: stretch !important;
-    margin-top: 6px !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    margin-top: 8px !important;
   }
   .chat-compose-chips {
+    order: 1 !important;
     display: flex !important;
     align-items: center !important;
     gap: 6px !important;
     overflow-x: auto !important;
+    overflow-y: hidden !important;
     -ms-overflow-style: none !important;
-    width: 100% !important;
     flex-wrap: nowrap !important;
+    padding-bottom: 2px !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
   }
   @supports (scrollbar-width: none) {
     .chat-compose-chips {
@@ -4508,15 +4531,68 @@ button {
     width: 0 !important;
     height: 0 !important;
   }
+  /* Short labels on mobile */
+  .chip-label-full {
+    display: none !important;
+  }
+  .chip-label-short {
+    display: inline !important;
+  }
+  /* Compact chips */
+  .mode-indicator-chip {
+    padding: 5px 9px !important;
+    font-size: 11px !important;
+    border-radius: 8px !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+  }
+  /* Actions: trash + send, right-aligned, no stretch */
   .chat-compose-actions {
+    order: 2 !important;
     display: flex !important;
     align-items: center !important;
-    justify-content: space-between !important;
-    width: 100% !important;
+    gap: 6px !important;
+    flex-shrink: 0 !important;
+    margin-left: auto !important;
   }
+  /* Clear chat: icon only */
   .clear-chat-btn {
     font-size: 11px !important;
-    padding: 5px 8px !important;
+    padding: 7px 10px !important;
+    flex-shrink: 0 !important;
+  }
+  .clear-chat-btn span {
+    display: none !important;
+  }
+  /* Send button: compact */
+  .chat-send-btn {
+    flex: 0 0 auto !important;
+    justify-content: center !important;
+    padding: 8px 14px !important;
+    font-size: 13px !important;
+    border-radius: 10px !important;
+    min-height: 34px !important;
+  }
+  /* Stop button: compact */
+  .chat-stop-btn {
+    flex: 0 0 auto !important;
+    justify-content: center !important;
+    min-height: 34px !important;
+    border-radius: 10px !important;
+    padding: 8px 14px !important;
+  }
+  /* Model selector: full width on its own row */
+  .chat-compose-footer > .model-selector-chip {
+    order: 3 !important;
+    width: 100% !important;
+    flex: 1 1 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+    font-size: 12px !important;
+    height: 34px !important;
+    flex-shrink: 0 !important;
+    margin-top: 2px !important;
   }
 
   /* Workspace title on mobile */
@@ -7985,6 +8061,14 @@ body {
   padding: 8px 12px;
 }
 
+/* ── Chip label helpers (responsive) ─────────────────────── */
+.chip-label-short {
+  display: none;
+}
+.chip-label-full {
+  display: inline;
+}
+
 /* ==============================================================================
    CHAT SOURCE CITATIONS (Course Doc Pills vs External Source Plus Pills)
    ============================================================================== */
@@ -10150,26 +10234,117 @@ body {
 
   .course-workspace.teacher-workspace.assistant-tab-active .chat-panel .chat-compose {
     margin: 0 6px calc(6px + env(safe-area-inset-bottom, 0px)) !important;
-    padding: 8px !important;
-    border-radius: 12px !important;
+    padding: 10px 10px 8px !important;
+    border-radius: 14px !important;
   }
 
   .chat-compose textarea {
-    height: 42px !important;
-    min-height: 42px !important;
+    height: 40px !important;
+    min-height: 40px !important;
+    max-height: 120px !important;
     padding: 2px 0 !important;
+    font-size: 14px !important;
+    resize: none !important;
   }
 
   .chat-compose-footer {
-    gap: 6px !important;
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    margin-top: 8px !important;
   }
 
+  .chat-compose-chips {
+    order: 1 !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 6px !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    -ms-overflow-style: none !important;
+    scrollbar-width: none !important;
+    flex-wrap: nowrap !important;
+    padding-bottom: 2px !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+  }
+
+  .chat-compose-chips::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  /* Show short chip labels on mobile, hide full labels */
+  .chip-label-full {
+    display: none !important;
+  }
+  .chip-label-short {
+    display: inline !important;
+  }
+
+  /* Compact chips on mobile */
+  .mode-indicator-chip {
+    padding: 5px 9px !important;
+    font-size: 11px !important;
+    border-radius: 8px !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+  }
+
+  /* Actions: trash + send, compact, right-aligned */
   .chat-compose-actions {
-    min-height: 36px;
+    order: 2 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    flex-shrink: 0 !important;
+    margin-left: auto !important;
+  }
+
+  /* Clear chat: icon only on mobile */
+  .clear-chat-btn {
+    padding: 7px 10px !important;
+    flex-shrink: 0 !important;
   }
 
   .clear-chat-btn span {
-    display: none;
+    display: none !important;
+  }
+
+  /* Send button: compact */
+  .chat-send-btn {
+    flex: 0 0 auto !important;
+    justify-content: center !important;
+    padding: 8px 14px !important;
+    font-size: 13.5px !important;
+    border-radius: 10px !important;
+    min-height: 34px !important;
+  }
+
+  /* Stop-generation button: compact */
+  .chat-stop-btn {
+    flex: 0 0 auto !important;
+    justify-content: center !important;
+    min-height: 34px !important;
+    border-radius: 10px !important;
+    padding: 8px 14px !important;
+  }
+
+  /* Model selector: full width on 2nd row */
+  .chat-compose-footer > .model-selector-chip {
+    order: 3 !important;
+    width: 100% !important;
+    flex: 1 1 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+    font-size: 12px !important;
+    height: 34px !important;
+    flex-shrink: 0 !important;
+    margin-top: 2px !important;
   }
 
   .teacher-notifications {

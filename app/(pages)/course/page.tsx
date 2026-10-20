@@ -856,14 +856,16 @@ function CourseDetailContent() {
 
     if (moodle?.courses?.length) {
       moodle.courses.forEach((mc, index) => {
-        const isTeacher =
+        const isStudentUser = user?.role === 'student';
+        const isTeacher = !isStudentUser && (
           user?.role === 'teacher' ||
           mc.role === 'editingteacher' ||
           mc.role === 'teacher' ||
           mc.role === 'manager' ||
           mc.role === 'coursecreator' ||
           mc.role === 'admin' ||
-          Boolean(mc.isTeacher);
+          Boolean(mc.isTeacher)
+        );
         coursesMap.set(mc.shortname.toLowerCase(), {
           id: mc.id,
           code: mc.shortname,
@@ -2771,6 +2773,7 @@ function CourseDetailContent() {
         onRequestNotificationPermission={undefined}
         user={user}
         displayName={displayName}
+        isTeacher={isTeacherCourse}
         onOpenProfile={() => setProfile(true)}
         onOpenNotification={(notif) => {
           setNotifications(false);
@@ -3587,12 +3590,15 @@ function CourseDetailContent() {
                           ) : (
                             <Globe size={13} style={{ color: '#38bdf8' }} />
                           )}
-                          <span>
+                          <span className="chip-label-full">
                             {ragMode === 'strict'
                               ? 'Bám sát: 100%'
                               : ragMode === 'hybrid'
                                 ? 'RAG Lai (Ưu tiên tài liệu)'
                                 : 'Sáng tạo (Nguồn ngoài)'}
+                          </span>
+                          <span className="chip-label-short">
+                            {ragMode === 'strict' ? 'Strict' : ragMode === 'hybrid' ? 'Hybrid' : 'Creative'}
                           </span>
                         </button>
 
@@ -3615,43 +3621,45 @@ function CourseDetailContent() {
                           style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
                         >
                           {answerStyle === 'concise' ? <Zap size={13} /> : <BookOpen size={13} />}
-                          <span>{answerStyle === 'concise' ? 'Nhanh / Trọng tâm' : 'Chi tiết / Chuyên sâu'}</span>
+                          <span className="chip-label-full">{answerStyle === 'concise' ? 'Nhanh / Trọng tâm' : 'Chi tiết / Chuyên sâu'}</span>
+                          <span className="chip-label-short">{answerStyle === 'concise' ? 'Ngắn' : 'Chi tiết'}</span>
                         </button>
-
-                        {/* AI Model Selector & Healthcheck (CHỈ HIỂN THỊ VỚI GIẢNG VIÊN ĐỂ TEST / HEALTHCHECK) */}
-                        {isTeacherCourse && (
-                          <select
-                            value={selectedModel}
-                            onChange={e => {
-                              setSelectedModel(e.target.value);
-                              const chosen = availableModels.find(m => m.id === e.target.value);
-                              const label = e.target.value === 'auto'
-                                ? 'Tự động'
-                                : (chosen?.label || e.target.value);
-                              notify(`[Giảng viên] Đã chọn: ${label}`);
-                            }}
-                            className="model-selector-chip"
-                            title="Chọn model AI để kiểm tra kết nối và độ nhạy"
-                            style={{
-                              height: '28px',
-                              fontSize: '11px',
-                              fontWeight: 600,
-                              borderRadius: '8px',
-                              background: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.22)' : 'rgba(255, 255, 255, 0.05)',
-                              borderColor: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.5)' : 'rgba(255, 255, 255, 0.12)',
-                              color: '#e2e8f0',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            <option value="auto">Model: Tự động</option>
-                            {availableModels.map(m => (
-                              <option key={m.id} value={m.id} disabled={m.available === false}>
-                                {m.available === false ? '[Offline] ' : ''}{m.label}
-                              </option>
-                            ))}
-                          </select>
-                        )}
                       </div>
+
+                      {/* AI Model Selector & Healthcheck (CHỈ HIỂN THỊ VỚI GIẢNG VIÊN ĐỂ TEST / HEALTHCHECK) */}
+                      {isTeacherCourse && (
+                        <select
+                          value={selectedModel}
+                          onChange={e => {
+                            setSelectedModel(e.target.value);
+                            const chosen = availableModels.find(m => m.id === e.target.value);
+                            const label = e.target.value === 'auto'
+                              ? 'Tự động'
+                              : (chosen?.label || e.target.value);
+                            notify(`[Giảng viên] Đã chọn: ${label}`);
+                          }}
+                          className="model-selector-chip"
+                          title="Chọn model AI để kiểm tra kết nối và độ nhạy"
+                          style={{
+                            height: '28px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            borderRadius: '8px',
+                            background: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                            borderColor: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.5)' : 'rgba(255, 255, 255, 0.12)',
+                            color: '#e2e8f0',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <option value="auto">Model: Tự động</option>
+                          {availableModels.map(m => (
+                            <option key={m.id} value={m.id} disabled={m.available === false}>
+                              {m.available === false ? '[Offline] ' : ''}{m.label}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+
                       <div className="chat-compose-actions">
                         <button
                           type="button"

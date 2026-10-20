@@ -37,6 +37,7 @@ export interface CourseTopBarProps {
   onOpenProfile: () => void;
   onOpenNotification?: (item: NotificationItem) => void;
   lmsUrl?: string;
+  isTeacher?: boolean;
 }
 
 export function CourseTopBar({
@@ -58,18 +59,26 @@ export function CourseTopBar({
   onOpenProfile,
   onOpenNotification,
   lmsUrl,
+  isTeacher = false,
 }: CourseTopBarProps) {
   const notifRef = useRef<HTMLDivElement>(null);
   const [dbEvents, setDbEvents] = useState<NotificationItem[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
+  const isTeacherUser = Boolean(
+    isTeacher ||
+    user?.role === 'teacher' ||
+    user?.role === 'editingteacher' ||
+    user?.role === 'manager'
+  );
   const prevSyncingRef = useRef(syncing);
   // Guards so mount + sync-finish + popover-open collapse into a single request.
   const lastNotifFetchRef = useRef(0);
   const notifFetchInFlightRef = useRef(false);
 
-  // Fetch notifications from events table
+  // Fetch notifications from events table (students only)
   const fetchDbNotifications = useCallback(async (opts?: { force?: boolean }) => {
+    if (isTeacherUser) return;
     let uid = user?.id;
     if (!uid && typeof window !== 'undefined') {
       try {
@@ -190,8 +199,9 @@ export function CourseTopBar({
           </button>
         )}
 
-        {/* Notification Bell (Mobile & Desktop) */}
-        <div className="course-topbar-notif-wrap" ref={notifRef}>
+        {/* Notification Bell (Mobile & Desktop) - Students only */}
+        {!isTeacherUser && (
+          <div className="course-topbar-notif-wrap" ref={notifRef}>
           <button
             type="button"
             aria-label="Thông báo"
@@ -322,6 +332,7 @@ export function CourseTopBar({
             </div>
           )}
         </div>
+        )}
 
         {/* Profile Avatar Button */}
         <button

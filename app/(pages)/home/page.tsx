@@ -298,13 +298,15 @@ function Dashboard({
   const courses: Course[] =
     moodle?.courses?.length
       ? moodle.courses.map((course, index) => {
-          const isTeacher =
+          const isStudentUser = user?.role === 'student';
+          const isTeacher = !isStudentUser && (
             course.role === 'editingteacher' ||
             course.role === 'teacher' ||
             course.role === 'manager' ||
             course.role === 'coursecreator' ||
             course.role === 'admin' ||
-            Boolean(course.isTeacher);
+            Boolean(course.isTeacher)
+          );
           return {
             id: course.id,
             code: course.shortname,
@@ -313,7 +315,7 @@ function Dashboard({
             color: defaultColors[index % defaultColors.length],
             icon: course.shortname.slice(0, 2).toUpperCase(),
             next: isTeacher ? 'Quản lý khóa học & Giảng dạy' : 'Xem nội dung khóa học',
-            role: course.role || (isTeacher ? 'editingteacher' : 'student'),
+            role: isTeacher ? (course.role || 'editingteacher') : 'student',
             isTeacher,
             startdate: course.startdate,
             lastaccess: course.lastaccess,
@@ -2444,14 +2446,16 @@ function HomeContent() {
 
   const moodleCourses: Course[] = useMemo(() => {
     if (!moodle?.courses?.length) return [];
+    const isStudentUser = user?.role === 'student';
     return moodle.courses.map((course, index) => {
-      const isTeacher =
+      const isTeacher = !isStudentUser && (
         course.role === 'editingteacher' ||
         course.role === 'teacher' ||
         course.role === 'manager' ||
         course.role === 'coursecreator' ||
         course.role === 'admin' ||
-        Boolean(course.isTeacher);
+        Boolean(course.isTeacher)
+      );
       return {
         id: course.id,
         code: course.shortname,
@@ -2460,11 +2464,11 @@ function HomeContent() {
         color: defaultColors[index % defaultColors.length],
         icon: course.shortname.slice(0, 2).toUpperCase(),
         next: isTeacher ? 'Quản lý khóa học & Giảng dạy' : 'Xem nội dung khóa học',
-        role: course.role || (isTeacher ? 'editingteacher' : 'student'),
+        role: isTeacher ? (course.role || 'editingteacher') : 'student',
         isTeacher,
       };
     });
-  }, [moodle]);
+  }, [moodle, user?.role]);
 
   const handleOpenTeacherCourse = (course: Course) => {
     setTeacherCourseId(course.id ?? course.code);
@@ -2513,7 +2517,7 @@ function HomeContent() {
 
   const isAdminOrTeacher = useMemo(() => {
     if (user?.role === 'teacher') return true;
-    if (user?.role === 'student') return moodleCourses.some(c => c.isTeacher);
+    if (user?.role === 'student') return false;
     return moodleCourses.some(c => c.isTeacher);
   }, [user?.role, moodleCourses]);
 
@@ -2547,6 +2551,7 @@ function HomeContent() {
         onOpenProfile={() => setProfile(true)}
         onOpenNotification={handleOpenNotification}
         lmsUrl={moodle?.moodleUrl || 'http://moodle.test'}
+        isTeacher={active === 'Giảng viên' || user?.role === 'teacher' || user?.role === 'editingteacher'}
       />
 
       <section className="content">
