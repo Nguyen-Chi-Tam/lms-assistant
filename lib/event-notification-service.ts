@@ -38,6 +38,33 @@ interface RawEvent {
 }
 
 /**
+ * Cron/reminder notifications are student-only. Teachers now own FCM tokens
+ * (for artifact-ready pushes), so make sure they never enter the scheduled
+ * reminder audience even if `user_courses` contains their enrollments.
+ */
+async function filterToStudentUserIds(userIds: number[]): Promise<number[]> {
+  if (!supabaseAdmin || userIds.length === 0) return userIds;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('users')
+      .select('moodle_user_id, role')
+      .in('moodle_user_id', userIds);
+    if (error || !data) return userIds;
+
+    const nonStudentIds = new Set(
+      data
+        .filter(u => u.role && u.role !== 'student')
+        .map(u => Number(u.moodle_user_id))
+    );
+    // Unknown users (not in the users table yet) are kept for backward
+    // compatibility; any known teacher/admin is explicitly skipped.
+    return userIds.filter(id => !nonStudentIds.has(id));
+  } catch {
+    return userIds;
+  }
+}
+
+/**
  * Lấy danh sách user_id của sinh viên ghi danh trong khóa học.
  * 1. Ưu tiên tra cứu bảng trung gian `user_courses` trên Supabase
  * 2. Fallback sang Moodle API core_enrol_get_users_courses cho danh sách users hiện có
@@ -325,8 +352,10 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
           .eq('id', event.id);
       }
 
-      // Xác định sinh viên thuộc lớp học này
-      const targetUserIds = await getEnrolledUserIdsForCourse(event.moodleCourseId || null, userCoursesCache);
+      // Xác định sinh viên thuộc lớp học này (loại bỏ giáo viên/admin)
+      const targetUserIds = await filterToStudentUserIds(
+        await getEnrolledUserIdsForCourse(event.moodleCourseId || null, userCoursesCache)
+      );
 
       if (targetUserIds.length === 0) {
         details.push({

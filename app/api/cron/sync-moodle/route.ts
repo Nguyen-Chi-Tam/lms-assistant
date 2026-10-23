@@ -186,10 +186,14 @@ export async function GET(request: Request) {
       return isWithinWindow && !isTeacherGrading;
     });
 
-    // 2. Lấy danh sách users từ bảng users
+    // 2. Lấy danh sách SINH VIÊN từ bảng users.
+    // Giáo viên không được đưa vào user_courses để cron nhắc nhở chỉ phục vụ sinh viên.
     let targetUserIds: number[] = [];
     if (supabaseAdmin) {
-      const { data: userRows } = await supabaseAdmin.from('users').select('moodle_user_id');
+      const { data: userRows } = await supabaseAdmin
+        .from('users')
+        .select('moodle_user_id')
+        .eq('role', 'student');
       if (userRows && userRows.length > 0) {
         targetUserIds = userRows.map((u) => u.moodle_user_id).filter(Boolean);
       }

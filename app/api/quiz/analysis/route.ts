@@ -1,11 +1,15 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { runtimeEnv } from '@/db/runtime';
 import { generateText } from '@/models/registry';
 import { parseMoodleQuestion, ParsedMoodleQuestion, cleanAnswerText } from '@/lib/moodle-quiz-parser';
 import { getLearningArtifacts, getQuizAnalysisByAttempt, saveLearningArtifact } from '@/lib/learning-artifacts';
+import { sendArtifactReadyNotification } from '@/lib/artifact-notifications';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import type { QuizAnalysisData } from '@/app/types';
 import { fetchWithCache, invalidateCache } from '@/lib/server-cache';
+
+// AI diagnosis can be slow; give the serverless function room to finish.
+export const maxDuration = 60;
 
 function sanitizeQuestionsAnalysis(questions: any[]) {
   if (!Array.isArray(questions)) return [];
@@ -385,6 +389,25 @@ Không kèm markdown hay văn bản ngoài JSON.`;
     }
 
     invalidateCache('quiz_analysis:');
+
+    // Event-driven: push the "artifact is ready" notification as soon as the
+    // diagnosis is persisted. `after()` keeps the promise alive after the
+    // response is returned on serverless platforms (Vercel/Netlify).
+    const notifyUserId = Number(attemptInfo.userid) || Number(body.userId) || 0;
+    if (notifyUserId > 0) {
+      after(() =>
+        sendArtifactReadyNotification({
+          userId: notifyUserId,
+          artifactType: 'quiz_analysis',
+          artifactName: analysisData.quizName,
+          artifactId: analysisData.id || savedArtifact?.id,
+          attemptId,
+          courseId: targetCourseId || null,
+          courseCode: body.courseCode,
+          courseName: body.courseName,
+        })
+      );
+    }
 
     return NextResponse.json({
       success: true,

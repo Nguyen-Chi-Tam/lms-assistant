@@ -48,7 +48,8 @@ export const fcmTokens = pgTable('fcm_tokens', {
     .notNull(),
   token: text('token').notNull().unique(),
   deviceId: varchar('device_id', { length: 255 }).notNull(),
-  deviceType: varchar('device_type', { length: 50 }),
+  /** Origin where this token was registered (e.g. http://localhost:3000). */
+  url: text('url'),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }).defaultNow().notNull(),
 }, table => ({
   userDeviceUnique: unique('fcm_tokens_user_device_unique').on(table.userId, table.deviceId),

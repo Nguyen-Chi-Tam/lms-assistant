@@ -98,7 +98,7 @@ import {
 } from '@/app/lib/grade-router';
 import type { SlideDeckData } from '@/lib/pptx-export';
 import { cleanSummaryData } from '@/lib/summary-cleaner';
-import { registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
+import { ensureFcmTokenRegistered, registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
 import { ErrorBoundary } from '@/app/components/ErrorBoundary';
 
 // Heavy, conditionally-rendered workspaces are loaded on demand so they do not
@@ -733,6 +733,12 @@ function CourseDetailContent() {
   const initialIntent = searchParams.get('intent') || searchParams.get('q') || '';
   // When draft=1 the intent is pre-filled but NOT auto-sent (user can edit model/prompt first)
   const draftMode = searchParams.get('draft') === '1';
+  // Artifact-ready pushes deep-link with `tool=Tóm tắt|Mindmap|Flashcard|Slide`.
+  const queryTool = searchParams.get('tool');
+  const teacherInitialTool =
+    queryTool && ['Tóm tắt', 'Mindmap', 'Flashcard', 'Slide'].includes(queryTool)
+      ? queryTool
+      : undefined;
 
   const [moodle, setMoodle] = useState<MoodleData | null>(null);
   const [user, setUser] = useState<MoodleUser | null>(null);
@@ -767,7 +773,9 @@ function CourseDetailContent() {
   };
 
   useEffect(() => {
-    if (user?.id && user?.role === 'student') {
+    // Teachers also need a device token so they receive artifact-ready pushes
+    // for the AI materials they generate themselves.
+    if (user?.id) {
       void registerFcmToken(user.id, false, user.role);
     }
   }, [user?.id, user?.role]);
@@ -813,6 +821,15 @@ function CourseDetailContent() {
     } finally {
       setSyncing(false);
     }
+  };
+
+  const handleManualSync = () => {
+    // A manual sync is an explicit user gesture: make sure this browser has a
+    // valid FCM token in the DB (and a freshly stored registration URL).
+    if (user?.id) {
+      void ensureFcmTokenRegistered(user.id, user.role);
+    }
+    void syncMoodleData(true);
   };
 
   useEffect(() => {
@@ -1461,12 +1478,18 @@ function CourseDetailContent() {
   const [selectedStrategies, setSelectedStrategies] = useState<GradeResponseStrategy[]>(['roadmap']);
   const [hideStrategyBar, setHideStrategyBar] = useState<boolean>(false);
   const analysisAbortRef = useRef<AbortController | null>(null);
+  const analysisLoadingAttemptRef = useRef<number | null>(null);
+  const autoOpenedAnalysisRef = useRef<string | null>(null);
+  const handleAskAiAboutGradeRef = useRef<
+    ((res: ExamResult, forceReanalyze?: boolean) => Promise<void>) | null
+  >(null);
 
   const handleStopQuizAnalysis = () => {
     if (analysisAbortRef.current) {
       analysisAbortRef.current.abort();
       analysisAbortRef.current = null;
     }
+    analysisLoadingAttemptRef.current = null;
     setAnalysisLoading(false);
     if (!currentAnalysis) {
       setAnalysisError('Đã dừng quá trình chẩn đoán bài thi.');
@@ -1591,12 +1614,20 @@ function CourseDetailContent() {
         }
       }
 
+      // The same diagnosis is already running in the background (e.g. the user
+      // hid the modal and reopened it): just show the loading modal again.
+      if (analysisLoadingAttemptRef.current === Number(attemptIdToUse)) {
+        setAnalysisModalOpen(true);
+        return;
+      }
+
       // Abort any ongoing diagnosis request
       if (analysisAbortRef.current) {
         analysisAbortRef.current.abort();
       }
       const controller = new AbortController();
       analysisAbortRef.current = controller;
+      analysisLoadingAttemptRef.current = Number(attemptIdToUse);
 
       // Clear previous analysis to prevent showing old exam title or data while loading
       setCurrentAnalysis(null);
@@ -1670,12 +1701,43 @@ function CourseDetailContent() {
       } finally {
         if (analysisAbortRef.current === controller) {
           analysisAbortRef.current = null;
+          analysisLoadingAttemptRef.current = null;
         }
         setAnalysisLoading(false);
       }
       return;
     }
   };
+
+  // Keep the latest handler in a ref so the deep-link effect below can call it
+  // without re-running on every render.
+  useEffect(() => {
+    handleAskAiAboutGradeRef.current = handleAskAiAboutGrade;
+  });
+
+  // Deep-link from an "artifact ready" push notification: auto-open the saved
+  // quiz diagnosis for the matching attempt.
+  useEffect(() => {
+    if (isTeacherCourse) return;
+    const requested = searchParams.get('analysisAttempt');
+    if (!requested) return;
+    if (autoOpenedAnalysisRef.current === requested) return;
+
+    const matched = courseExamResults.find(r => Number(r.attemptId) === Number(requested));
+    if (!matched) return;
+
+    autoOpenedAnalysisRef.current = requested;
+    void handleAskAiAboutGradeRef.current?.(matched);
+
+    // Remove the one-shot param so a page refresh does not reopen the modal.
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('analysisAttempt');
+      window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+    } catch {
+      // ignore history failures
+    }
+  }, [searchParams, courseExamResults, isTeacherCourse]);
 
   // Close drawers on Escape key
   useEffect(() => {
@@ -2765,7 +2827,7 @@ function CourseDetailContent() {
         onSearchChange={setSearch}
         searchRef={searchRef}
         syncing={syncing}
-        onSync={() => void syncMoodleData(true)}
+        onSync={handleManualSync}
         notifications={notifications}
         onToggleNotifications={() => setNotifications(!notifications)}
         onCloseNotifications={() => setNotifications(false)}
@@ -2807,6 +2869,8 @@ function CourseDetailContent() {
               hideHeader={true}
               sources={courseSources}
               initialTab="assistant"
+              initialTool={teacherInitialTool}
+              currentUser={user || undefined}
               onTabChange={setTeacherTab}
             />
           </div>
@@ -5088,11 +5152,9 @@ function CourseDetailContent() {
       <QuizAnalysisModal
         isOpen={analysisModalOpen}
         onClose={() => {
-          if (analysisLoading) {
-            handleStopQuizAnalysis();
-          } else {
-            setAnalysisError(null);
-          }
+          // Hide the modal without aborting the AI diagnosis. The request
+          // keeps running and the artifact-ready push will notify the student.
+          if (!analysisLoading) setAnalysisError(null);
           setAnalysisModalOpen(false);
         }}
         onStop={handleStopQuizAnalysis}

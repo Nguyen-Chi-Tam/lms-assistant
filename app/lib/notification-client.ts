@@ -63,24 +63,13 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 export async function registerFcmToken(
   userId: number,
   promptIfNeeded = false,
-  userRole?: string
+  userRole?: string,
+  forceRegister = false
 ): Promise<string | null> {
-  // Push notifications and FCM tokens are strictly for STUDENTS. Skip teachers completely.
-  if (userRole && userRole !== 'student') {
-    return null;
-  }
-  try {
-    const stored = localStorage.getItem('moodleUser');
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      if (parsed?.role && parsed.role !== 'student') {
-        return null;
-      }
-    }
-  } catch {
-    // ignore
-  }
-
+  // Both students and teachers register a device token:
+  // - students receive scheduled reminders from cron (student-only audience)
+  // - artifact-ready pushes go directly to whoever generated the artifact,
+  //   including teachers.
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return null;
   }
@@ -124,17 +113,29 @@ export async function registerFcmToken(
 
     localStorage.setItem('fcmToken', token);
 
-    // Only register to backend once every 12 hours per user+token to prevent 7+ second blocking calls on every page visit
-    const lastRegKey = `fcm_reg_${userId}_${token.slice(-10)}`;
+    // Only register to backend once every 12 hours per user+token to prevent 7+ second blocking calls on every page visit.
+    // v2: force one re-registration so the new `url` column is backfilled for
+    // tokens that were saved before it existed.
+    const lastRegKey = `fcm_reg_v2_${userId}_${token.slice(-10)}`;
     const lastRegTime = Number(localStorage.getItem(lastRegKey) || 0);
     const now = Date.now();
-    if (now - lastRegTime > 12 * 60 * 60 * 1000) {
+    if (forceRegister || now - lastRegTime > 12 * 60 * 60 * 1000) {
       try {
-        await fetch('/api/fcm', {
+        const response = await fetch('/api/fcm', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, token, deviceId: getDeviceId(), deviceType: 'web', role: userRole || 'student' }),
+          body: JSON.stringify({
+            userId,
+            token,
+            deviceId: getDeviceId(),
+            url: window.location.origin,
+            role: userRole || 'student',
+          }),
         });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(payload?.error || `FCM registration failed (${response.status})`);
+        }
         localStorage.setItem(lastRegKey, String(now));
       } catch (postErr) {
         console.warn('[Notification] Error posting FCM token:', postErr);
@@ -145,6 +146,23 @@ export async function registerFcmToken(
     console.warn('[Notification] Failed to register FCM token:', err);
     return null;
   }
+}
+
+/**
+ * Explicit user actions (for example "Đồng bộ LMS") call this to make sure the
+ * current browser/device is represented in fcm_tokens. It refreshes the FCM
+ * token and bypasses the 12-hour throttle, so a missing row is recreated and
+ * the stored `url` is updated to the current origin. If notification
+ * permission has not been granted yet, the click itself acts as the user
+ * gesture that opens the browser permission prompt.
+ */
+export async function ensureFcmTokenRegistered(
+  userId: number,
+  userRole?: string,
+  promptIfNeeded = true
+): Promise<string | null> {
+  if (!userId) return null;
+  return registerFcmToken(userId, promptIfNeeded, userRole, true);
 }
 
 export async function unregisterFcmToken(userId?: number): Promise<boolean> {

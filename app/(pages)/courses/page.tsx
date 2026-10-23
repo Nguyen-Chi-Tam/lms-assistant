@@ -6,7 +6,7 @@ import { ShieldCheck, ExternalLink } from 'lucide-react';
 import { CourseTopBar, type NotificationItem } from '@/app/components/CourseTopBar';
 import { CoursesView } from '@/app/components/CoursesView';
 import type { Course, MoodleData, MoodleUser } from '@/app/types';
-import { registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
+import { ensureFcmTokenRegistered, registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
 
 function CoursesPageContent() {
   const router = useRouter();
@@ -35,13 +35,13 @@ function CoursesPageContent() {
       try {
         const u = JSON.parse(storedUser);
         setUser(u);
+        if (u?.id) {
+          void registerFcmToken(u.id, false, u.role);
+        }
         const isTeacher = u?.role === 'teacher';
         if (isTeacher) {
           router.replace('/home');
           return;
-        }
-        if (u?.id && u?.role === 'student') {
-          void registerFcmToken(u.id, false, u.role);
         }
       } catch (e) {
         console.error('Error parsing stored user:', e);
@@ -128,6 +128,15 @@ function CoursesPageContent() {
     }
   };
 
+  const handleManualSync = () => {
+    // Manual sync also ensures this device has an FCM token, creating one if
+    // the browser permission is granted but the server row is missing.
+    if (user?.id) {
+      void ensureFcmTokenRegistered(user.id, user.role);
+    }
+    void sync();
+  };
+
   const handleLogout = async () => {
     try {
       await unregisterFcmToken(user?.id);
@@ -175,7 +184,7 @@ function CoursesPageContent() {
         onSearchChange={setSearch}
         searchRef={searchRef}
         syncing={syncing}
-        onSync={() => void sync()}
+        onSync={handleManualSync}
         notifications={notifications}
         onToggleNotifications={() => setNotifications(!notifications)}
         onCloseNotifications={() => setNotifications(false)}
@@ -198,7 +207,7 @@ function CoursesPageContent() {
       >
         <CoursesView
           moodle={moodle}
-          onSync={() => void sync()}
+          onSync={handleManualSync}
           syncing={syncing}
           onBack={() => router.push('/home')}
           openCourse={(c: Course) =>

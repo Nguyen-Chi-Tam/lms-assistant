@@ -168,9 +168,13 @@ function Flashcards({
 /* ── Study Artifact Component ────────────────────────────── */
 
 interface GeneratedArtifact {
+  id: string;
+  name: string;
   data: unknown;
+  originalData?: unknown;
   level: 'simple' | 'standard' | 'complex';
   topic: string;
+  orientation?: 'horizontal' | 'vertical';
 }
 
 function StudyArtifact({
@@ -178,6 +182,7 @@ function StudyArtifact({
   artifact,
   courseTitle,
   loading,
+  hydrating,
   selectedSourcesCount,
   onGenerate,
   onReset,
@@ -189,6 +194,7 @@ function StudyArtifact({
   artifact: GeneratedArtifact | null;
   courseTitle: string;
   loading: boolean;
+  hydrating?: boolean;
   selectedSourcesCount: number;
   onGenerate: (level: 'simple' | 'standard' | 'complex', topic: string, allowExternal: boolean, ragMode?: RagMode) => void;
   onReset: () => void;
@@ -260,6 +266,22 @@ function StudyArtifact({
             <span>Dừng tạo {type.toLowerCase()}</span>
           </button>
         )}
+      </div>
+    );
+  }
+
+  if (hydrating && !artifact) {
+    return (
+      <div className="artifact artifact-loading" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.85rem' }}>
+        <span className="bot-avatar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Sparkles size={16} />
+        </span>
+        <h3 style={{ margin: 0, textAlign: 'center' }}>Đang tải học liệu đã lưu…</h3>
+        <div className="typing">
+          <i />
+          <i />
+          <i />
+        </div>
       </div>
     );
   }
@@ -493,16 +515,6 @@ function StudyArtifact({
             <FileDown size={14} />
             Xuất Word (.docx)
           </button>
-          <button
-            onClick={() => {
-              window.print();
-              notify('Đã mở giao diện in / lưu PDF');
-            }}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-          >
-            <Printer size={14} />
-            In tài liệu
-          </button>
         </div>
       </div>
       <h3>Tổng quan</h3>
@@ -618,9 +630,12 @@ interface TeacherPortalProps {
   hideHeader?: boolean;
   sources?: Array<{ name: string; url?: string; type?: string; courseId?: number | string; courseCode?: string }>;
   initialTab?: 'assistant' | 'grades' | 'quiz' | 'notifications';
+  initialTool?: string;
   onTabChange?: (tab: 'assistant' | 'grades' | 'quiz' | 'notifications') => void;
   currentUser?: { id?: number; fullname?: string; username?: string; role?: string };
 }
+
+const TEACHER_ARTIFACT_TOOLS = ['Tóm tắt', 'Mindmap', 'Flashcard', 'Slide'];
 
 function TeacherModal({
   title,
@@ -680,6 +695,7 @@ export function TeacherPortal({
   hideHeader = false,
   sources = [],
   initialTab = 'assistant',
+  initialTool,
   onTabChange,
   currentUser,
 }: TeacherPortalProps) {
@@ -778,9 +794,25 @@ export function TeacherPortal({
   const [ragMode, setRagMode] = useState<RagMode>('hybrid');
   const allowExternalSource = ragMode === 'creative';
   const [answerStyle, setAnswerStyle] = useState<'concise' | 'detailed'>('concise');
-  const [tool, setTool] = useState('Chat');
-  const [artifactsMap, setArtifactsMap] = useState<Record<string, GeneratedArtifact>>({});
+  const [tool, setTool] = useState(() =>
+    initialTool && TEACHER_ARTIFACT_TOOLS.includes(initialTool) ? initialTool : 'Chat'
+  );
+
+  // The artifact-ready push deep-links to `/course?...&tool=Tóm tắt`. Sync the
+  // requested tool once the teacher portal mounts / the course is resolved.
+  useEffect(() => {
+    if (initialTool && TEACHER_ARTIFACT_TOOLS.includes(initialTool)) {
+      setTool(initialTool);
+    }
+  }, [initialTool]);
+  const [artifactsMap, setArtifactsMap] = useState<Record<string, GeneratedArtifact[]>>({});
+  const [selectedArtifactIds, setSelectedArtifactIds] = useState<Record<string, string>>({});
   const [artifactLoading, setArtifactLoading] = useState(false);
+  const [artifactHydrating, setArtifactHydrating] = useState(false);
+  // Bumping this forces a database re-read (e.g. immediately after generation,
+  // or when the first hydration request raced the artifact write).
+  const [artifactRefreshKey, setArtifactRefreshKey] = useState(0);
+  const artifactRetryRef = useRef<Set<string>>(new Set());
   const artifactAbortRef = useRef<AbortController | null>(null);
   const [toast, setToast] = useState('');
 
@@ -971,6 +1003,12 @@ export function TeacherPortal({
 
   const openTool = (toolName: string) => {
     setTool(toolName);
+    const items = artifactsMap[toolName] || [];
+    if (items.length > 0) {
+      setSelectedArtifactIds(prev => (
+        prev[toolName] ? prev : { ...prev, [toolName]: items[0].id }
+      ));
+    }
   };
 
   // Auto-collapse source panel on compact/half-monitor windows
@@ -1039,6 +1077,8 @@ export function TeacherPortal({
           course: `${courseTitle} (${curCourse?.code || ''})`,
           courseId: curCourse?.id || selectedCourseId,
           courseCode: curCourse?.code || '',
+          userId: teacherUser.id,
+          userName: teacherUser.fullname,
           sources: selectedSources,
           sourceNames: selectedSourceNames,
           level,
@@ -1050,14 +1090,21 @@ export function TeacherPortal({
       const data = (await res.json()) as StudyToolResponse;
       if (!res.ok) throw new Error(data.error);
 
+      const newArtifact: GeneratedArtifact = {
+        id: data.artifactId || `local-${Date.now()}`,
+        name: topic || courseTitle,
+        data: data.data,
+        level,
+        topic: topic || courseTitle,
+      };
       setArtifactsMap(prev => ({
         ...prev,
-        [toolType]: {
-          data: data.data,
-          level,
-          topic: topic || courseTitle,
-        },
+        [toolType]: [
+          newArtifact,
+          ...(prev[toolType] || []).filter(item => item.id !== newArtifact.id),
+        ],
       }));
+      setSelectedArtifactIds(prev => ({ ...prev, [toolType]: newArtifact.id }));
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
         return;
@@ -1068,15 +1115,77 @@ export function TeacherPortal({
         artifactAbortRef.current = null;
       }
       setArtifactLoading(false);
+      // Re-read from the database even if the HTTP response was lost/aborted
+      // after the server had already persisted the artifact.
+      setArtifactRefreshKey(key => key + 1);
     }
   };
 
   const resetToolArtifact = (toolType: string) => {
-    setArtifactsMap(prev => {
+    // Keep the saved list; just return to the configuration panel so the
+    // teacher can create another artifact from scratch.
+    setSelectedArtifactIds(prev => {
       const updated = { ...prev };
       delete updated[toolType];
       return updated;
     });
+  };
+
+  const renameTeacherArtifact = async (toolType: string, artifact: GeneratedArtifact) => {
+    const name = window.prompt('Đặt tên dễ nhớ cho học liệu:', artifact.name);
+    if (!name || name.trim() === artifact.name) return;
+
+    try {
+      const response = await fetch(`/api/learning-artifacts?id=${encodeURIComponent(artifact.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      const responseText = await response.text();
+      let result: { error?: string } = {};
+      try {
+        result = JSON.parse(responseText) as typeof result;
+      } catch {
+        throw new Error(responseText.trim().slice(0, 240) || 'Máy chủ không trả về phản hồi hợp lệ.');
+      }
+      if (!response.ok) throw new Error(result.error || 'Không thể đổi tên học liệu.');
+
+      setArtifactsMap(prev => ({
+        ...prev,
+        [toolType]: (prev[toolType] || []).map(item =>
+          item.id === artifact.id ? { ...item, name: name.trim() } : item
+        ),
+      }));
+      notify('Đã đổi tên học liệu.');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Không thể đổi tên học liệu.');
+    }
+  };
+
+  const deleteTeacherArtifact = async (toolType: string, artifactId: string) => {
+    try {
+      const response = await fetch(`/api/learning-artifacts?id=${encodeURIComponent(artifactId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error('Không thể xóa học liệu.');
+
+      setArtifactsMap(prev => {
+        const remaining = (prev[toolType] || []).filter(item => item.id !== artifactId);
+        if (remaining.length > 0) return { ...prev, [toolType]: remaining };
+        const updated = { ...prev };
+        delete updated[toolType];
+        return updated;
+      });
+      setSelectedArtifactIds(prev => {
+        if (prev[toolType] !== artifactId) return prev;
+        const updated = { ...prev };
+        delete updated[toolType];
+        return updated;
+      });
+      notify('Đã xóa học liệu.');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Không thể xóa học liệu.');
+    }
   };
 
   // Upload handler for adding documents
@@ -1432,6 +1541,148 @@ export function TeacherPortal({
     return courses.find(c => String(c.id) === String(selectedCourseId) || c.code === String(selectedCourseId)) || courses[0];
   }, [courses, selectedCourseId]);
   const curCourseTitle = curCourse ? curCourse.name : 'môn học';
+
+  // The student view hydrates saved artifacts from the database. The teacher
+  // view previously kept artifacts only in memory, so refreshing the page or
+  // opening the deep-link from an "artifact ready" push showed an empty tool.
+  useEffect(() => {
+    setArtifactsMap({});
+    setSelectedArtifactIds({});
+    setArtifactHydrating(false);
+  }, [selectedCourseId]);
+
+  useEffect(() => {
+    if (!selectedCourseId) return;
+    const courseId = Number(selectedCourseId) || Number(curCourse?.id) || 0;
+    const userId = teacherUser?.id || 2;
+    if (!courseId) return;
+
+    let cancelled = false;
+    setArtifactHydrating(true);
+
+    const hydrateArtifacts = async () => {
+      try {
+        const res = await fetch(`/api/learning-artifacts?moodleCourseId=${courseId}&userId=${userId}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          artifacts?: Array<{
+            id?: string | number;
+            artifact_type?: string;
+            artifactType?: string;
+            content_data?: unknown;
+            contentData?: unknown;
+          }>;
+        };
+        if (cancelled || !Array.isArray(json.artifacts)) return;
+
+        const hydrated: Record<string, GeneratedArtifact[]> = {};
+        for (const row of json.artifacts) {
+          const rawType = String(row.artifact_type || row.artifactType || '').toLowerCase();
+          const toolKey =
+            rawType === 'summary'
+              ? 'Tóm tắt'
+              : rawType === 'mindmap'
+              ? 'Mindmap'
+              : rawType === 'slides' || rawType === 'slide' || rawType === 'presentation'
+              ? 'Slide'
+              : rawType === 'flashcards' || rawType === 'flashcard'
+              ? 'Flashcard'
+              : null;
+          if (!toolKey) continue;
+
+          const contentData = row.content_data || row.contentData;
+          let data: unknown = contentData;
+          let originalData: unknown;
+          let level: GeneratedArtifact['level'] = 'standard';
+          let topic = curCourse?.name || 'Môn học';
+          let name = topic;
+          let orientation: GeneratedArtifact['orientation'];
+
+          if (contentData && typeof contentData === 'object') {
+            const content = contentData as Record<string, unknown>;
+            if ('data' in content) data = content.data;
+            if ('originalData' in content) originalData = content.originalData;
+            if (content.level === 'simple' || content.level === 'standard' || content.level === 'complex') {
+              level = content.level;
+            }
+            if (typeof content.topic === 'string' && content.topic.trim()) {
+              topic = content.topic;
+            }
+            if (typeof content.name === 'string' && content.name.trim()) {
+              name = content.name;
+            } else {
+              name = topic;
+            }
+            if (content.orientation === 'horizontal' || content.orientation === 'vertical') {
+              orientation = content.orientation;
+            }
+          }
+          if (!orientation && data && typeof data === 'object' && 'orientation' in data) {
+            const value = (data as Record<string, unknown>).orientation;
+            if (value === 'horizontal' || value === 'vertical') orientation = value;
+          }
+          if (originalData === undefined) originalData = data;
+
+          hydrated[toolKey] = [
+            ...(hydrated[toolKey] || []),
+            {
+              id: String(row.id || `${toolKey}-${Date.now()}-${Math.random()}`),
+              name,
+              data,
+              originalData,
+              level,
+              topic,
+              orientation,
+            },
+          ];
+        }
+
+        if (cancelled) return;
+
+        if (Object.keys(hydrated).length > 0) {
+          // Merge with artifacts generated while the fetch was in flight.
+          setArtifactsMap(prev => {
+            const merged: Record<string, GeneratedArtifact[]> = { ...prev };
+            for (const [key, incoming] of Object.entries(hydrated)) {
+              const existing = merged[key] || [];
+              const existingIds = new Set(existing.map(item => item.id));
+              merged[key] = [...existing, ...incoming.filter(item => !existingIds.has(item.id))];
+            }
+            return merged;
+          });
+          setSelectedArtifactIds(prev => {
+            const next = { ...prev };
+            for (const [key, items] of Object.entries(hydrated)) {
+              if (items.length > 0 && !next[key]) next[key] = items[0].id;
+            }
+            return next;
+          });
+        } else {
+          // The server may have saved an artifact moments after this read
+          // started. Retry once for this course/user combination.
+          const retryKey = `${courseId}-${userId}`;
+          if (!artifactRetryRef.current.has(retryKey)) {
+            artifactRetryRef.current.add(retryKey);
+            setTimeout(() => {
+              if (!cancelled) setArtifactRefreshKey(key => key + 1);
+            }, 1200);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to hydrate teacher learning artifacts:', err);
+      } finally {
+        if (!cancelled) setArtifactHydrating(false);
+      }
+    };
+
+    void hydrateArtifacts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCourseId, curCourse?.id, curCourse?.name, teacherUser?.id, artifactRefreshKey]);
 
   const visibleSources = useMemo(() => {
     return portalSources
@@ -2608,20 +2859,20 @@ export function TeacherPortal({
                   { id: 'Flashcard', label: 'Flashcard', icon: <Layers size={14} /> },
                   { id: 'Slide', label: 'Slide', icon: <Layout size={14} /> },
                 ].map(tab => {
-                  const hasArtifact = !!artifactsMap[tab.id];
+                  const artifactCount = (artifactsMap[tab.id] || []).length;
                   return (
                     <button
                       key={tab.id}
                       className={`${tool === tab.id ? 'selected' : ''} teacher-tool-tab`}
                       onClick={() => openTool(tab.id)}
                       style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                      title={hasArtifact ? `${tab.label} (Đã tạo học liệu)` : tab.label}
+                      title={artifactCount > 0 ? `${tab.label} (${artifactCount} học liệu đã lưu)` : tab.label}
                     >
                       {tab.icon}
                       <span className="tool-tab-label">{tab.label}</span>
-                      {hasArtifact && (
+                      {artifactCount > 0 && (
                         <span className="tab-artifact-count-badge">
-                          1
+                          {artifactCount}
                         </span>
                       )}
                     </button>
@@ -2976,18 +3227,84 @@ export function TeacherPortal({
               </>
             ) : (
               <div className="tool-workspace-container">
-                <StudyArtifact
-                  type={tool}
-                  artifact={artifactsMap[tool] ?? null}
-                  courseTitle={curCourseTitle}
-                  loading={artifactLoading}
-                  selectedSourcesCount={selectedSourceNames.length}
-                  onGenerate={(lvl, top, ext, rMode) => void generateToolArtifact(tool, lvl, top, ext, rMode)}
-                  onReset={() => resetToolArtifact(tool)}
-                  onStop={stopArtifactGeneration}
-                  copyText={copyText}
-                  notify={notify}
-                />
+                {(() => {
+                  const savedArtifacts = artifactsMap[tool] || [];
+                  const selectedArtifact =
+                    savedArtifacts.find(item => item.id === selectedArtifactIds[tool]) ?? null;
+
+                  return (
+                    <div className={`artifact-browser ${savedArtifacts.length > 0 ? 'with-list' : 'focus-mode'}`}>
+                      {savedArtifacts.length > 0 && (
+                        <aside className="artifact-list" aria-label="Danh sách học liệu đã lưu">
+                          <div className="artifact-list-heading">
+                            <span>Học liệu đã lưu</span>
+                            <small>{savedArtifacts.length}</small>
+                          </div>
+                          {savedArtifacts.map((item, index) => {
+                            const itemLabel = item.name || item.topic || `${tool} ${index + 1}`;
+                            return (
+                              <div
+                                key={item.id}
+                                className={`artifact-list-item ${selectedArtifact?.id === item.id ? 'selected' : ''}`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedArtifactIds(prev => ({ ...prev, [tool]: item.id }))
+                                  }
+                                  className="artifact-list-select"
+                                >
+                                  <span>{itemLabel}</span>
+                                  <small>
+                                    {item.level === 'simple'
+                                      ? 'Cơ bản'
+                                      : item.level === 'complex'
+                                      ? 'Chuyên sâu'
+                                      : 'Tiêu chuẩn'}
+                                  </small>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void deleteTeacherArtifact(tool, item.id)}
+                                  title="Xóa học liệu"
+                                  aria-label={`Xóa ${itemLabel}`}
+                                  className="artifact-list-delete"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void renameTeacherArtifact(tool, item)}
+                                  title="Đổi tên học liệu"
+                                  aria-label={`Đổi tên ${itemLabel}`}
+                                  className="artifact-list-rename"
+                                >
+                                  <Pencil size={13} />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </aside>
+                      )}
+                      <main className="artifact-browser-content">
+                        <StudyArtifact
+                          key={`teacher-study-${tool}-${selectedArtifact?.id || 'new'}`}
+                          type={tool}
+                          artifact={selectedArtifact}
+                          courseTitle={curCourseTitle}
+                          loading={artifactLoading}
+                          hydrating={artifactHydrating && savedArtifacts.length === 0}
+                          selectedSourcesCount={selectedSourceNames.length}
+                          onGenerate={(lvl, top, ext, rMode) => void generateToolArtifact(tool, lvl, top, ext, rMode)}
+                          onReset={() => resetToolArtifact(tool)}
+                          onStop={stopArtifactGeneration}
+                          copyText={copyText}
+                          notify={notify}
+                        />
+                      </main>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </section>

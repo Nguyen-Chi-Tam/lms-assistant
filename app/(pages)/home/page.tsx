@@ -71,7 +71,7 @@ import type {
   QuizResponse,
   UploadResponse,
 } from '@/app/types';
-import { registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
+import { ensureFcmTokenRegistered, registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
 
 export type { Course, LibraryFile, QuizQuestion };
 
@@ -441,12 +441,14 @@ function Dashboard({
   const [selectedExamResult, setSelectedExamResult] = useState<ExamResult | null>(null);
   const [analyzedAttemptIds, setAnalyzedAttemptIds] = useState<Set<number>>(new Set());
   const analysisAbortRef = useRef<AbortController | null>(null);
+  const analysisLoadingAttemptRef = useRef<number | null>(null);
 
   const handleStopQuizAnalysis = () => {
     if (analysisAbortRef.current) {
       analysisAbortRef.current.abort();
       analysisAbortRef.current = null;
     }
+    analysisLoadingAttemptRef.current = null;
     setAnalysisLoading(false);
     if (!currentAnalysis) {
       setAnalysisError('Đã dừng quá trình chẩn đoán bài thi.');
@@ -521,12 +523,20 @@ function Dashboard({
         }
       }
 
+      // The same diagnosis is already running in the background (e.g. the user
+      // hid the modal and reopened it): just show the loading modal again.
+      if (analysisLoadingAttemptRef.current === Number(attemptIdToUse)) {
+        setAnalysisModalOpen(true);
+        return;
+      }
+
       // Abort any ongoing diagnosis request
       if (analysisAbortRef.current) {
         analysisAbortRef.current.abort();
       }
       const controller = new AbortController();
       analysisAbortRef.current = controller;
+      analysisLoadingAttemptRef.current = Number(attemptIdToUse);
 
       // Clear previous analysis to prevent showing old exam title or data while loading
       setCurrentAnalysis(null);
@@ -588,6 +598,7 @@ function Dashboard({
       } finally {
         if (analysisAbortRef.current === controller) {
           analysisAbortRef.current = null;
+          analysisLoadingAttemptRef.current = null;
         }
         setAnalysisLoading(false);
       }
@@ -1431,11 +1442,9 @@ function Dashboard({
         <QuizAnalysisModal
           isOpen={analysisModalOpen}
           onClose={() => {
-            if (analysisLoading) {
-              handleStopQuizAnalysis();
-            } else {
-              setAnalysisError(null);
-            }
+            // Hide the modal without aborting the AI diagnosis. The request
+            // keeps running and the artifact-ready push will notify the student.
+            if (!analysisLoading) setAnalysisError(null);
             setAnalysisModalOpen(false);
           }}
           onStop={handleStopQuizAnalysis}
@@ -2383,6 +2392,15 @@ function HomeContent() {
     }
   };
 
+  const handleManualSync = () => {
+    // Clicking a sync button is an explicit gesture: re-check/register this
+    // device's FCM token even when the 12-hour registration throttle is active.
+    if (user?.id) {
+      void ensureFcmTokenRegistered(user.id, user.role);
+    }
+    void sync(true);
+  };
+
   const handleLogout = async () => {
     try {
       await unregisterFcmToken(user?.id);
@@ -2397,7 +2415,9 @@ function HomeContent() {
   };
 
   useEffect(() => {
-    if (user?.id && user?.role === 'student') {
+    // Teachers also need a device token so they receive artifact-ready pushes
+    // for the AI materials they generate themselves.
+    if (user?.id) {
       void registerFcmToken(user.id, false, user.role);
     }
   }, [user?.id, user?.role]);
@@ -2539,7 +2559,7 @@ function HomeContent() {
         onSearchChange={setSearch}
         searchRef={searchRef}
         syncing={syncing}
-        onSync={() => void sync(true)}
+        onSync={handleManualSync}
         notifications={notifications}
         onToggleNotifications={() => setNotifications(!notifications)}
         onCloseNotifications={() => setNotifications(false)}
@@ -2563,7 +2583,7 @@ function HomeContent() {
             openCalendar={() => setCalendar(true)}
             openHomework={openHomework}
             moodle={moodle}
-            onSync={() => void sync(true)}
+            onSync={handleManualSync}
             isAdminOrTeacher={isAdminOrTeacher}
             onOpenTeacherCourse={handleOpenTeacherCourse}
           />

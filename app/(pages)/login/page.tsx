@@ -92,8 +92,10 @@ export default function LoginPage() {
         console.warn('Moodle sync during login warning:', syncErr);
       }
 
-      // Register Web Push notification token for students
-      if (user.id && role === 'student') {
+      // Register Web Push token for both students and teachers. Students get
+      // scheduled cron reminders; teachers get artifact-ready notifications
+      // for the AI materials they create.
+      if (user.id) {
         try {
           await registerFcmToken(user.id, true, role);
         } catch (fcmErr) {

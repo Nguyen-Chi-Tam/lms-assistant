@@ -8,7 +8,45 @@ interface FcmRequestBody {
   userId?: number | string;
   token?: string;
   deviceId?: string;
-  deviceType?: string;
+  /** Origin where the token was registered, e.g. http://localhost:3000. */
+  url?: string;
+  /** 'student' | 'teacher' — stored only when creating a missing user row. */
+  role?: string;
+}
+
+/**
+ * Resolve the browser origin that registered the token. The client sends it
+ * explicitly; headers + request URL are fallbacks for older clients/proxies.
+ */
+function resolveRegistrationUrl(request: Request, input?: string): string {
+  const candidates = [
+    input,
+    request.headers.get('origin'),
+    request.headers.get('referer'),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return parsed.origin;
+      }
+    } catch {
+      // try the next candidate
+    }
+  }
+
+  try {
+    const parsed = new URL(request.url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.origin;
+    }
+  } catch {
+    // ignore malformed request URL
+  }
+
+  return '';
 }
 
 export async function GET(request: Request) {
@@ -53,61 +91,20 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as FcmRequestBody & { role?: string };
+    const body = (await request.json()) as FcmRequestBody;
     const userId = Number(body?.userId);
     const token = body?.token?.trim();
     const deviceId = body?.deviceId?.trim() || 'web-browser';
-    const deviceType = body?.deviceType || 'web';
+    const registrationUrl = resolveRegistrationUrl(request, body?.url);
+    // Teachers can own device tokens too (artifact-ready notifications go to
+    // the creator). Scheduled cron reminders still target students only.
+    const role = body?.role === 'teacher' ? 'teacher' : 'student';
 
     if (!userId || !token) {
       return NextResponse.json({ error: 'userId và token là bắt buộc' }, { status: 400 });
     }
 
-    // Notifications and FCM tokens are strictly for STUDENTS.
-    // Skip teachers completely as notifications are designed for students.
-    if (body.role === 'teacher' || (body.role && body.role !== 'student') || userId === 2) {
-      return NextResponse.json({
-        success: true,
-        message: 'FCM token registration skipped for teachers (students only)',
-        skipped: true,
-      });
-    }
-
-    if (supabaseAdmin) {
-      try {
-        const { data: userRec } = await supabaseAdmin
-          .from('users')
-          .select('role')
-          .eq('moodle_user_id', userId)
-          .maybeSingle();
-
-        if (userRec?.role === 'teacher') {
-          return NextResponse.json({
-            success: true,
-            message: 'FCM token registration skipped for teachers (students only)',
-            skipped: true,
-          });
-        }
-      } catch (checkErr) {
-        console.warn('Check user role warning in FCM:', checkErr);
-      }
-    }
-
     const db = getDb();
-    if (db) {
-      try {
-        const dbUsers = await db.select({ role: users.role }).from(users).where(eq(users.moodleUserId, userId)).limit(1);
-        if (dbUsers[0]?.role === 'teacher') {
-          return NextResponse.json({
-            success: true,
-            message: 'FCM token registration skipped for teachers (students only)',
-            skipped: true,
-          });
-        }
-      } catch (dbCheckErr) {
-        console.warn('Check db user role warning in FCM:', dbCheckErr);
-      }
-    }
 
     // 1. Ensure user exists in users table (due to foreign key constraint)
     if (supabaseAdmin) {
@@ -115,13 +112,22 @@ export async function POST(request: Request) {
         await supabaseAdmin.from('users').upsert(
           {
             moodle_user_id: userId,
-            role: 'student',
+            role,
             name: `User ${userId}`,
           },
           { onConflict: 'moodle_user_id', ignoreDuplicates: true }
         );
       } catch (userErr) {
         console.warn('Supabase ensure user warning:', userErr);
+      }
+    } else if (db) {
+      try {
+        await db
+          .insert(users)
+          .values({ moodleUserId: userId, role, name: `User ${userId}` })
+          .onConflictDoNothing();
+      } catch (dbUserErr) {
+        console.warn('Drizzle ensure user warning in FCM:', dbUserErr);
       }
     }
 
@@ -136,7 +142,7 @@ export async function POST(request: Request) {
             user_id: userId,
             token,
             device_id: deviceId,
-            device_type: deviceType,
+            url: registrationUrl,
             last_used_at: now,
           },
           { onConflict: 'token' }
@@ -164,7 +170,7 @@ export async function POST(request: Request) {
             userId,
             token,
             deviceId,
-            deviceType,
+            url: registrationUrl,
             lastUsedAt: new Date(),
           })
           .onConflictDoUpdate({
@@ -172,6 +178,7 @@ export async function POST(request: Request) {
             set: {
               userId,
               deviceId,
+              url: registrationUrl,
               lastUsedAt: new Date(),
             },
           });

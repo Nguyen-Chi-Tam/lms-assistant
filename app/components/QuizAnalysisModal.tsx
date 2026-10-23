@@ -73,11 +73,9 @@ export function QuizAnalysisModal({
     document.body.style.overflow = 'hidden';
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (loading && onStop) {
-          onStop();
-        } else {
-          onClose();
-        }
+        // Closing hides the modal but keeps the diagnosis running in the
+        // background. The student gets a push notification when it is ready.
+        onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -85,7 +83,7 @@ export function QuizAnalysisModal({
       document.body.style.overflow = originalOverflow;
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen, loading, onClose, onStop]);
+  }, [isOpen, onClose]);
 
   if (!isOpen || !mounted) return null;
 
@@ -107,11 +105,8 @@ export function QuizAnalysisModal({
       }}
       onClick={e => {
         if (e.target === e.currentTarget) {
-          if (loading && onStop) {
-            onStop();
-          } else {
-            onClose();
-          }
+          // Hide instead of aborting: generation continues and will notify.
+          onClose();
         }
       }}
     >
@@ -193,13 +188,7 @@ export function QuizAnalysisModal({
 
           <button
             type="button"
-            onClick={() => {
-              if (loading && onStop) {
-                onStop();
-              } else {
-                onClose();
-              }
-            }}
+            onClick={onClose}
             style={{
               background: 'rgba(255, 255, 255, 0.06)',
               border: '1px solid rgba(255, 255, 255, 0.1)',
@@ -213,7 +202,7 @@ export function QuizAnalysisModal({
               cursor: 'pointer',
               transition: 'all 0.15s',
             }}
-            title={loading ? 'Dừng và đóng' : 'Đóng'}
+            title={loading ? 'Ẩn cửa sổ và chạy nền (sẽ thông báo khi xong)' : 'Đóng'}
           >
             <X size={16} />
           </button>
@@ -268,6 +257,23 @@ export function QuizAnalysisModal({
                   ? 'Hệ thống đang kiểm tra bộ nhớ đệm và nạp dữ liệu phân tích đã lưu trước đó.'
                   : 'AI đang bóc tách từng câu hỏi, đối chiếu giáo trình và nhận diện các điểm mù tư duy của bạn.'}
               </p>
+              {loadingStage === 'ai_diagnosing' && (
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: '11.5px',
+                    color: '#a5b4fc',
+                    maxWidth: '400px',
+                    lineHeight: 1.45,
+                    padding: '7px 11px',
+                    borderRadius: '9px',
+                    background: 'rgba(99, 102, 241, 0.1)',
+                    border: '1px solid rgba(129, 140, 248, 0.25)',
+                  }}
+                >
+                  Bạn có thể ẩn cửa sổ này và tiếp tục làm việc khác. Hệ thống sẽ gửi thông báo đẩy ngay khi bản chẩn đoán hoàn tất.
+                </p>
+              )}
               <button
                 type="button"
                 onClick={() => {

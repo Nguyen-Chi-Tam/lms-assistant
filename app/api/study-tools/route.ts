@@ -1,12 +1,16 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { generateText } from '@/models/registry';
 import { saveLearningArtifact } from '@/lib/learning-artifacts';
+import { sendArtifactReadyNotification } from '@/lib/artifact-notifications';
 import { parseDocumentFromUrl } from '@/lib/document-parser';
 import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import { cleanSummaryData } from '@/lib/summary-cleaner';
 import { COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
 import type { RagMode } from '@/app/types';
+
+// AI study-tool generation can be slow; give the serverless function room to finish.
+export const maxDuration = 60;
 
 interface SourceItem {
   name: string;
@@ -475,6 +479,23 @@ Không bao gồm bất kỳ văn bản ngoài hay markdown.`;
         }).catch(saveErr => {
           console.warn('saveLearningArtifact warning in study-tools:', saveErr);
         });
+
+        // Event-driven: notify the student the moment the artifact is persisted.
+        // `after()` keeps the push alive after the serverless response.
+        const notifyUserId = Number(body.userId) || 0;
+        if (notifyUserId > 0) {
+          after(() =>
+            sendArtifactReadyNotification({
+              userId: notifyUserId,
+              artifactType: toolType,
+              artifactName: topic,
+              artifactId: savedArtifact?.id || null,
+              courseId: moodleCourseId || null,
+              courseCode: body.courseCode,
+              courseName: body.course,
+            })
+          );
+        }
 
         return NextResponse.json({ data, mode: 'ai', level, artifactId: savedArtifact?.id || null });
       }
