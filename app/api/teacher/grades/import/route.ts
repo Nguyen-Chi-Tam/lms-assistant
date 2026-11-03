@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import * as xlsx from 'xlsx';
-import { getGeminiClient, GEMINI_MODEL } from '@/models/gemini';
 import { getOpenAIClient } from '@/models/openai';
+import { runGeminiVisionCall, isVisionUnsupportedError } from '@/lib/document-parser';
+import { getUserApiKeys } from '@/lib/key-manager';
 
 export interface ExtractedGradeItem {
   identifier: string;
@@ -136,7 +137,8 @@ function parseExcelData(buffer: Buffer): ExtractedGradeItem[] {
  */
 async function extractGradesFromMultimodal(
   base64Data: string,
-  mimeType: string
+  mimeType: string,
+  userKeys?: string[]
 ): Promise<ExtractedGradeItem[]> {
   const prompt = `Bạn là trợ lý giảng viên chuyên trích xuất bảng điểm lớp học.
 Hãy trích xuất toàn bộ danh sách sinh viên và điểm số từ tài liệu/ảnh này.
@@ -158,52 +160,44 @@ QUY TẮC BẮT BUỘC:
 4. Nếu trong tài liệu/ảnh KHÔNG có cột nhận xét hoặc nhận xét để trống, BẮT BUỘC đặt "feedback": "" (chuỗi rỗng), TUYỆT ĐỐI KHÔNG TỰ BỊA NHẬN XÉT.
 5. Tuyệt đối không trả về giải thích, chỉ trả về JSON hợp lệ.`;
 
-  // 1. Try Gemini
-  const gemini = getGeminiClient();
-  if (gemini) {
-    try {
-      const response = await gemini.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Data,
-                },
-              },
-              { text: prompt },
-            ],
-          },
-        ],
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.1,
-        },
-      });
+  // 1. Try Gemini via the pooled vision execution (BYOK user keys first, then
+  //    system pool + vision-capable model failover).
+  //    Tracks whether the vision model rejected the image input ("Cannot read
+  //    'image' ... this model does not support image input").
+  let geminiUnsupported = false;
+  let geminiText = '';
+  const geminiResult = await runGeminiVisionCall({
+    prompt,
+    parts: [{ inlineData: { mimeType, data: base64Data } }],
+    maxOutputTokens: 2048,
+    perModelTimeoutMs: 60_000,
+    deadline: Date.now() + 120_000,
+    userKeys,
+    responseMimeType: 'application/json',
+  });
+  geminiUnsupported = geminiResult.unsupported;
+  geminiText = geminiResult.text;
 
-      const text = response.text?.trim() || '';
-      if (text) {
-        const parsed = JSON.parse(text);
-        const list = parsed.grades || (Array.isArray(parsed) ? parsed : []);
-        if (Array.isArray(list) && list.length > 0) {
-          return list.map((item: { identifier?: string; name?: string; score?: number | string; feedback?: string }) => ({
-            identifier: String(item.identifier || item.name || '').trim(),
-            name: String(item.name || item.identifier || '').trim(),
-            score: typeof item.score === 'number' ? item.score : parseFloat(String(item.score || 0).replace(',', '.')),
-            feedback: item.feedback ? String(item.feedback) : undefined,
-          }));
-        }
+  if (geminiText) {
+    try {
+      const parsed = JSON.parse(geminiText);
+      const list = parsed.grades || (Array.isArray(parsed) ? parsed : []);
+      if (Array.isArray(list) && list.length > 0) {
+        return list.map((item: { identifier?: string; name?: string; score?: number | string; feedback?: string }) => ({
+          identifier: String(item.identifier || item.name || '').trim(),
+          name: String(item.name || item.identifier || '').trim(),
+          score: typeof item.score === 'number' ? item.score : parseFloat(String(item.score || 0).replace(',', '.')),
+          feedback: item.feedback ? String(item.feedback) : undefined,
+        }));
       }
-    } catch (err) {
-      console.warn('Gemini multimodal extraction error:', err);
+    } catch (parseErr) {
+      console.warn('Gemini grade extraction returned invalid JSON:', parseErr);
     }
   }
 
   // 2. Try OpenAI Vision if available
   const openai = getOpenAIClient();
+  let openAiUnsupported = false;
   if (openai && mimeType.startsWith('image/')) {
     try {
       const completion = await openai.chat.completions.create({
@@ -238,8 +232,27 @@ QUY TẮC BẮT BUỘC:
         }
       }
     } catch (err) {
-      console.warn('OpenAI vision extraction error:', err);
+      if (isVisionUnsupportedError(err)) {
+        openAiUnsupported = true;
+        console.warn('OpenAI vision extraction skipped: model does not support image input.');
+      } else {
+        console.warn('OpenAI vision extraction error:', err);
+      }
     }
+  }
+
+  if (openAiUnsupported) {
+    throw new Error(
+      'OpenAI Vision hiện tại không hỗ trợ đầu vào hình ảnh (image input), không thể trích xuất điểm từ tài liệu/ảnh này.'
+    );
+  }
+
+  // Inform the user clearly when vision models rejected the image input instead of
+  // silently returning an empty grade list.
+  if (geminiUnsupported) {
+    throw new Error(
+      'Không thể trích xuất điểm từ tài liệu/ảnh: các mô hình Vision hiện tại không hỗ trợ đầu vào hình ảnh (image input). Vui lòng thử lại bằng file PDF có nội dung text hoặc kiểm tra lại cấu hình API Vision của hệ thống.'
+    );
   }
 
   return [];
@@ -308,7 +321,10 @@ export async function POST(request: Request) {
       if (fileName.endsWith('.pdf')) mimeType = 'application/pdf';
 
       const base64Data = fileBuffer.toString('base64');
-      const grades = await extractGradesFromMultimodal(base64Data, mimeType);
+      const userIdStr = (formData.get('userId') as string) || request.headers.get('x-user-id');
+      const resolvedUserId = userIdStr ? parseInt(userIdStr, 10) || undefined : undefined;
+      const userGeminiKeys = resolvedUserId ? await getUserApiKeys(resolvedUserId, 'gemini').catch(() => []) : [];
+      const grades = await extractGradesFromMultimodal(base64Data, mimeType, userGeminiKeys);
 
       return NextResponse.json({
         success: true,
@@ -322,7 +338,8 @@ export async function POST(request: Request) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const body = (await request.json()) as any;
     if (body.base64 && body.mimeType) {
-      const grades = await extractGradesFromMultimodal(body.base64, body.mimeType);
+      const userGeminiKeys = body.userId ? await getUserApiKeys(Number(body.userId), 'gemini').catch(() => []) : [];
+      const grades = await extractGradesFromMultimodal(String(body.base64), String(body.mimeType), userGeminiKeys);
       return NextResponse.json({
         success: true,
         method: 'multimodal_ai',

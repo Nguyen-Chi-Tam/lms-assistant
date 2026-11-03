@@ -148,15 +148,15 @@ export function GradePromptModal({
       <div
         className="grade-history-modal"
         style={{
-          background: 'linear-gradient(145deg, #13121f, #0d0c15)',
-          border: '1px solid rgba(124, 109, 242, 0.35)',
+          background: 'linear-gradient(145deg, #1d0f17, #0e070c)',
+          border: '1px solid rgba(248, 104, 196, 0.35)',
           borderRadius: '18px',
           width: '100%',
           maxWidth: '700px',
           maxHeight: '82vh',
           display: 'flex',
           flexDirection: 'column',
-          boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.85), 0 0 35px rgba(124, 109, 242, 0.25)',
+          boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.85), 0 0 35px rgba(248, 104, 196, 0.25)',
           overflow: 'hidden',
           overscrollBehavior: 'contain',
           color: '#f3f2f8',
@@ -170,7 +170,7 @@ export function GradePromptModal({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            background: 'rgba(124, 109, 242, 0.08)',
+            background: 'rgba(248, 104, 196, 0.08)',
             flexShrink: 0,
           }}
         >
@@ -180,11 +180,11 @@ export function GradePromptModal({
                 width: '34px',
                 height: '34px',
                 borderRadius: '10px',
-                background: currentRoute.buttonGradient || 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                background: currentRoute.buttonGradient || 'linear-gradient(135deg, #f868c4, #ec4899)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 4px 14px rgba(139, 92, 246, 0.4)',
+                boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
                 flexShrink: 0,
               }}
             >
@@ -244,8 +244,8 @@ export function GradePromptModal({
               style={{
                 padding: '0.75rem 1rem',
                 borderRadius: '12px',
-                background: 'rgba(124, 109, 242, 0.12)',
-                border: '1px solid rgba(124, 109, 242, 0.3)',
+                background: 'rgba(248, 104, 196, 0.12)',
+                border: '1px solid rgba(248, 104, 196, 0.3)',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '4px',
@@ -255,7 +255,7 @@ export function GradePromptModal({
                 style={{
                   fontSize: '11px',
                   fontWeight: 700,
-                  color: '#c4b5fd',
+                  color: '#ffc2e8',
                   textTransform: 'uppercase',
                   letterSpacing: '0.5px',
                   display: 'flex',
@@ -324,14 +324,14 @@ export function GradePromptModal({
                       padding: '10px 12px',
                       borderRadius: '12px',
                       background: isSelected
-                        ? 'linear-gradient(135deg, rgba(124, 109, 242, 0.28), rgba(90, 73, 215, 0.18))'
+                        ? 'linear-gradient(135deg, rgba(248, 104, 196, 0.28), rgba(219, 63, 138, 0.18))'
                         : 'rgba(255, 255, 255, 0.03)',
                       border: isSelected
-                        ? '1.5px solid #8b5cf6'
+                        ? '1.5px solid #f868c4'
                         : '1px solid rgba(255, 255, 255, 0.08)',
                       cursor: 'pointer',
                       transition: 'all 0.15s ease',
-                      boxShadow: isSelected ? '0 4px 12px rgba(139, 92, 246, 0.25)' : 'none',
+                      boxShadow: isSelected ? '0 4px 12px rgba(248, 104, 196, 0.25)' : 'none',
                     }}
                   >
                     <div
@@ -344,7 +344,7 @@ export function GradePromptModal({
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <IconComp size={15} color={isSelected ? '#c4b5fd' : '#94a3b8'} />
+                        <IconComp size={15} color={isSelected ? '#ffc2e8' : '#94a3b8'} />
                         <strong
                           style={{
                             fontSize: '13px',
@@ -361,7 +361,7 @@ export function GradePromptModal({
                             width: '16px',
                             height: '16px',
                             borderRadius: '50%',
-                            background: '#8b5cf6',
+                            background: '#f868c4',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
@@ -449,17 +449,17 @@ export function GradePromptModal({
                   color: detailLevel === 'detailed' ? '#ffffff' : '#94a3b8',
                   background:
                     detailLevel === 'detailed'
-                      ? 'rgba(168, 85, 247, 0.2)'
+                      ? 'rgba(255, 122, 217, 0.2)'
                       : 'rgba(255, 255, 255, 0.03)',
                   border:
                     detailLevel === 'detailed'
-                      ? '1px solid #a855f7'
+                      ? '1px solid #ff7ad9'
                       : '1px solid rgba(255, 255, 255, 0.08)',
                   cursor: 'pointer',
                   transition: 'all 0.15s ease',
                 }}
               >
-                <BookOpen size={14} color={detailLevel === 'detailed' ? '#c084fc' : '#94a3b8'} />
+                <BookOpen size={14} color={detailLevel === 'detailed' ? '#ff9dce' : '#94a3b8'} />
                 <span>Chi tiết & Chuyên sâu (Giáo trình)</span>
               </button>
             </div>
@@ -556,7 +556,7 @@ export function GradePromptModal({
                 width: '100%',
                 boxSizing: 'border-box',
                 background: 'rgba(0, 0, 0, 0.35)',
-                border: '1.5px solid rgba(124, 109, 242, 0.5)',
+                border: '1.5px solid rgba(248, 104, 196, 0.5)',
                 borderRadius: '12px',
                 padding: '12px 14px',
                 color: '#f8fafc',
@@ -566,16 +566,16 @@ export function GradePromptModal({
                 resize: 'vertical',
                 outline: 'none',
                 transition: 'all 0.2s ease',
-                boxShadow: '0 0 15px rgba(124, 109, 242, 0.1)',
+                boxShadow: '0 0 15px rgba(248, 104, 196, 0.1)',
               }}
               onFocus={e => {
-                e.currentTarget.style.borderColor = '#8b5cf6';
-                e.currentTarget.style.boxShadow = '0 0 20px rgba(139, 92, 246, 0.3)';
+                e.currentTarget.style.borderColor = '#f868c4';
+                e.currentTarget.style.boxShadow = '0 0 20px rgba(248, 104, 196, 0.3)';
                 e.currentTarget.style.background = 'rgba(0, 0, 0, 0.2)';
               }}
               onBlur={e => {
-                e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.5)';
-                e.currentTarget.style.boxShadow = '0 0 15px rgba(124, 109, 242, 0.1)';
+                e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.5)';
+                e.currentTarget.style.boxShadow = '0 0 15px rgba(248, 104, 196, 0.1)';
                 e.currentTarget.style.background = 'rgba(0, 0, 0, 0.35)';
               }}
             />
@@ -629,9 +629,9 @@ export function GradePromptModal({
                 borderRadius: '10px',
                 fontSize: '13px',
                 fontWeight: 600,
-                color: '#c4b5fd',
-                background: 'rgba(124, 109, 242, 0.18)',
-                border: '1px solid rgba(124, 109, 242, 0.4)',
+                color: '#ffc2e8',
+                background: 'rgba(248, 104, 196, 0.18)',
+                border: '1px solid rgba(248, 104, 196, 0.4)',
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -657,13 +657,13 @@ export function GradePromptModal({
                 fontSize: '13px',
                 fontWeight: 600,
                 color: '#ffffff',
-                background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                background: 'linear-gradient(135deg, #f868c4, #ec4899)',
                 border: 'none',
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '6px',
-                boxShadow: '0 4px 14px rgba(139, 92, 246, 0.4)',
+                boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
                 transition: 'all 0.15s ease',
               }}
               title="Gửi câu lệnh này tới Gia sư AI để bắt đầu phiên phân tích ngay"

@@ -115,10 +115,9 @@ export function NotificationManager() {
           key={toast.id}
           style={{
             pointerEvents: 'auto',
-            background: 'linear-gradient(135deg, rgba(30, 27, 75, 0.95), rgba(15, 23, 42, 0.98))',
-            border: '1px solid rgba(129, 140, 248, 0.35)',
-            boxShadow: '0 10px 30px -5px rgba(0, 0, 0, 0.6), 0 0 15px rgba(99, 102, 241, 0.25)',
-            backdropFilter: 'blur(16px)',
+            background: '#22141c',
+            border: '1px solid rgba(255, 138, 212, 0.35)',
+            boxShadow: '0 10px 30px -5px rgba(0, 0, 0, 0.6), 0 0 15px rgba(248, 104, 196, 0.25)',
             borderRadius: '16px',
             padding: '14px 16px',
             display: 'flex',
@@ -136,8 +135,8 @@ export function NotificationManager() {
             style={{
               padding: '8px',
               borderRadius: '12px',
-              backgroundColor: 'rgba(99, 102, 241, 0.2)',
-              color: '#a5b4fc',
+              backgroundColor: 'rgba(248, 104, 196, 0.2)',
+              color: '#ffc2e8',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',

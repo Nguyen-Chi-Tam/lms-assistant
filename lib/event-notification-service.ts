@@ -2,6 +2,7 @@ import { adminMessaging } from '@/lib/firebase-admin';
 import { supabaseAdmin } from '@/lib/supabase';
 import { runtimeEnv } from '@/db/runtime';
 import { getSubmittedUserIdsForEvent, getEnrolledUserIdsFromMoodleDb } from '@/lib/moodle-db';
+import { deleteCompletedEvent } from '@/lib/event-completion';
 
 export interface ProcessEventsResult {
   success: boolean;
@@ -37,30 +38,78 @@ interface RawEvent {
   eventDetails?: string | null;
 }
 
+interface AttendanceEventDetails {
+  durationMinutes?: number | string | null;
+  attendanceId?: number | string | null;
+  sessionId?: number | string | null;
+}
+
+interface AssignEventDetails {
+  assignId?: number | string | null;
+  duedate?: number | string | null;
+}
+
+function parseAttendanceDetails(eventDetails?: string | null): AttendanceEventDetails | null {
+  if (!eventDetails) return null;
+  try {
+    const parsed = JSON.parse(eventDetails) as AttendanceEventDetails | null;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `event_details` of assignment rows already stores the Moodle assignment id
+ * captured at sync time (mdl_event.instance). Using it avoids re-resolving the
+ * assignment by title via `mod_assign_get_assignments`, which fails when the
+ * webservice token owner is not enrolled in the course (e.g. a teacher/admin
+ * token) and used to make the "already submitted" check silently return empty.
+ */
+function parseAssignId(eventDetails?: string | null): number | null {
+  if (!eventDetails) return null;
+  try {
+    const parsed = JSON.parse(eventDetails) as AssignEventDetails | null;
+    const assignId = Number(parsed?.assignId);
+    return Number.isFinite(assignId) && assignId > 0 ? assignId : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Thời điểm phiên điểm danh thực sự đóng.
+ * deliver_time = giờ mở, nên cần cộng thêm duration để biết khi nào buổi kết thúc.
+ */
+function getAttendanceEndTime(event: RawEvent, fallbackMinutes = 60): number {
+  const durationMinutes = Number(parseAttendanceDetails(event.eventDetails)?.durationMinutes);
+  const safeDuration = Number.isFinite(durationMinutes) && durationMinutes > 0 ? durationMinutes : fallbackMinutes;
+  return event.deliverTime.getTime() + safeDuration * 60000;
+}
+
 /**
  * Cron/reminder notifications are student-only. Teachers now own FCM tokens
  * (for artifact-ready pushes), so make sure they never enter the scheduled
  * reminder audience even if `user_courses` contains their enrollments.
  */
 async function filterToStudentUserIds(userIds: number[]): Promise<number[]> {
-  if (!supabaseAdmin || userIds.length === 0) return userIds;
+  if (!supabaseAdmin || userIds.length === 0) return [];
   try {
     const { data, error } = await supabaseAdmin
       .from('users')
-      .select('moodle_user_id, role')
-      .in('moodle_user_id', userIds);
-    if (error || !data) return userIds;
+      .select('moodle_user_id, role');
+    if (error || !data) return [];
 
-    const nonStudentIds = new Set(
+    // Chỉ giữ lại những tài khoản được xác nhận rõ ràng role === 'student'
+    const studentIds = new Set(
       data
-        .filter(u => u.role && u.role !== 'student')
+        .filter(u => u.role && u.role.trim().toLowerCase() === 'student')
         .map(u => Number(u.moodle_user_id))
     );
-    // Unknown users (not in the users table yet) are kept for backward
-    // compatibility; any known teacher/admin is explicitly skipped.
-    return userIds.filter(id => !nonStudentIds.has(id));
+    // Loại bỏ hoàn toàn giáo viên (teacher), admin, hoặc các tài khoản không phải student
+    return userIds.filter(id => studentIds.has(id));
   } catch {
-    return userIds;
+    return [];
   }
 }
 
@@ -77,12 +126,12 @@ async function getEnrolledUserIdsForCourse(
     // Nếu sự kiện không gắn môn học cụ thể, chỉ gửi cho sinh viên (role = 'student'), loại bỏ giáo viên
     if (supabaseAdmin) {
       const { data } = await supabaseAdmin.from('users').select('moodle_user_id').eq('role', 'student');
-      return (data || []).map(u => u.moodle_user_id);
+      return (data || []).map(u => Number(u.moodle_user_id)).filter(Boolean);
     }
-    return [4, 3];
+    return [];
   }
 
-  // 1. Thử lấy từ bảng user_courses trên Supabase
+  // 1. Thử lấy từ bảng user_courses trên Supabase (lọc loại bỏ giáo viên)
   if (supabaseAdmin) {
     try {
       const { data, error } = await supabaseAdmin
@@ -90,7 +139,8 @@ async function getEnrolledUserIdsForCourse(
         .select('user_id')
         .eq('moodle_course_id', courseId);
       if (!error && data && data.length > 0) {
-        return Array.from(new Set(data.map(r => Number(r.user_id)))).filter(Boolean);
+        const rawIds = Array.from(new Set(data.map(r => Number(r.user_id)))).filter(Boolean);
+        return await filterToStudentUserIds(rawIds);
       }
     } catch {
       // bảng chưa tạo hoặc có lỗi, fallback sang MySQL Moodle
@@ -101,18 +151,18 @@ async function getEnrolledUserIdsForCourse(
   try {
     const dbEnrolled = await getEnrolledUserIdsFromMoodleDb(courseId);
     if (dbEnrolled && dbEnrolled.length > 0) {
-      return dbEnrolled;
+      return await filterToStudentUserIds(dbEnrolled);
     }
   } catch {
     // tiếp tục fallback nếu MySQL bận
   }
 
   // 3. Fallback: Lấy danh sách users từ Supabase có role = 'student' rồi kiểm tra khóa học đã ghi danh
-  let knownUserIds: number[] = [4, 3];
+  let knownUserIds: number[] = [];
   if (supabaseAdmin) {
     const { data: userRows } = await supabaseAdmin.from('users').select('moodle_user_id').eq('role', 'student');
     if (userRows && userRows.length > 0) {
-      knownUserIds = userRows.map(u => u.moodle_user_id);
+      knownUserIds = userRows.map(u => Number(u.moodle_user_id)).filter(Boolean);
     }
   }
 
@@ -168,14 +218,20 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
       const fiveMinutesAgo = new Date(now.getTime() - 5 * 60000).toISOString();
       const { data: expiredEvents } = await supabaseAdmin
         .from('events')
-        .select('id, moodle_event_id, title, deliver_time, event_type, sent_reminders')
+        .select('id, moodle_event_id, title, deliver_time, event_type, sent_reminders, event_details')
         .lt('deliver_time', fiveMinutesAgo);
 
-      // Điểm danh có mốc âm (ví dụ -7: 3 phút trước khi đóng phiên), KHÔNG xóa sớm nếu còn mốc nhắc
+      // Điểm danh có mốc âm (ví dụ -7: 3 phút trước khi đóng phiên), KHÔNG xóa sớm nếu còn mốc nhắc.
+      // Sau khi đã gửi hết mốc vẫn phải giữ row tới khi phiên thực sự đóng, nếu không
+      // sync-moodle sẽ insert lại và cron notify sẽ bắn lặp lại thông báo đóng.
       const trulyExpiredEvents = (expiredEvents || []).filter(e => {
         if (e.event_type === 'attendance') {
-          const rems = (e.sent_reminders || []).map(Number).filter((n: number) => !isNaN(n));
-          return rems.length === 0;
+          const attendanceDetails = parseAttendanceDetails(e.event_details);
+          const durationMinutes = Number(attendanceDetails?.durationMinutes);
+          const safeDuration = Number.isFinite(durationMinutes) && durationMinutes > 0 ? durationMinutes : 60;
+          const deliverMs = new Date(e.deliver_time).getTime();
+          const sessionEnded = !Number.isNaN(deliverMs) && Date.now() > deliverMs + safeDuration * 60000 + 60000;
+          return sessionEnded;
         }
         return true;
       });
@@ -190,7 +246,9 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
             moodleEventId: exp.moodle_event_id,
             title: exp.title,
             action: 'deleted',
-            reason: `Đã quá hạn deliver_time (${exp.deliver_time}) hơn 5 phút. Đã xóa khỏi database.`,
+            reason: exp.event_type === 'attendance'
+              ? `Phiên điểm danh đã đóng (${exp.deliver_time} + thời lượng). Đã xóa khỏi database.`
+              : `Đã quá hạn deliver_time (${exp.deliver_time}) hơn 5 phút. Đã xóa khỏi database.`,
           });
         }
       }
@@ -254,13 +312,24 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
         };
       }
 
+      if (r.event_type === 'assign_open') {
+        // Bài tập sắp mở: giữ nguyên các mốc 15/5 đã đặt, không thêm mốc hạn chót.
+        return {
+          id: r.id,
+          moodleEventId: r.moodle_event_id,
+          title: r.title,
+          eventType: 'assign_open',
+          moodleCourseId: r.moodle_course_id,
+          deliverTime: delTime,
+          sentReminders: parsedReminders,
+          eventDetails: r.event_details || null,
+        };
+      }
+
       if (!isManual) {
-        // Với bài tập (assignment) Moodle: loại bỏ 1440 và đảm bảo có mốc 15 nếu còn thời gian
+        // `sync-moodle` khởi tạo các mốc và `notify` tiêu thụ chúng. Không tự
+        // thêm lại mốc 15 sau khi mốc đó đã được gửi.
         const filtered = parsedReminders.filter((n: number) => n !== 1440);
-        if (!filtered.includes(15) && (diffM > 15 || filtered.some((n: number) => n > 15))) {
-          filtered.push(15);
-          filtered.sort((a: number, b: number) => b - a);
-        }
         return {
           id: r.id,
           moodleEventId: r.moodle_event_id,
@@ -298,10 +367,13 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
     const reminders = event.sentReminders || [];
 
     // Kiểm tra hết hạn:
-    // Với điểm danh: chỉ xóa khi đã gửi hết các mốc nhắc nhở (kể cả mốc âm) hoặc đã qua hơn 3 tiếng
+    // Với điểm danh: chỉ xóa khi phiên đã thực sự đóng (mở + duration) và đã gửi hết
+    // các mốc nhắc, hoặc đã qua hơn 3 tiếng. TUYỆT ĐỐI không xóa ngay sau khi gửi
+    // mốc "-3 phút" vì phiên vẫn còn mở -> sync-moodle sẽ insert lại và gây bắn lặp.
     const isAtt = event.eventType === 'attendance';
+    const attendanceEnded = isAtt ? Date.now() > getAttendanceEndTime(event) + 60000 : false;
     const isExpired = isAtt
-      ? (reminders.length === 0 && diffMs <= 0) || diffMs < -180 * 60000
+      ? diffMs < -180 * 60000 || (reminders.length === 0 && attendanceEnded)
       : (diffMs < -5 * 60000 || (diffMs <= 0 && reminders.length === 0));
 
     if (isExpired) {
@@ -333,9 +405,12 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
       continue;
     }
 
-    // Kiểm tra các mốc đã đến hạn: diffMinutes <= rem
-    // Ví dụ: còn 50 phút thì mốc 1440 (1 ngày) và mốc 60 (1 giờ) đều đã đến hạn
-    const dueReminders = reminders.filter(rem => diffMinutes <= rem);
+    // Kiểm tra các mốc đã đến hạn bằng thời điểm chính xác (không dùng
+    // diffMinutes đã làm tròn, tránh gửi sớm tới ~59 giây và khiến sync
+    // tưởng mốc chưa gửi rồi thêm lại gây thông báo trùng).
+    const dueReminders = reminders.filter(
+      rem => event.deliverTime.getTime() - rem * 60000 <= now.getTime()
+    );
 
     if (dueReminders.length > 0) {
       // Chọn mốc gần nhất đã đến hạn (mốc nhỏ nhất trong các mốc thỏa điều kiện)
@@ -377,80 +452,105 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
       let submittedUserIds = new Set<number>();
 
       const isAttendanceEvent = event.eventType === 'attendance';
-      const isSecondNotification = isAttendanceEvent && matchedReminder < 0;
 
       // 1. Kiểm tra nộp bài đối với BÀI TẬP (assign/due)
-      if (event.eventType === 'assign' || event.eventType === 'due') {
+      if (event.eventType === 'assign' || event.eventType === 'due' || event.eventType === 'assignment') {
         submittedUserIds = await getSubmittedUserIdsForEvent(
           event.moodleEventId,
           targetUserIds,
           event.moodleCourseId,
-          event.title
+          event.title,
+          null,
+          null,
+          event.deliverTime.getTime(),
+          parseAssignId(event.eventDetails)
         );
 
         // Lọc danh sách sinh viên CHƯA NỘP BÀI để gửi thông báo
         pendingUserIds = targetUserIds.filter(id => !submittedUserIds.has(id));
 
         if (pendingUserIds.length === 0) {
+          // Mọi sinh viên trong lớp đã nộp bài: không còn lý do giữ sự kiện
+          // (và các mốc nhắc còn lại) trong danh sách. Xóa sớm thay vì chờ
+          // qua hạn chót.
+          if (await deleteCompletedEvent(event.id)) {
+            eventsDeleted++;
+          }
           details.push({
             eventId: event.id,
             moodleEventId: event.moodleEventId,
             title: event.title,
             eventType: event.eventType,
-            action: 'skipped',
+            action: 'deleted',
             diffMinutes,
             matchedReminder,
             reminders,
             targetUserIds,
             submittedUserIds: Array.from(submittedUserIds),
             remainingReminders,
-            reason: `Mốc ${matchedReminder} phút đã qua. Tất cả sinh viên trong lớp [${targetUserIds.join(', ')}] đều đã nộp bài trên Moodle. Ngừng gửi thông báo.`,
+            reason: `Mốc ${matchedReminder} phút đã qua. Tất cả sinh viên trong lớp [${targetUserIds.join(', ')}] đều đã nộp bài trên Moodle. Đã xóa sự kiện sớm.`,
           });
           continue;
         }
       }
 
-      // 2. Logic điểm danh (attendance) theo kế hoạch:
-      // - Lần 1 (mốc 0): Báo cho TẤT CẢ sinh viên trong lớp khi phiên điểm danh bắt đầu
-      // - Lần 2 (mốc < 0, tức 3 phút trước khi đóng phiên): Kiểm tra mdl_attendance_log,
-      //   loại trừ sinh viên đã điểm danh rồi, CHỈ gửi cho những ai CHƯA điểm danh!
-      if (isSecondNotification) {
+      // 2. Logic điểm danh (attendance):
+      // - Mốc 0 (ngay khi mở): gửi cho TẤT CẢ sinh viên trong lớp.
+      // - Mốc âm (3 phút trước khi đóng): CHỈ gửi cho sinh viên CHƯA điểm danh.
+      if (isAttendanceEvent && matchedReminder < 0) {
+        const attendanceDetails = parseAttendanceDetails(event.eventDetails);
+        const attendanceId = attendanceDetails?.attendanceId != null
+          ? Number(attendanceDetails.attendanceId)
+          : null;
+        const sessionId = attendanceDetails?.sessionId != null
+          ? Number(attendanceDetails.sessionId)
+          : null;
+
         submittedUserIds = await getSubmittedUserIdsForEvent(
           event.moodleEventId,
           targetUserIds,
           event.moodleCourseId,
-          event.title
+          event.title,
+          Number.isFinite(attendanceId) ? attendanceId : null,
+          Number.isFinite(sessionId) ? sessionId : null,
+          event.deliverTime.getTime()
         );
 
         // Lọc những sinh viên CHƯA điểm danh
         pendingUserIds = targetUserIds.filter(id => !submittedUserIds.has(id));
 
         if (pendingUserIds.length === 0) {
+          // Tất cả sinh viên đều đã điểm danh: xóa sớm phiên khỏi danh sách
+          // thay vì chờ phiên đóng và cron dọn dẹp.
+          if (await deleteCompletedEvent(event.id)) {
+            eventsDeleted++;
+          }
           details.push({
             eventId: event.id,
             moodleEventId: event.moodleEventId,
             title: event.title,
             eventType: event.eventType,
-            action: 'skipped',
+            action: 'deleted',
             diffMinutes,
             matchedReminder,
             reminders,
             targetUserIds,
             submittedUserIds: Array.from(submittedUserIds),
             remainingReminders,
-            reason: `Mốc ${matchedReminder}m: Tất cả sinh viên trong lớp [${targetUserIds.join(', ')}] đều đã điểm danh trên Moodle. Bỏ qua thông báo nhắc nhở 3 phút trước khi đóng.`,
+            reason: `Mốc ${matchedReminder}m (trước khi đóng): Tất cả sinh viên trong lớp [${targetUserIds.join(', ')}] đều đã điểm danh trên Moodle. Đã xóa sự kiện sớm.`,
           });
           continue;
         }
       }
 
-      // Kéo danh sách FCM token của các sinh viên cần gửi
+      // Kéo danh sách FCM token của các sinh viên cần gửi (bảo đảm 100% không bao giờ gửi cho giáo viên)
+      const confirmedStudentIds = await filterToStudentUserIds(pendingUserIds);
       let tokens: string[] = [];
-      if (supabaseAdmin) {
+      if (supabaseAdmin && confirmedStudentIds.length > 0) {
         const { data: tokenRows } = await supabaseAdmin
           .from('fcm_tokens')
           .select('token')
-          .in('user_id', pendingUserIds);
+          .in('user_id', confirmedStudentIds);
         tokens = Array.from(new Set((tokenRows || []).map(t => t.token))).filter(Boolean);
       }
 
@@ -504,6 +604,10 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
           notificationTitle = event.title.includes(':') ? event.title : `Điểm danh: ${event.title}`;
           notificationBody = 'Buổi điểm danh đang mở ngay bây giờ! Hãy vào điểm danh ngay nhé.';
         }
+      } else if (event.eventType === 'assign_open') {
+        // Nhắc trước khi bài tập mở
+        notificationTitle = `Sắp mở: ${event.title}`;
+        notificationBody = `Bài tập sẽ mở sau ${timeText} nữa! Chuẩn bị làm bài nhé.`;
       } else if (event.eventType === 'quiz') {
         notificationTitle = event.title.includes(':') ? event.title : `Bài kiểm tra: ${event.title}`;
         notificationBody = `Bài kiểm tra sẽ bắt đầu sau ${timeText} nữa! Hãy chuẩn bị vào làm bài nhé.`;
@@ -514,7 +618,9 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
           : `Sự kiện sẽ diễn ra sau ${timeText} nữa!`;
       }
 
-      const eventTag = `event-${event.id}`;
+      // Dùng moodleEventId làm tag để nếu row bị tạo lại (id mới) thì notification
+      // mới vẫn thay thế notification cũ trên thiết bị, không xếp chồng 2-3 banner.
+      const eventTag = `event-${event.moodleEventId || event.id}`;
       const payload = {
         notification: {
           title: notificationTitle,
@@ -586,6 +692,8 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
             ? (matchedReminder < 0
                 ? `Đã bắn thông báo nhắc nhở đóng điểm danh 3 phút cuối (Lần 2) tới ${response.successCount} thiết bị sinh viên chưa điểm danh.`
                 : `Đã bắn thông báo mở điểm danh (Lần 1) tới ${response.successCount} thiết bị của tất cả sinh viên trong lớp.`)
+            : event.eventType === 'assign_open'
+            ? `Đã bắn thông báo mốc ${matchedReminder}m trước giờ mở bài tập tới ${response.successCount} thiết bị sinh viên trong lớp.`
             : event.eventType === 'quiz'
             ? `Đã bắn thông báo bài kiểm tra mốc ${matchedReminder}m tới ${response.successCount} thiết bị sinh viên trong lớp.`
             : `Đã bắn thông báo mốc ${matchedReminder}m tới ${response.successCount} thiết bị của sinh viên chưa nộp bài.`,

@@ -11,7 +11,20 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const isDirectTest = searchParams.get('direct') === 'true';
     const rawUserId = searchParams.get('userId');
-    const targetUserId = rawUserId ? Number(rawUserId) : 4;
+    // Tuyệt đối không fallback vào teacher ID; mặc định tìm sinh viên đầu tiên (role = 'student')
+    let targetUserId = rawUserId ? Number(rawUserId) : null;
+    if (!targetUserId && supabaseAdmin) {
+      const { data: firstStudent } = await supabaseAdmin
+        .from('users')
+        .select('moodle_user_id')
+        .eq('role', 'student')
+        .limit(1)
+        .maybeSingle();
+      if (firstStudent?.moodle_user_id) {
+        targetUserId = Number(firstStudent.moodle_user_id);
+      }
+    }
+    if (!targetUserId) targetUserId = 8;
 
     // DIRECT TEST MODE: Sends an immediate push notification to verify OS/browser banner
     if (isDirectTest) {

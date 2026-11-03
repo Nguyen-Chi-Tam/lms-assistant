@@ -29,5 +29,11 @@ declare namespace NodeJS {
     FIREBASE_CLIENT_EMAIL?: string;
     FIREBASE_PRIVATE_KEY?: string;
     CRON_SECRET?: string;
+    PINECONE_API_KEY?: string;
+    PINECONE_INDEX_NAME?: string;
+    PINECONE_NAMESPACE?: string;
+    PINECONE_DIMENSION?: string;
+    PINECONE_FETCH_TOP_K?: string;
+    PINECONE_DOCUMENT_TEXT_FIELD?: string;
   }
 }

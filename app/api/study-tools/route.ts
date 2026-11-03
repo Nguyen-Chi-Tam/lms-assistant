@@ -7,6 +7,7 @@ import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import { cleanSummaryData } from '@/lib/summary-cleaner';
 import { COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
+import { getUserApiKeys } from '@/lib/key-manager';
 import type { RagMode } from '@/app/types';
 
 // AI study-tool generation can be slow; give the serverless function room to finish.
@@ -135,6 +136,8 @@ export async function POST(request: Request) {
 
     const effectiveSourceNames = effectiveSources.map(s => s.name);
 
+    const studyToolsGeminiKeys = body.userId ? await getUserApiKeys(Number(body.userId), 'gemini').catch(() => []) : [];
+
     // 1. Gather document context from personal_materials / Moodle
     let documentContext = '';
     const docMap = new Map<string, string>();
@@ -147,7 +150,7 @@ export async function POST(request: Request) {
           for (const mat of mats) {
             if (mat.storage_url && mat.title && !docMap.has(String(mat.title).toLowerCase())) {
               try {
-                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title));
+                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), { userKeys: studyToolsGeminiKeys });
                 if (text && text.length > 50) docMap.set(String(mat.title).toLowerCase(), text);
               } catch {
                 // ignore unavailable material
@@ -166,7 +169,7 @@ export async function POST(request: Request) {
       const lowerName = src.name.toLowerCase();
       if (!docMap.has(lowerName) && src.url) {
         try {
-          const extractedText = await parseDocumentFromUrl(src.url, src.name);
+          const extractedText = await parseDocumentFromUrl(src.url, src.name, { userKeys: studyToolsGeminiKeys });
           if (extractedText && extractedText.trim()) {
             docMap.set(lowerName, extractedText);
           }
@@ -428,6 +431,7 @@ Không bao gồm bất kỳ văn bản ngoài hay markdown.`;
       const result = await generateText(body.model, {
         system: systemInstruction,
         userPrompt: prompt,
+        userId: body.userId ? Number(body.userId) : undefined,
         signal: request.signal,
         temperature: effectiveTemperature,
         topP: effectiveTopP,

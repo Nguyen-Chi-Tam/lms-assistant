@@ -129,13 +129,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 gap: '6px',
                 padding: '0.55rem 1.1rem',
                 borderRadius: '8px',
-                background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                 color: '#fff',
                 fontSize: '0.88rem',
                 fontWeight: 600,
                 border: 'none',
                 cursor: 'pointer',
-                boxShadow: '0 2px 10px rgba(124, 109, 242, 0.35)',
+                boxShadow: '0 2px 10px rgba(248, 104, 196, 0.35)',
               }}
             >
               <RotateCcw size={15} />

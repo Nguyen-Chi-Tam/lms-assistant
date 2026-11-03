@@ -6,11 +6,265 @@ const OCR_PROMPT = `Bạn là hệ thống Multimodal Vision OCR học thuật c
 2. ĐẶC BIỆT NẾU ẢNH LÀ BẢNG ĐIỂM, SỔ THEO DÕI, DANH SÁCH SINH VIÊN HOẶC ĐIỂM SỐ: Bắt buộc định dạng thành Bảng Markdown chuẩn với đầy đủ các cột (STT, Mã sinh viên, Họ và tên, Điểm số, Đánh giá/Ghi chú) để dữ liệu không bị lệch hàng lệch cột.
 3. Không thêm lời giải thích cá nhân, không thêm lời chào, không suy đoán phần bị che khuất. Nếu không có chữ, trả về chuỗi rỗng.`;
 
+const PDF_OCR_PROMPT = `Bạn là hệ thống trích xuất văn bản tài liệu học thuật cao cấp. Tệp PDF này có thể là bản scan/ảnh không chọn được chữ. Hãy đọc toàn bộ các trang và trích xuất lại 100% nội dung chữ, bảng biểu, danh sách và tiêu đề theo đúng thứ tự các trang dạng [Trang 1], [Trang 2]... Không bỏ sót bất kỳ chi tiết nào. Nếu một trang không có chữ, bỏ qua trang đó. Chỉ trả về văn bản trích xuất, không thêm lời giải thích.`;
+
+// Gemini model names change over time, and the chat flagship (GEMINI_MODEL) can be
+// temporarily overloaded (503) or slower for document OCR. OCR therefore tries a
+// short list of vision-capable models instead of betting everything on one model.
+const DEFAULT_VISION_MODELS = [
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
+  'gemini-3.1-pro-preview',
+];
+
+type VisionPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+
+type VisionOcrStatus = { unsupported: boolean; detail?: string } | null;
+
+// Outcome of the latest vision/OCR pass. Reset on every new document parse and
+// read via getLastVisionOcrStatus() so API routes can inform users when the
+// configured AI model does not support image input ("Cannot read 'image' ...
+// this model does not support image input").
+let lastVisionOcrStatus: VisionOcrStatus = null;
+
+export function getLastVisionOcrStatus(): VisionOcrStatus {
+  return lastVisionOcrStatus;
+}
+
+/**
+ * Detects provider errors raised when a vision-capable model call fails because
+ * the target model does NOT support image / multimodal input.
+ * Example error: "Cannot read 'image' ... (this model does not support image input)".
+ */
+export function isVisionUnsupportedError(err: unknown): boolean {
+  const raw = err instanceof Error ? `${err.name} ${err.message}` : String(err ?? '');
+  const msg = raw.toLowerCase().replace(/_/g, ' ');
+  return (
+    msg.includes('does not support') ||
+    msg.includes("doesn't support") ||
+    msg.includes('not support') ||
+    msg.includes('unsupported') ||
+    msg.includes('image input') ||
+    msg.includes('image_url') ||
+    msg.includes('inline data') ||
+    msg.includes('inlineData') ||
+    msg.includes('vision') ||
+    msg.includes('multimodal') ||
+    msg.includes('modality')
+  );
+}
+
+function getVisionGeminiModels(primary?: string, backups?: string[]): string[] {
+  const configured = (process.env.VISION_OCR_MODELS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  return Array.from(
+    new Set([...configured, ...DEFAULT_VISION_MODELS, primary || '', ...(backups || [])].filter(Boolean))
+  );
+}
+
+function remainingMs(deadline: number): number {
+  return deadline - Date.now();
+}
+
+export interface GeminiVisionCallOptions {
+  maxOutputTokens: number;
+  perModelTimeoutMs: number;
+  deadline: number;
+  /** BYOK: User-provided Gemini keys prioritized before the system key pool. */
+  userKeys?: string[];
+  signal?: AbortSignal;
+  responseMimeType?: string;
+}
+
+export interface GeminiVisionCallResult {
+  text: string;
+  unsupported: boolean;
+}
+
+type VisionInlinePart = { inlineData: { mimeType: string; data: string } };
+
+/**
+ * Runs a Gemini multimodal request against several vision-capable models.
+ * Tries each candidate model with BYOK user keys first, then the system
+ * Gemini key pool (each key tries its own model failover list).
+ * Returns the first non-empty transcription, or an empty text when every
+ * candidate fails. The outcome is recorded via getLastVisionOcrStatus() so
+ * callers can inform users when no vision model supports the image input.
+ */
+export async function runGeminiVisionCall(
+  params: {
+    prompt: string;
+    parts: VisionPart[];
+    maxOutputTokens: number;
+    perModelTimeoutMs: number;
+    deadline: number;
+    userKeys?: string[];
+    signal?: AbortSignal;
+    responseMimeType?: string;
+  }
+): Promise<GeminiVisionCallResult> {
+  const { executeWithGeminiPool, GEMINI_MODEL, GEMINI_BACKUP_MODELS } = await import('@/models/gemini');
+  const models = getVisionGeminiModels(GEMINI_MODEL, GEMINI_BACKUP_MODELS);
+  const { prompt, parts } = params;
+
+  const contentParts: VisionPart[] = [{ text: prompt }, ...parts.filter((p): p is VisionInlinePart => 'inlineData' in p)];
+
+  let unsupported = false;
+  for (const model of models) {
+    const budget = Math.min(params.perModelTimeoutMs, remainingMs(params.deadline));
+    if (budget < 3_000) break;
+    try {
+      const text = await executeWithGeminiPool(async client => {
+        const response = await client.models.generateContent({
+          model,
+          contents: [{ role: 'user', parts: contentParts }],
+          config: {
+            temperature: 0,
+            maxOutputTokens: params.maxOutputTokens,
+            // OCR is a perception task; reasoning tokens only add latency/cost.
+            thinkingConfig: { thinkingBudget: 0 },
+            ...(params.responseMimeType ? { responseMimeType: params.responseMimeType } : {}),
+            abortSignal: params.signal ?? AbortSignal.timeout(budget),
+          },
+        });
+        return response.text?.trim() || '';
+      });
+      if (text) {
+        lastVisionOcrStatus = null;
+        console.log(`[Vision OCR] ${model} transcribed ${text.length} chars`);
+        return { text, unsupported };
+      }
+    } catch (err) {
+      if (isVisionUnsupportedError(err)) {
+        unsupported = true;
+        lastVisionOcrStatus = { unsupported: true, detail: err instanceof Error ? err.message : String(err) };
+        console.warn(`[Vision OCR] ${model} skipped: model does not support image input.`);
+      } else {
+        console.warn(
+          `[Vision OCR] ${model} unavailable:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+  }
+
+  return { text: '', unsupported };
+}
+
+async function runGeminiVision(
+  parts: VisionPart[],
+  options: { maxOutputTokens: number; perModelTimeoutMs: number; deadline: number; userKeys?: string[]; signal?: AbortSignal }
+): Promise<{ text: string; unsupported: boolean }> {
+  const textPart = parts.find((p): p is { text: string } => 'text' in p);
+  const prompt = textPart?.text || OCR_PROMPT;
+  const inlineParts = parts.filter((p): p is VisionInlinePart => 'inlineData' in p);
+  const result = await runGeminiVisionCall({
+    prompt,
+    parts: inlineParts,
+    maxOutputTokens: options.maxOutputTokens,
+    perModelTimeoutMs: options.perModelTimeoutMs,
+    deadline: options.deadline,
+    userKeys: options.userKeys,
+    signal: options.signal,
+  });
+  return result;
+}
+
 function inferImageMimeType(fileName: string, supplied?: string): string | null {
   if (supplied?.startsWith('image/')) return supplied;
   const ext = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
   const types: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
   return ext ? types[ext] || null : null;
+}
+
+function toBuffer(buffer: ArrayBuffer | Uint8Array | Buffer): Buffer | null {
+  try {
+    return Buffer.isBuffer(buffer)
+      ? buffer
+      : buffer instanceof Uint8Array
+        ? Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+        : Buffer.from(buffer);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Last-resort OCR for images when Gemini is unavailable: OpenAI Vision then APMIX
+ * (both expose an OpenAI-compatible `image_url` content part).
+ * The image never leaves the request as anything other than extracted text.
+ */
+async function ocrImageWithThirdParty(base64: string, mimeType: string): Promise<{ text: string; unsupported: boolean }> {
+  const content = [
+    { type: 'text' as const, text: OCR_PROMPT },
+    { type: 'image_url' as const, image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' as const } },
+  ];
+  let unsupported = false;
+
+  try {
+    const { getOpenAIClient } = await import('@/models/openai');
+    const openai = getOpenAIClient();
+    if (openai) {
+      const completion = await openai.chat.completions.create(
+        {
+          model: 'gpt-4o-mini',
+          temperature: 0,
+          max_tokens: 4096,
+          messages: [{ role: 'user', content }],
+        },
+        { signal: AbortSignal.timeout(45_000) }
+      );
+      const text = completion.choices[0]?.message?.content?.trim();
+      if (text) {
+        lastVisionOcrStatus = null;
+        console.log(`[Vision OCR] OpenAI transcribed ${text.length} chars`);
+        return { text, unsupported: false };
+      }
+    }
+  } catch (err) {
+    if (isVisionUnsupportedError(err)) {
+      unsupported = true;
+      lastVisionOcrStatus = { unsupported: true, detail: err instanceof Error ? err.message : String(err) };
+      console.warn('OpenAI Vision OCR skipped: model does not support image input.');
+    } else {
+      console.warn('OpenAI Vision OCR unavailable:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  try {
+    const { getApmixClient } = await import('@/models/apmix');
+    const apmix = getApmixClient();
+    if (apmix) {
+      const completion = await apmix.chat.completions.create(
+        {
+          model: 'claude-sonnet-4-6-free',
+          temperature: 0,
+          max_tokens: 4096,
+          messages: [{ role: 'user', content }],
+        },
+        { signal: AbortSignal.timeout(45_000) }
+      );
+      const text = completion.choices[0]?.message?.content?.trim();
+      if (text) {
+        lastVisionOcrStatus = null;
+        console.log(`[Vision OCR] APMIX transcribed ${text.length} chars`);
+        return { text, unsupported: false };
+      }
+    }
+  } catch (err) {
+    if (isVisionUnsupportedError(err)) {
+      unsupported = true;
+      lastVisionOcrStatus = { unsupported: true, detail: err instanceof Error ? err.message : String(err) };
+      console.warn('APMIX Vision OCR skipped: model does not support image input.');
+    } else {
+      console.warn('APMIX Vision OCR unavailable:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return { text: '', unsupported };
 }
 
 /**
@@ -20,58 +274,65 @@ function inferImageMimeType(fileName: string, supplied?: string): string | null 
 export async function extractTextFromImage(
   buffer: ArrayBuffer | Uint8Array | Buffer,
   fileName: string,
-  mimeType?: string
-): Promise<string> {
+  mimeType?: string,
+  userKeys?: string[]
+): Promise<{ text: string; unsupported: boolean }> {
   const imageMime = inferImageMimeType(fileName, mimeType);
-  if (!imageMime) return '';
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.isBuffer(buffer)
-      ? buffer
-      : buffer instanceof Uint8Array
-        ? Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
-        : Buffer.from(buffer);
-  } catch {
-    return '';
-  }
-  if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) return '';
+  if (!imageMime) return { text: '', unsupported: false };
+  const bytes = toBuffer(buffer);
+  if (!bytes) return { text: '', unsupported: false };
+  if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) return { text: '', unsupported: false };
   const base64 = bytes.toString('base64');
 
-  // Gemini is the primary multimodal OCR path; OpenAI Vision is a safe fallback.
-  try {
-    const { executeWithGeminiPool, GEMINI_MODEL } = await import('@/models/gemini');
-    const text = await executeWithGeminiPool(async (client) => {
-      const response = await client.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: [{ role: 'user', parts: [{ text: OCR_PROMPT }, { inlineData: { mimeType: imageMime, data: base64 } }] }],
-        config: { temperature: 0, maxOutputTokens: 4096 },
-      });
-      return response.text?.trim() || '';
-    });
-    if (text) return text;
-  } catch (err) {
-    console.warn('Gemini Vision OCR unavailable:', err);
+  const geminiText = await runGeminiVision(
+    [{ text: OCR_PROMPT }, { inlineData: { mimeType: imageMime, data: base64 } }],
+    { maxOutputTokens: 4096, perModelTimeoutMs: 35_000, deadline: Date.now() + 75_000, userKeys }
+  );
+  if (geminiText.text) return geminiText;
+
+  return ocrImageWithThirdParty(base64, imageMime);
+}
+
+/**
+ * Extracts JPEG streams embedded in a PDF.  Most scanned PDFs store one full-page
+ * JPEG per page with a /DCTDecode filter, so this lets us recover page images and
+ * send them to an image-capable vision model when native PDF OCR fails.
+ */
+function extractEmbeddedJpegImages(bytes: Buffer): Buffer[] {
+  const images: Buffer[] = [];
+  const latin = bytes.toString('latin1');
+  const soiPhone = Buffer.from([0xff, 0xd8, 0xff]);
+  const eoiMarker = Buffer.from([0xff, 0xd9]);
+  let searchFrom = 0;
+
+  while (images.length < 12) {
+    const dictStart = latin.indexOf('/Subtype', searchFrom);
+    if (dictStart === -1) break;
+    const streamKeyword = latin.indexOf('stream', dictStart);
+    if (streamKeyword === -1) break;
+
+    const dict = latin.slice(dictStart, streamKeyword);
+    if (!/\/Image\b/.test(dict) || !/DCTDecode/.test(dict)) {
+      searchFrom = dictStart + 8;
+      continue;
+    }
+
+    let streamStart = streamKeyword + 'stream'.length;
+    if (latin[streamStart] === '\r') streamStart++;
+    if (latin[streamStart] === '\n') streamStart++;
+    const streamEnd = latin.indexOf('endstream', streamStart);
+    if (streamEnd === -1) break;
+
+    const slice = bytes.subarray(streamStart, streamEnd);
+    const soi = slice.indexOf(soiPhone);
+    if (soi !== -1) {
+      const eoi = slice.lastIndexOf(eoiMarker);
+      images.push(slice.subarray(soi, eoi > soi ? eoi + 2 : slice.length));
+    }
+    searchFrom = streamEnd + 'endstream'.length;
   }
 
-  try {
-    const { getOpenAIClient } = await import('@/models/openai');
-    const openai = getOpenAIClient();
-    if (openai) {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        temperature: 0,
-        max_tokens: 4096,
-        messages: [{ role: 'user', content: [
-          { type: 'text', text: OCR_PROMPT },
-          { type: 'image_url', image_url: { url: `data:${imageMime};base64,${base64}`, detail: 'high' } },
-        ] }],
-      });
-      return completion.choices[0]?.message?.content?.trim() || '';
-    }
-  } catch (err) {
-    console.warn('OpenAI Vision OCR unavailable:', err);
-  }
-  return '';
+  return images;
 }
 
 /**
@@ -80,50 +341,42 @@ export async function extractTextFromImage(
  */
 export async function extractTextFromPdfVision(
   buffer: ArrayBuffer | Uint8Array | Buffer,
-  fileName: string
-): Promise<string> {
-  let base64 = '';
-  if (Buffer.isBuffer(buffer)) {
-    if (buffer.length === 0 || buffer.length > 15 * 1024 * 1024) return '';
-    base64 = buffer.toString('base64');
-  } else if (buffer instanceof Uint8Array) {
-    if (buffer.byteLength === 0 || buffer.byteLength > 15 * 1024 * 1024) return '';
-    base64 = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength).toString('base64');
-  } else {
-    try {
-      const u8 = new Uint8Array(buffer);
-      if (u8.byteLength === 0 || u8.byteLength > 15 * 1024 * 1024) return '';
-      base64 = Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength).toString('base64');
-    } catch {
-      return '';
-    }
+  fileName: string,
+  userKeys?: string[]
+): Promise<{ text: string; unsupported: boolean }> {
+  const bytes = toBuffer(buffer);
+  if (!bytes) return { text: '', unsupported: false };
+  if (bytes.byteLength === 0 || bytes.byteLength > 15 * 1024 * 1024) return { text: '', unsupported: false };
+  const base64 = bytes.toString('base64');
+  const deadline = Date.now() + 150_000;
+
+  // 1. Native PDF understanding (fastest and preserves tables/layout).
+  const geminiText = await runGeminiVision(
+    [{ text: PDF_OCR_PROMPT }, { inlineData: { mimeType: 'application/pdf', data: base64 } }],
+    { maxOutputTokens: 8192, perModelTimeoutMs: 75_000, deadline, userKeys }
+  );
+  if (geminiText.text) return geminiText;
+
+  // 2. Fallback: OCR each embedded page image (works with image-only providers).
+  const pageImages = extractEmbeddedJpegImages(bytes);
+  if (pageImages.length === 0) {
+    console.warn(`[PDF Parser] No embedded JPEG pages recoverable from "${fileName}".`);
+    return { text: '', unsupported: false };
   }
 
-  try {
-    const { executeWithGeminiPool, GEMINI_MODEL } = await import('@/models/gemini');
-    const text = await executeWithGeminiPool(async (client) => {
-      const response = await client.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: 'Bạn là hệ thống trích xuất văn bản tài liệu học thuật cao cấp. Hãy đọc toàn bộ các trang trong tệp PDF này và trích xuất lại 100% nội dung chữ, bảng biểu, danh sách và tiêu đề theo đúng thứ tự các trang dạng [Trang 1], [Trang 2]... Không bỏ sót bất kỳ chi tiết hay công nghệ nào.',
-              },
-              { inlineData: { mimeType: 'application/pdf', data: base64 } },
-            ],
-          },
-        ],
-        config: { temperature: 0, maxOutputTokens: 8192 },
-      });
-      return response.text?.trim() || '';
-    });
-    if (text) return text;
-  } catch (err) {
-    console.warn(`[Gemini Vision PDF OCR] Warning for ${fileName}:`, err);
+  console.log(
+    `[PDF Parser] Native PDF OCR failed for "${fileName}", falling back to ${pageImages.length} embedded page image(s).`
+  );
+  const pageTexts: string[] = [];
+  const unsupported = Boolean(lastVisionOcrStatus?.unsupported);
+  const maxPages = Math.min(pageImages.length, 10);
+  for (let i = 0; i < maxPages; i++) {
+    if (remainingMs(deadline) < 5_000) break;
+    const pageResult = await extractTextFromImage(pageImages[i], `${fileName}-page-${i + 1}.jpg`, 'image/jpeg', userKeys);
+    if (pageResult.text) pageTexts.push(`[Trang ${i + 1}]\n${pageResult.text}`);
   }
-  return '';
+
+  return { text: pageTexts.join('\n\n'), unsupported };
 }
 
 /**
@@ -254,8 +507,9 @@ function markUrlFailed(url: string) {
 export async function parseDocumentFromUrl(
   url: string,
   fileName: string,
-  options?: { authToken?: string }
+  options?: { authToken?: string; userKeys?: string[] }
 ): Promise<string> {
+  lastVisionOcrStatus = null;
   const cacheKey = `${fileName}::${url}`;
   if (documentTextCache.has(cacheKey)) {
     const cached = documentTextCache.get(cacheKey)!;
@@ -369,10 +623,10 @@ export async function parseDocumentFromUrl(
       // Trigger Gemini Multimodal Vision OCR directly on the PDF file!
       console.log(`[PDF Parser] unpdf yielded no meaningful text for "${fileName}". Triggering Gemini Vision PDF OCR...`);
       try {
-        const ocrText = await extractTextFromPdfVision(fileBuffer, fileName);
-        if (ocrText && ocrText.trim().length >= 30) {
-          setDocumentCache(cacheKey, ocrText.trim());
-          return ocrText.trim();
+        const ocrResult = await extractTextFromPdfVision(fileBuffer, fileName, options?.userKeys);
+        if (ocrResult.text && ocrResult.text.trim().length >= 30) {
+          setDocumentCache(cacheKey, ocrResult.text.trim());
+          return ocrResult.text.trim();
         }
       } catch (ocrErr) {
         console.warn(`[PDF Parser] Gemini Vision PDF OCR error for ${fileName}:`, ocrErr);
@@ -380,10 +634,10 @@ export async function parseDocumentFromUrl(
     }
 
     if (inferImageMimeType(fileName, contentType)) {
-      const ocrText = await extractTextFromImage(fileBuffer, fileName, contentType);
-      if (ocrText) {
-        setDocumentCache(cacheKey, ocrText);
-        return ocrText;
+      const ocrResult = await extractTextFromImage(fileBuffer, fileName, contentType, options?.userKeys);
+      if (ocrResult.text) {
+        setDocumentCache(cacheKey, ocrResult.text);
+        return ocrResult.text;
       }
     }
 
@@ -492,9 +746,13 @@ export async function parseDocumentFromUrl(
       return extractedText;
     }
 
+    // Avoid re-downloading/re-OCRing an unreadable document on every question
+    // (the failure cache expires automatically after 15 minutes).
+    markUrlFailed(url);
     return '';
   } catch (error) {
     console.warn(`Error parsing document ${fileName} from ${url}:`, error);
+    markUrlFailed(url);
     return '';
   }
 }
@@ -560,15 +818,40 @@ export function extractTextFromHtml(html: string): string {
     .join('\n\n');
 }
 
-export async function parseDocumentBuffer(buffer: ArrayBuffer | Uint8Array, fileName: string, mimeType?: string): Promise<string> {
+export async function parseDocumentBuffer(
+  buffer: ArrayBuffer | Uint8Array,
+  fileName: string,
+  mimeType?: string,
+  userKeys?: string[]
+): Promise<string> {
+  lastVisionOcrStatus = null;
   try {
     const lowerName = fileName.toLowerCase();
     if (lowerName.endsWith('.pdf')) {
-      const { text } = await extractText(new Uint8Array(buffer));
-      if (Array.isArray(text)) {
-        return text.map((pageStr, idx) => `[Trang ${idx + 1}]\n${pageStr}`).join('\n\n');
+      let fullText = '';
+      try {
+        const source = toBuffer(buffer);
+        if (source) {
+          // Clone so unpdf never detaches the caller's buffer (needed by OCR fallback).
+          const unpdfBytes = new Uint8Array(
+            source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength)
+          );
+          const { text } = await extractText(unpdfBytes);
+          fullText = Array.isArray(text)
+            ? text.map((pageStr, idx) => `[Trang ${idx + 1}]\n${pageStr}`).join('\n\n')
+            : String(text || '');
+        }
+      } catch (pdfErr) {
+        console.warn(`[PDF Parser] unpdf extraction error for ${fileName}:`, pdfErr);
       }
-      return String(text || '');
+
+      const meaningfulText = fullText.replace(/\[Trang\s+\d+\]/gi, '').trim();
+      if (meaningfulText.length >= 30) return fullText;
+
+      // Scanned / non-selectable PDF: fall back to multimodal vision OCR.
+      const ocrResult = await extractTextFromPdfVision(buffer, fileName, userKeys);
+      if (ocrResult.text && ocrResult.text.trim().length >= 30) return ocrResult.text.trim();
+      return fullText;
     }
     if (lowerName.endsWith('.docx')) {
       return await extractDocxText(buffer);
@@ -581,7 +864,8 @@ export async function parseDocumentBuffer(buffer: ArrayBuffer | Uint8Array, file
       return decoder.decode(buffer);
     }
     if (inferImageMimeType(fileName, mimeType)) {
-      return await extractTextFromImage(buffer, fileName, mimeType);
+      const imageResult = await extractTextFromImage(buffer, fileName, mimeType, userKeys);
+      return imageResult.text;
     }
     return '';
   } catch (error) {

@@ -19,6 +19,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
     "@google/genai": "^2.19.0",
+    "@pinecone-database/pinecone": "^9.1.0",
     "@supabase/supabase-js": "^2.112.4",
     "cloudinary": "^2.11.0",
     "docx": "^9.7.1",

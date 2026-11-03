@@ -20,24 +20,29 @@ export type AppRuntime = {
   GOOGLE_API_KEY?: string;
   OPENAI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  OPENROUTER_API_KEYS?: string;
   ANTHROPIC_API_KEY?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
   MOODLE_URL?: string;
   MOODLE_TOKEN?: string;
   MOODLE_TOKEN_ENCRYPTION_KEY?: string;
+  /** Token riêng cho service "Attendance" (chỉ chứa các hàm mod_attendance_*). */
+  MOODLE_ATTENDANCE_TOKEN?: string;
   CRON_SECRET?: string;
   MOODLE_DB_HOST?: string;
   MOODLE_DB_PORT?: string;
   MOODLE_DB_USER?: string;
   MOODLE_DB_PASSWORD?: string;
   MOODLE_DB_NAME?: string;
+  MOODLE_DB_ENABLED?: string;
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
   APMIX_API_KEY?: string;
   APMIX_MODEL?: string;
   APMIX_BASE_URL?: string;
+  MASTER_ENCRYPTION_KEY?: string;
 };
 
 function readLocalEnvFiles(): Record<string, string> {
@@ -112,6 +117,7 @@ export function runtimeEnv(): AppRuntime {
     CLOUDINARY_API_SECRET: getVar('CLOUDINARY_API_SECRET'),
     CLOUDINARY_URL: getVar('CLOUDINARY_URL'),
     GROQ_API_KEY: getVar('GROQ_API_KEY'),
+    GROQ_API_KEYS: getVar('GROQ_API_KEYS'),
     COHERE_API_KEY: getVar('COHERE_API_KEY'),
     AI_HORDE_API_KEY: getVar('AI_HORDE_API_KEY'),
     GEMINI_API_KEY: getVar('GEMINI_API_KEY'),
@@ -119,11 +125,13 @@ export function runtimeEnv(): AppRuntime {
     GOOGLE_API_KEY: getVar('GOOGLE_API_KEY'),
     OPENAI_API_KEY: getVar('OPENAI_API_KEY'),
     OPENROUTER_API_KEY: getVar('OPENROUTER_API_KEY'),
+    OPENROUTER_API_KEYS: getVar('OPENROUTER_API_KEYS'),
     ANTHROPIC_API_KEY: getVar('ANTHROPIC_API_KEY'),
     CLOUDFLARE_ACCOUNT_ID: getVar('CLOUDFLARE_ACCOUNT_ID'),
     CLOUDFLARE_API_TOKEN: getVar('CLOUDFLARE_API_TOKEN'),
     MOODLE_URL: getVar('MOODLE_URL'),
     MOODLE_TOKEN: getVar('MOODLE_TOKEN'),
+    MOODLE_ATTENDANCE_TOKEN: getVar('MOODLE_ATTENDANCE_TOKEN'),
     MOODLE_TOKEN_ENCRYPTION_KEY: getVar('MOODLE_TOKEN_ENCRYPTION_KEY'),
     CRON_SECRET: getVar('CRON_SECRET'),
     MOODLE_DB_HOST: getVar('MOODLE_DB_HOST') || '127.0.0.1',
@@ -131,9 +139,11 @@ export function runtimeEnv(): AppRuntime {
     MOODLE_DB_USER: getVar('MOODLE_DB_USER') || 'root',
     MOODLE_DB_PASSWORD: getVar('MOODLE_DB_PASSWORD') || '',
     MOODLE_DB_NAME: getVar('MOODLE_DB_NAME') || 'moodle',
+    MOODLE_DB_ENABLED: getVar('MOODLE_DB_ENABLED'),
     APMIX_API_KEY: getVar('APMIX_API_KEY'),
     APMIX_MODEL: getVar('APMIX_MODEL'),
     APMIX_BASE_URL: getVar('APMIX_BASE_URL'),
+    MASTER_ENCRYPTION_KEY: getVar('MASTER_ENCRYPTION_KEY'),
   };
 }
 

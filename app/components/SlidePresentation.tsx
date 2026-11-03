@@ -313,7 +313,7 @@ export function SlidePresentation({
       accentBg: 'rgba(248, 104, 196, 0.15)',
       titleColor: '#ffffff',
       textColor: '#e2e8f0',
-      takeawayBg: 'rgba(142, 123, 227, 0.18)',
+      takeawayBg: 'rgba(248, 104, 196, 0.18)',
       border: '1px solid rgba(255, 255, 255, 0.12)',
     },
     slate: {
@@ -380,7 +380,7 @@ export function SlidePresentation({
       >
         <div>
           <h2 style={{ margin: 0, fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Layout size={18} style={{ color: '#a594fd' }} />
+            <Layout size={18} style={{ color: '#ff9dce' }} />
             <span>{deck.title || `Slide bài giảng: ${courseTitle}`}</span>
           </h2>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
@@ -390,8 +390,8 @@ export function SlidePresentation({
                 fontSize: '11px',
                 padding: '2px 8px',
                 borderRadius: '10px',
-                background: 'rgba(124, 109, 242, 0.2)',
-                color: '#cfc8ff',
+                background: 'rgba(248, 104, 196, 0.2)',
+                color: '#ffe0f3',
                 fontWeight: 600,
               }}
             >
@@ -451,8 +451,8 @@ export function SlidePresentation({
               display: 'inline-flex',
               alignItems: 'center',
               gap: '5px',
-              background: 'linear-gradient(135deg, rgba(124, 109, 242, 0.35), rgba(168, 85, 247, 0.35))',
-              borderColor: '#7c6df2',
+              background: 'linear-gradient(135deg, rgba(248, 104, 196, 0.35), rgba(255, 122, 217, 0.35))',
+              borderColor: '#f868c4',
               color: '#ffffff',
               fontWeight: 700,
             }}
@@ -552,7 +552,7 @@ export function SlidePresentation({
                     border: theme === t ? '2px solid #ffffff' : 'none',
                     background:
                       t === 'indigo'
-                        ? '#7c6df2'
+                        ? '#f868c4'
                         : t === 'slate'
                         ? '#38bdf8'
                         : t === 'ocean'
@@ -574,7 +574,7 @@ export function SlidePresentation({
                   borderRadius: '4px',
                   margin: '2px',
                   border: theme === 'custom' ? '2px solid #ffffff' : 'none',
-                  background: 'conic-gradient(#f868c4, #fbbf24, #2dd4bf, #38bdf8, #7c6df2, #f868c4)',
+                  background: 'conic-gradient(#f868c4, #fbbf24, #2dd4bf, #38bdf8, #f868c4, #f868c4)',
                   cursor: 'pointer',
                   padding: 0,
                   display: 'flex',
@@ -640,7 +640,7 @@ export function SlidePresentation({
               placeholder="Tiêu đề slide..."
               style={{
                 background: 'rgba(0,0,0,0.4)',
-                border: '1px solid #7c6df2',
+                border: '1px solid #f868c4',
                 borderRadius: '6px',
                 padding: '6px 10px',
                 color: '#fff',
@@ -685,7 +685,7 @@ export function SlidePresentation({
                 border: '1px solid rgba(255,255,255,0.15)',
                 borderRadius: '6px',
                 padding: '4px 10px',
-                color: '#a594fd',
+                color: '#ff9dce',
                 fontSize: '12px',
               }}
             />
@@ -695,7 +695,7 @@ export function SlidePresentation({
                 type="button"
                 onClick={handleSaveEdit}
                 style={{
-                  background: '#7c6df2',
+                  background: '#f868c4',
                   color: '#fff',
                   border: 'none',
                   borderRadius: '6px',
@@ -835,7 +835,7 @@ export function SlidePresentation({
                 onChange={e => setEditTopicValue(e.target.value)}
                 onBlur={() => { setDeck(prev => ({ ...prev, topic: editTopicValue.trim() || prev.topic })); setIsEditingTopic(false); }}
                 onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur(); } if (e.key === 'Escape') { setIsEditingTopic(false); } }}
-                style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid #7c6df2', borderRadius: '4px', padding: '1px 6px', color: '#e2e8f0', fontSize: '11px', width: '160px' }}
+                style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid #f868c4', borderRadius: '4px', padding: '1px 6px', color: '#e2e8f0', fontSize: '11px', width: '160px' }}
               />
             ) : (
               <span
@@ -874,9 +874,9 @@ export function SlidePresentation({
             type="button"
             onClick={handleAddSlide}
             style={{
-              background: 'rgba(142, 123, 227, 0.18)',
+              background: 'rgba(248, 104, 196, 0.18)',
               color: '#ffd1f0',
-              border: '1px solid rgba(142, 123, 227, 0.32)',
+              border: '1px solid rgba(248, 104, 196, 0.32)',
               borderRadius: '6px',
               padding: '4px 10px',
               fontSize: '12px',
@@ -924,8 +924,8 @@ export function SlidePresentation({
               width: '32px',
               height: '32px',
               borderRadius: '8px',
-              background: currentIdx === 0 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(142, 123, 227, 0.2)',
-              border: currentIdx === 0 ? '1px solid rgba(255, 255, 255, 0.06)' : '1px solid rgba(142, 123, 227, 0.35)',
+              background: currentIdx === 0 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(248, 104, 196, 0.2)',
+              border: currentIdx === 0 ? '1px solid rgba(255, 255, 255, 0.06)' : '1px solid rgba(248, 104, 196, 0.35)',
               color: currentIdx === 0 ? '#475569' : '#ffffff',
               display: 'flex',
               alignItems: 'center',
@@ -958,11 +958,11 @@ export function SlidePresentation({
               height: '32px',
               borderRadius: '8px',
               background:
-                currentIdx === slides.length - 1 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(142, 123, 227, 0.2)',
+                currentIdx === slides.length - 1 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(248, 104, 196, 0.2)',
               border:
                 currentIdx === slides.length - 1
                   ? '1px solid rgba(255, 255, 255, 0.06)'
-                  : '1px solid rgba(142, 123, 227, 0.35)',
+                  : '1px solid rgba(248, 104, 196, 0.35)',
               color: currentIdx === slides.length - 1 ? '#475569' : '#ffffff',
               display: 'flex',
               alignItems: 'center',
@@ -1022,7 +1022,7 @@ export function SlidePresentation({
               height: '8px',
               borderRadius: '4px',
               background: currentIdx === idx
-                ? 'linear-gradient(135deg, #f868c4, #8e7be3)'
+                ? 'linear-gradient(135deg, #f868c4, #e056a0)'
                 : 'rgba(255, 255, 255, 0.15)',
               border: 'none',
               padding: 0,
@@ -1061,7 +1061,7 @@ export function SlidePresentation({
             <strong
               style={{
                 fontSize: '12px',
-                color: '#a594fd',
+                color: '#ff9dce',
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '6px',

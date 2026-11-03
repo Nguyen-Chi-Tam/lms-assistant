@@ -16,6 +16,19 @@ let keySlots: GroqKeySlot[] = [];
 let lastKeyFingerprint = '';
 let roundRobinPointer = 0;
 
+const userKeyBlockedUntil = new Map<string, number>();
+const userClientMap = new Map<string, Groq>();
+
+function getUserGroqClient(key: string): Groq {
+  let client = userClientMap.get(key);
+  if (!client) {
+    client = new Groq({ apiKey: key });
+    userClientMap.set(key, client);
+  }
+  return client;
+}
+
+
 function maskApiKey(key: string): string {
   if (!key || key.length < 10) return '****';
   return `${key.slice(0, 7)}...${key.slice(-4)}`;
@@ -194,10 +207,76 @@ export function getGroqClient(): Groq | null {
  * and immediately retries the operation on Key #2, Key #3, etc.
  * Groq is only blocked globally if ALL keys in the pool are rate-limited.
  */
+export interface GroqPoolOptions {
+  signal?: AbortSignal;
+  userKeys?: string[];
+  allowSystemFallback?: boolean;
+  onKeySource?: (source: 'system' | 'byok') => void;
+}
+
 export async function executeWithGroqPool<T>(
   operation: (client: Groq, slot: GroqKeySlot) => Promise<T>,
-  signal?: AbortSignal
+  optionsOrSignal?: AbortSignal | GroqPoolOptions
 ): Promise<T> {
+  const signal = optionsOrSignal instanceof AbortSignal ? optionsOrSignal : optionsOrSignal?.signal;
+  const userKeys = optionsOrSignal instanceof AbortSignal ? undefined : optionsOrSignal?.userKeys;
+
+  // 1. PRIORITIZE USER KEYS (BYOK) FIRST
+  if (userKeys && userKeys.length > 0) {
+    for (let uIdx = 0; uIdx < userKeys.length; uIdx++) {
+      signal?.throwIfAborted();
+      const uKey = userKeys[uIdx].trim();
+      if (!uKey) continue;
+
+      const blockedUntil = userKeyBlockedUntil.get(uKey) || 0;
+      if (Date.now() < blockedUntil) {
+        continue;
+      }
+
+      const masked = maskApiKey(uKey);
+      try {
+        const client = getUserGroqClient(uKey);
+        const userSlot: GroqKeySlot = {
+          index: -100 - uIdx,
+          key: uKey,
+          maskedKey: masked,
+          client,
+          blockedUntil: 0,
+          failCount: 0,
+          successCount: 0,
+          lastUsedAt: Date.now(),
+        };
+
+        const result = await operation(client, userSlot);
+        if (!(optionsOrSignal instanceof AbortSignal)) optionsOrSignal?.onKeySource?.('byok');
+        return result;
+      } catch (userErr: unknown) {
+        if (signal?.aborted) throw userErr;
+        const errStr = String(userErr).toLowerCase();
+        const isQuota =
+          errStr.includes('429') ||
+          errStr.includes('rate limit') ||
+          errStr.includes('rate_limit_exceeded') ||
+          errStr.includes('tokens per minute') ||
+          errStr.includes('requests per minute') ||
+          errStr.includes('quota');
+        const isAuthError = errStr.includes('401') || errStr.includes('invalid_api_key') || errStr.includes('unauthorized');
+
+        if (isQuota || isAuthError) {
+          userKeyBlockedUntil.set(uKey, Date.now() + 30000);
+          console.warn(`[BYOK Groq] User key #${uIdx + 1} (${masked}) hit ${isAuthError ? 'auth error' : 'rate limit'}. Failing over to system pool...`);
+        } else {
+          console.warn(`[BYOK Groq] User key #${uIdx + 1} (${masked}) failed (${userErr}). Failing over to system pool...`);
+        }
+      }
+    }
+  }
+
+  if (!(optionsOrSignal instanceof AbortSignal) && optionsOrSignal?.allowSystemFallback === false) {
+    throw new Error('All BYOK Groq keys failed or are temporarily unavailable.');
+  }
+
+  // 2. FALLBACK TO SYSTEM KEY POOL
   const slots = syncPool();
   if (slots.length === 0) {
     throw new Error('No Groq API keys configured. Set GROQ_API_KEY or GROQ_API_KEYS.');
@@ -229,6 +308,7 @@ export async function executeWithGroqPool<T>(
       signal?.throwIfAborted();
       const result = await operation(slot.client, slot);
       slot.successCount++;
+      if (!(optionsOrSignal instanceof AbortSignal)) optionsOrSignal?.onKeySource?.('system');
       return result;
     } catch (err: unknown) {
       if (signal?.aborted) throw err;

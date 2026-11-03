@@ -5,7 +5,8 @@ import { eq, and, or, desc } from 'drizzle-orm';
 import { uploadMaterialFile, deleteMaterialFile } from '@/lib/cloudinary';
 import { supabaseAdmin } from '@/lib/supabase';
 import { indexDocuments } from '@/lib/rag';
-import { parseDocumentFromUrl, parseDocumentBuffer } from '@/lib/document-parser';
+import { parseDocumentFromUrl, parseDocumentBuffer, getLastVisionOcrStatus } from '@/lib/document-parser';
+import { getUserApiKeys } from '@/lib/key-manager';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import { setFirebaseRow, getFirebaseRow, deleteFirebaseRow } from '@/lib/firebase-admin';
 import { invalidateCourseCache } from '@/lib/semantic-cache';
@@ -54,11 +55,13 @@ export async function POST(request: Request) {
 
         // Extract locally first. This also routes image-only material through
         // multimodal OCR before it is indexed into the transient RAM RAG.
+        // BYOK: prefer the uploader user's own Gemini key for OCR when available.
         if (!content) {
-          content = await parseDocumentBuffer(arrayBuffer, file.name, file.type);
+          const userGeminiKeys = userId > 0 ? await getUserApiKeys(userId, 'gemini').catch(() => []) : [];
+          content = await parseDocumentBuffer(arrayBuffer, file.name, file.type, userGeminiKeys);
           if (!content && fileUrl) {
             try {
-              content = await parseDocumentFromUrl(fileUrl, file.name);
+              content = await parseDocumentFromUrl(fileUrl, file.name, { userKeys: userGeminiKeys });
             } catch {
               content = `[Tài liệu: ${file.name}] (URL: ${fileUrl})`;
             }
@@ -87,8 +90,9 @@ export async function POST(request: Request) {
 
     // Auto extract text from web link if content is still empty
     if (!content && fileUrl && fileUrl.startsWith('http')) {
+      const userGeminiKeys = userId > 0 ? await getUserApiKeys(userId, 'gemini').catch(() => []) : [];
       try {
-        const parsed = await parseDocumentFromUrl(fileUrl, title);
+        const parsed = await parseDocumentFromUrl(fileUrl, title, { userKeys: userGeminiKeys });
         if (parsed && parsed.trim().length > 50) {
           content = parsed.trim();
         }
@@ -96,6 +100,11 @@ export async function POST(request: Request) {
         console.warn('Auto parse document from URL warning:', err);
       }
     }
+
+    // Inform the user when the AI vision model cannot read image input
+    // (e.g. "Cannot read 'image' ... this model does not support image input").
+    const visionOcrStatus = getLastVisionOcrStatus();
+    const visionUnsupported = Boolean(visionOcrStatus?.unsupported);
 
     if (!title || (!content && !fileUrl)) {
       return NextResponse.json(
@@ -210,6 +219,12 @@ export async function POST(request: Request) {
       },
       fileUrl: effectiveStorageUrl,
       contentPreview: content.slice(0, 300),
+      ...(visionUnsupported
+        ? {
+            warning:
+              'Model AI hiện không hỗ trợ nhận ảnh (không hỗ trợ image input), nên chưa trích xuất được nội dung từ tệp này. Bạn vui lòng dán nội dung văn bản hoặc tải lên tệp có chữ rõ ràng để AI học được nội dung.',
+          }
+        : {}),
     });
   } catch (error) {
     console.error('Error processing document:', error);

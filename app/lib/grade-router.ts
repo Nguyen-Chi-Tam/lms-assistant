@@ -271,11 +271,11 @@ export function resolveGradeRoute(
       buttonLabel: isAnalyzed ? 'Xem lại phân tích' : 'Chẩn đoán bài thi',
       buttonTooltip: 'Dùng lời phê của giáo viên kết hợp bóc tách chi tiết từng câu sai để vạch lộ trình ôn tập.',
       badgeText: '',
-      badgeColor: '#a855f7',
+      badgeColor: '#ff7ad9',
       buttonGradient: isAnalyzed
-        ? 'linear-gradient(135deg, rgba(34, 197, 94, 0.25), rgba(168, 85, 247, 0.25))'
-        : 'linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(236, 72, 153, 0.25))',
-      borderColor: isAnalyzed ? 'rgba(34, 197, 94, 0.5)' : 'rgba(168, 85, 247, 0.4)',
+        ? 'linear-gradient(135deg, rgba(34, 197, 94, 0.25), rgba(255, 122, 217, 0.25))'
+        : 'linear-gradient(135deg, rgba(255, 122, 217, 0.25), rgba(236, 72, 153, 0.25))',
+      borderColor: isAnalyzed ? 'rgba(34, 197, 94, 0.5)' : 'rgba(255, 122, 217, 0.4)',
       prompt,
     };
   }
@@ -296,7 +296,7 @@ export function resolveGradeRoute(
       badgeColor: '#38bdf8',
       buttonGradient: isAnalyzed
         ? 'linear-gradient(135deg, rgba(34, 197, 94, 0.25), rgba(56, 189, 248, 0.25))'
-        : 'linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(124, 109, 242, 0.2))',
+        : 'linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(248, 104, 196, 0.2))',
       borderColor: isAnalyzed ? 'rgba(34, 197, 94, 0.5)' : 'rgba(56, 189, 248, 0.4)',
       prompt,
     };
@@ -336,7 +336,7 @@ export function resolveGradeRoute(
       buttonTooltip: 'Kết quả xuất sắc! AI sẽ đồng hành gợi mở các bài tập và tình huống nâng cao.',
       badgeText: '',
       badgeColor: '#22c55e',
-      buttonGradient: 'linear-gradient(135deg, rgba(34, 197, 94, 0.25), rgba(168, 85, 247, 0.2))',
+      buttonGradient: 'linear-gradient(135deg, rgba(34, 197, 94, 0.25), rgba(255, 122, 217, 0.2))',
       borderColor: 'rgba(34, 197, 94, 0.45)',
       prompt,
     };
@@ -353,7 +353,7 @@ export function resolveGradeRoute(
       buttonTooltip: 'Hệ thống chưa có chi tiết bài làm. AI sẽ chủ động gợi mở để cùng bạn làm rõ các khúc mắc.',
       badgeText: '',
       badgeColor: '#ec4899',
-      buttonGradient: 'linear-gradient(135deg, rgba(236, 72, 153, 0.25), rgba(139, 92, 246, 0.2))',
+      buttonGradient: 'linear-gradient(135deg, rgba(236, 72, 153, 0.25), rgba(248, 104, 196, 0.2))',
       borderColor: 'rgba(236, 72, 153, 0.45)',
       prompt,
     };

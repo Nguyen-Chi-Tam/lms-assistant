@@ -304,6 +304,7 @@ Không kèm markdown hay văn bản ngoài JSON.`;
         system:
           'Bạn là Cố vấn Học tập Thích ứng chuyên sâu về CNTT và sư phạm đại học. Luôn phân tích chính xác nguyên nhân sai sót và đề xuất giải pháp trọng tâm bằng CHÍNH XÁC ngôn ngữ của bài thi/câu hỏi (Tiếng Việt luôn là ngôn ngữ mặc định nếu bài thi bằng tiếng Việt). Trả về đúng JSON schema.',
         userPrompt: prompt,
+        userId: body.userId ? Number(body.userId) : attemptInfo?.userid ? Number(attemptInfo.userid) : undefined,
         temperature: 0.2,
         jsonMode: true,
         taskCategory: 'complex',

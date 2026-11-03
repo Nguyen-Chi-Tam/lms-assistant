@@ -73,11 +73,17 @@ async function runMoodleSync() {
 
     if (!res.ok) {
       let errDetail = '';
+      let isTimeout = false;
       try {
         const errJson = await res.json();
         errDetail = errJson.error ? ` — ${errJson.error}` : '';
+        isTimeout = res.status === 504 || res.status === 502 || errJson.code === 'MOODLE_CONNECT_TIMEOUT';
       } catch {}
-      console.log(`${timestamp()} ${label} ${colors.red}HTTP ${res.status}${errDetail}${colors.reset}`);
+      if (isTimeout) {
+        console.log(`${timestamp()} ${label} ${colors.yellow}⚠️ Moodle phản hồi chậm/timeout. Sẽ tự thử lại ở chu kỳ tiếp theo.${colors.reset}`);
+      } else {
+        console.log(`${timestamp()} ${label} ${colors.red}HTTP ${res.status}${errDetail}${colors.reset}`);
+      }
       return;
     }
 
@@ -89,9 +95,9 @@ async function runMoodleSync() {
       const expired = data.expiredDeletedCount || 0;
       const submitted = data.submittedCount || 0;
       const total = data.eligibleEvents ?? data.futureEvents ?? 0;
-      let logMsg = `Đồng bộ: ${colors.green}${total} sự kiện lớp tham gia${colors.reset} (+${inserted} mới, ~${updated} cập nhật`;
-      if (expired > 0) logMsg += `, ${colors.yellow}🗑️ [delete_expired_events] -${expired} quá hạn${colors.reset}`;
-      if (deleted > 0) logMsg += `, ${colors.yellow}-${deleted} đã dọn dẹp${colors.reset}`;
+      let logMsg = `Đồng bộ: ${colors.green}${total} sự kiện lớp tham gia${colors.reset} (+${inserted} mới, +${updated} cập nhật`;
+      if (expired > 0) logMsg += `, ${colors.yellow}🗑️ [delete_expired_events] +${expired} đã dọn dẹp${colors.reset}`;
+      if (deleted > 0) logMsg += `, ${colors.yellow}+${deleted} đã dọn dẹp${colors.reset}`;
       if (submitted > 0) logMsg += `, ${colors.cyan}${submitted} đã nộp bài${colors.reset}`;
       logMsg += ')';
       console.log(`${timestamp()} ${label} ${logMsg}`);
@@ -132,13 +138,27 @@ async function runNotificationCheck() {
       const scanned = data.totalEventsScanned ?? 0;
       const sent = data.notificationsSent ?? 0;
       const deleted = data.eventsDeleted ?? 0;
+      const earlyDeleted = Array.isArray(data.details)
+        ? data.details.filter(item =>
+            item.action === 'deleted' &&
+            item.reason &&
+            (item.reason.includes('đều đã nộp bài') || item.reason.includes('đều đã điểm danh'))
+          ).length
+        : 0;
 
       let msg = `Quét ${colors.bold}${scanned}${colors.reset} sự kiện`;
       if (sent > 0) {
         msg += ` | ${colors.green}${colors.bold}🔔 Đã bắn ${sent} thông báo FCM!${colors.reset}`;
       }
       if (deleted > 0) {
-        msg += ` | ${colors.yellow}${colors.bold}🗑️ [delete_expired_events] Đã xóa ${deleted} sự kiện quá hạn!${colors.reset}`;
+        if (earlyDeleted === deleted) {
+          msg += ` | ${colors.green}${colors.bold}✅ Đã xóa ${deleted} sự kiện đã hoàn thành sớm!${colors.reset}`;
+        } else if (earlyDeleted > 0) {
+          msg += ` | ${colors.green}${colors.bold}✅ Đã xóa ${earlyDeleted} sự kiện hoàn thành sớm${colors.reset}`;
+          msg += ` | ${colors.yellow}${colors.bold}🗑️ [delete_expired_events] Đã xóa ${deleted - earlyDeleted} sự kiện quá hạn!${colors.reset}`;
+        } else {
+          msg += ` | ${colors.yellow}${colors.bold}🗑️ [delete_expired_events] Đã xóa ${deleted} sự kiện quá hạn!${colors.reset}`;
+        }
       }
       if (sent === 0 && deleted === 0) {
         msg += ` ${colors.gray}(đang đếm lùi, chưa đến mốc)${colors.reset}`;
@@ -153,7 +173,15 @@ async function runNotificationCheck() {
             ? `${item.matchedReminder}m (3 phút trước khi đóng)`
             : `${item.matchedReminder}m`;
           if (item.action === 'deleted') {
-            console.log(`${timestamp()} ${label}   ${colors.yellow}↳ 🗑️ [delete_expired_events] Đã xóa: "${item.title}" (${item.reason})${colors.reset}`);
+            const isEarlyAssignment = item.reason && item.reason.includes('đều đã nộp bài');
+            const isEarlyAttendance = item.reason && item.reason.includes('đều đã điểm danh');
+            if (isEarlyAssignment) {
+              console.log(`${timestamp()} ${label}   ${colors.green}↳ ✅ [BÀI TẬP ĐÃ NỘP HẾT] Đã xóa sớm: "${item.title}" — ${item.reason}${colors.reset}`);
+            } else if (isEarlyAttendance) {
+              console.log(`${timestamp()} ${label}   ${colors.green}↳ ✅ [ĐÃ ĐIỂM DANH HẾT] Đã xóa sớm: "${item.title}" — ${item.reason}${colors.reset}`);
+            } else {
+              console.log(`${timestamp()} ${label}   ${colors.yellow}↳ 🗑️ [delete_expired_events] Đã xóa: "${item.title}" (${item.reason})${colors.reset}`);
+            }
           } else if (item.action === 'sent') {
             console.log(`${timestamp()} ${label}   ${colors.green}↳ 🔔 Đã bắn thông báo mốc ${remLabel} (${item.sentCount} thiết bị): "${item.title}"${colors.reset}`);
           } else if (item.action === 'skipped') {
@@ -214,4 +242,3 @@ process.on('SIGINT', () => {
 });
 
 void main();
-

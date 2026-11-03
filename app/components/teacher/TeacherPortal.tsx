@@ -833,7 +833,7 @@ export function TeacherPortal({
   const [assistantInput, setAssistantInput] = useState('');
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantModel, setAssistantModel] = useState<string>('auto');
-  const [teacherAvailableModels, setTeacherAvailableModels] = useState<Array<{ id: string; provider: string; label: string; available?: boolean }>>([]);
+  const [teacherAvailableModels, setTeacherAvailableModels] = useState<Array<{ id: string; provider: string; label: string; available?: boolean; keyMode?: 'system' | 'byok' }>>([]);
   const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
   const assistantAbortRef = useRef<AbortController | null>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
@@ -841,7 +841,12 @@ export function TeacherPortal({
 
   // Fetch available AI models for Teacher healthcheck & model testing
   useEffect(() => {
-    fetch('/api/models?all=true')
+    const userId = typeof teacherUser?.id === 'number' && teacherUser.id > 0
+      ? teacherUser.id
+      : null;
+    const query = userId ? `/api/models?all=true&userId=${userId}` : '/api/models?all=true';
+
+    fetch(query)
       .then(res => res.json())
       .then(data => {
         const mList = (data as any)?.models;
@@ -850,6 +855,8 @@ export function TeacherPortal({
         }
       })
       .catch(err => console.warn('Failed to load teacher models:', err));
+  // teacherUser is resolved before this portal mounts; keep this dependency list
+  // stable so Turbopack Fast Refresh cannot reuse a previous zero-length list.
   }, []);
 
   // Sync sources prop
@@ -1236,6 +1243,9 @@ export function TeacherPortal({
             uploadedId = procData?.material?.id ? String(procData.material.id) : '';
             if (procData?.contentPreview && !content) {
               content = procData.contentPreview;
+            }
+            if (procData?.warning) {
+              notify(procData.warning);
             }
           }
         } catch (err) {
@@ -1823,6 +1833,8 @@ export function TeacherPortal({
         signal: controller.signal,
         body: JSON.stringify({
           question: q,
+          // BYOK: send the acting teacher's userId so the backend can resolve their personal OpenRouter/Gemini/Groq keys
+          userId: typeof teacherUser?.id === 'number' ? teacherUser.id : undefined,
           course: curCourse?.name || 'Khóa học',
           courseCode: curCourse?.code || '',
           courseId: curCourse?.id || selectedCourseId,
@@ -2550,7 +2562,7 @@ export function TeacherPortal({
                   width: '38px',
                   height: '38px',
                   borderRadius: '10px',
-                  background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                  background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -2572,15 +2584,15 @@ export function TeacherPortal({
                       rel="noreferrer"
                       style={{
                         fontSize: '0.75rem',
-                        color: '#cfc8ff',
+                        color: '#ffe0f3',
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '3px',
                         textDecoration: 'none',
                         padding: '2px 8px',
                         borderRadius: '12px',
-                        background: 'rgba(124, 109, 242, 0.15)',
-                        border: '1px solid rgba(124, 109, 242, 0.3)',
+                        background: 'rgba(248, 104, 196, 0.15)',
+                        border: '1px solid rgba(248, 104, 196, 0.3)',
                       }}
                       title="Mở khóa học trên LMS"
                     >
@@ -2757,7 +2769,7 @@ export function TeacherPortal({
             <div className="source-panel-header">
               <div className="panel-title">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                  <Folder size={15} style={{ color: '#a78bfa' }} />
+                  <Folder size={15} style={{ color: '#ff9dce' }} />
                   <strong>Nguồn tài liệu</strong>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
@@ -2847,7 +2859,7 @@ export function TeacherPortal({
                     title="Mở danh sách tài liệu môn học"
                     style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                   >
-                    <Folder size={14} style={{ color: '#a78bfa' }} />
+                    <Folder size={14} style={{ color: '#ff9dce' }} />
                     <span className="expand-source-text">Nguồn tài liệu</span>
                     <span className="source-count-badge">{selectedSourceNames.length}</span>
                   </button>
@@ -2961,19 +2973,6 @@ export function TeacherPortal({
                                   >
                                     <AlertCircle size={12} style={{ color: '#f59e0b' }} />
                                     <span className="citation-text">Kiến thức tham khảo ngoài giáo trình</span>
-                                  </span>
-                                );
-                              }
-
-                              if (isCourse) {
-                                return (
-                                  <span
-                                    key={idx}
-                                    className="citation-pill course-citation"
-                                    title="Trích xuất trực tiếp từ tài liệu khóa học"
-                                  >
-                                    <BookOpen size={12} style={{ color: '#10b981' }} />
-                                    <span className="citation-text">Nguồn: {cleanName}</span>
                                   </span>
                                 );
                               }
@@ -3159,18 +3158,29 @@ export function TeacherPortal({
                         fontSize: '11px',
                         fontWeight: 600,
                         borderRadius: '8px',
-                        background: assistantModel !== 'auto' ? 'rgba(124, 109, 242, 0.22)' : 'rgba(255, 255, 255, 0.05)',
-                        borderColor: assistantModel !== 'auto' ? 'rgba(124, 109, 242, 0.5)' : 'rgba(255, 255, 255, 0.12)',
+                        background: assistantModel !== 'auto' ? 'rgba(248, 104, 196, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                        borderColor: assistantModel !== 'auto' ? 'rgba(248, 104, 196, 0.5)' : 'rgba(255, 255, 255, 0.12)',
                         color: '#e2e8f0',
                         cursor: 'pointer',
                       }}
                     >
                       <option value="auto">Model: Tự động</option>
-                      {teacherAvailableModels.map(m => (
-                        <option key={m.id} value={m.id} disabled={m.available === false}>
-                          {m.available === false ? '[Offline] ' : ''}{m.label}
-                        </option>
-                      ))}
+                      <optgroup label="Model hệ thống">
+                        {teacherAvailableModels.filter(m => m.keyMode !== 'byok').map(m => (
+                          <option key={m.id} value={m.id} disabled={m.available === false}>
+                            {m.available === false ? '[Offline] ' : ''}{m.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                      {teacherAvailableModels.some(m => m.keyMode === 'byok') && (
+                        <optgroup label="Model BYOK — kiểm tra key cá nhân">
+                          {teacherAvailableModels.filter(m => m.keyMode === 'byok').map(m => (
+                            <option key={m.id} value={m.id} disabled={m.available === false}>
+                              {m.available === false ? '[Offline] ' : ''}{m.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
                     </select>
 
                     <div className="chat-compose-actions">
@@ -3320,7 +3330,7 @@ export function TeacherPortal({
           <div className="teacher-control-bar">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap', flex: '1 1 auto' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                <Table size={18} style={{ color: '#7c6df2' }} />
+                <Table size={18} style={{ color: '#f868c4' }} />
                 <strong style={{ fontSize: '0.98rem', color: '#f3f2f8' }}>Sổ Điểm (Grader report)</strong>
                 <span
                   style={{
@@ -3386,7 +3396,7 @@ export function TeacherPortal({
                   padding: '0.5rem 1rem',
                   borderRadius: '8px',
                   border: 'none',
-                  background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                  background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                   color: '#fff',
                   fontWeight: 600,
                   fontSize: '0.86rem',
@@ -3395,7 +3405,7 @@ export function TeacherPortal({
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '0.45rem',
-                  boxShadow: '0 2px 12px rgba(124, 109, 242, 0.35)',
+                  boxShadow: '0 2px 12px rgba(248, 104, 196, 0.35)',
                   whiteSpace: 'nowrap',
                   width: isMobile ? '100%' : 'auto',
                   minHeight: '40px',
@@ -3443,9 +3453,9 @@ export function TeacherPortal({
           {/* THE GRADEBOOK / GRADER REPORT TABLE (READ-ONLY DISPLAY) */}
           <div
             style={{
-              background: '#171526',
+              background: '#22141c',
               borderRadius: '14px',
-              border: '1px solid #26233a',
+              border: '1px solid #2e1d26',
               overflow: 'hidden',
               boxShadow: '0 4px 20px rgba(0, 0, 0, 0.25)',
             }}
@@ -3454,7 +3464,7 @@ export function TeacherPortal({
             <div
               style={{
                 padding: '0.75rem 1.25rem',
-                borderBottom: '1px solid #26233a',
+                borderBottom: '1px solid #2e1d26',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
@@ -3472,9 +3482,9 @@ export function TeacherPortal({
                   style={{
                     padding: '0.45rem 0.85rem',
                     borderRadius: '8px',
-                    background: '#141220',
+                    background: '#180f14',
                     color: '#f3f2f8',
-                    border: '1px solid #26233a',
+                    border: '1px solid #2e1d26',
                     fontSize: '0.85rem',
                     width: '100%',
                     maxWidth: '360px',
@@ -3496,9 +3506,9 @@ export function TeacherPortal({
                     style={{
                       padding: '0.35rem 0.65rem',
                       borderRadius: '8px',
-                      background: '#141220',
+                      background: '#180f14',
                       color: '#f3f2f8',
-                      border: '1px solid rgba(124, 109, 242, 0.4)',
+                      border: '1px solid rgba(248, 104, 196, 0.4)',
                       fontSize: '0.8rem',
                       fontWeight: 600,
                       outline: 'none',
@@ -3528,7 +3538,7 @@ export function TeacherPortal({
                                 width: '32px',
                                 height: '32px',
                                 borderRadius: '50%',
-                                background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                                background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                                 color: '#fff',
                                 display: 'flex',
                                 alignItems: 'center',
@@ -3554,7 +3564,7 @@ export function TeacherPortal({
                               </div>
                             </div>
                           </div>
-                          <span style={{ fontSize: '0.72rem', color: '#7c6df2', background: 'rgba(124, 109, 242, 0.15)', padding: '2px 7px', borderRadius: '10px', fontWeight: 600 }}>
+                          <span style={{ fontSize: '0.72rem', color: '#f868c4', background: 'rgba(248, 104, 196, 0.15)', padding: '2px 7px', borderRadius: '10px', fontWeight: 600 }}>
                             #{idx + 1}
                           </span>
                         </div>
@@ -3578,11 +3588,11 @@ export function TeacherPortal({
                                     style={{
                                       padding: '2px 8px',
                                       borderRadius: '6px',
-                                      background: hasVal ? 'rgba(124, 109, 242, 0.2)' : 'rgba(255, 255, 255, 0.04)',
-                                      border: hasVal ? '1px solid rgba(124, 109, 242, 0.4)' : '1px solid #26233a',
+                                      background: hasVal ? 'rgba(248, 104, 196, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                                      border: hasVal ? '1px solid rgba(248, 104, 196, 0.4)' : '1px solid #2e1d26',
                                       fontWeight: 700,
                                       fontSize: '0.88rem',
-                                      color: hasVal ? '#a594fd' : '#9894ad',
+                                      color: hasVal ? '#ff9dce' : '#9894ad',
                                       whiteSpace: 'nowrap',
                                     }}
                                   >
@@ -3603,11 +3613,11 @@ export function TeacherPortal({
                               key={`fb-${col.id}`}
                               style={{
                                 fontSize: '0.78rem',
-                                color: '#cfc8ff',
-                                background: 'rgba(124, 109, 242, 0.08)',
+                                color: '#ffe0f3',
+                                background: 'rgba(248, 104, 196, 0.08)',
                                 padding: '0.4rem 0.6rem',
                                 borderRadius: '6px',
-                                borderLeft: '3px solid #7c6df2',
+                                borderLeft: '3px solid #f868c4',
                               }}
                             >
                               {displayedGradeColumns.length > 1 ? `${col.name}: ` : ''}{fb}
@@ -3623,7 +3633,7 @@ export function TeacherPortal({
               <div className="teacher-table-scroll">
                 <table className="teacher-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
                   <thead>
-                    <tr style={{ background: '#141220', color: '#9894ad', textAlign: 'left', borderBottom: '1px solid #26233a' }}>
+                    <tr style={{ background: '#180f14', color: '#9894ad', textAlign: 'left', borderBottom: '1px solid #2e1d26' }}>
                       <th className="sticky-col" style={{ padding: '0.85rem 1rem', width: '40px' }}>STT</th>
                       <th
                         className="sticky-col"
@@ -3644,8 +3654,8 @@ export function TeacherPortal({
                               fontSize: '0.72rem',
                               padding: '2px 6px',
                               borderRadius: '4px',
-                              background: sortBy.startsWith('name') ? 'rgba(124, 109, 242, 0.25)' : 'rgba(255, 255, 255, 0.05)',
-                              color: sortBy.startsWith('name') ? '#a594fd' : '#64748b',
+                              background: sortBy.startsWith('name') ? 'rgba(248, 104, 196, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                              color: sortBy.startsWith('name') ? '#ff9dce' : '#64748b',
                               fontWeight: 700,
                             }}
                           >
@@ -3660,7 +3670,7 @@ export function TeacherPortal({
                           style={{
                             padding: '0.85rem 1rem',
                             minWidth: '150px',
-                            color: '#cfc8ff',
+                            color: '#ffe0f3',
                             cursor: 'pointer',
                             userSelect: 'none',
                           }}
@@ -3692,7 +3702,7 @@ export function TeacherPortal({
                         </th>
                       )}
                       {showFeedbackColumn && (
-                        <th style={{ padding: '0.85rem 1rem', minWidth: '220px', color: '#cfc8ff' }}>
+                        <th style={{ padding: '0.85rem 1rem', minWidth: '220px', color: '#ffe0f3' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <span style={{ fontWeight: 600 }}>Nhận xét (str_feedback)</span>
                           </div>
@@ -3707,7 +3717,7 @@ export function TeacherPortal({
                           <tr
                             key={student.id}
                             style={{
-                              borderBottom: '1px solid #26233a',
+                              borderBottom: '1px solid #2e1d26',
                               background: idx % 2 === 0 ? 'transparent' : 'rgba(255, 255, 255, 0.01)',
                               transition: 'background 0.2s',
                             }}
@@ -3720,7 +3730,7 @@ export function TeacherPortal({
                                     width: '32px',
                                     height: '32px',
                                     borderRadius: '50%',
-                                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                                     color: '#fff',
                                     display: 'flex',
                                     alignItems: 'center',
@@ -3758,8 +3768,8 @@ export function TeacherPortal({
                                       justifyContent: 'center',
                                       padding: '0.45rem 0.85rem',
                                       borderRadius: '8px',
-                                      background: hasVal ? 'rgba(124, 109, 242, 0.12)' : 'rgba(255, 255, 255, 0.04)',
-                                      border: hasVal ? '1px solid rgba(124, 109, 242, 0.35)' : '1px solid #26233a',
+                                      background: hasVal ? 'rgba(248, 104, 196, 0.12)' : 'rgba(255, 255, 255, 0.04)',
+                                      border: hasVal ? '1px solid rgba(248, 104, 196, 0.35)' : '1px solid #2e1d26',
                                       fontWeight: 700,
                                       color: hasVal ? '#f3f2f8' : '#9894ad',
                                       minWidth: '60px',
@@ -3794,7 +3804,7 @@ export function TeacherPortal({
                       })}
                   </tbody>
                   <tfoot>
-                    <tr style={{ background: '#141220', borderTop: '1px solid #26233a', fontWeight: 600 }}>
+                    <tr style={{ background: '#180f14', borderTop: '1px solid #2e1d26', fontWeight: 600 }}>
                       <td colSpan={2} className="sticky-col" style={{ padding: '0.85rem 1rem', color: '#c4c1d6' }}>
                         Overall average (Điểm trung bình cả lớp)
                       </td>
@@ -3804,7 +3814,7 @@ export function TeacherPortal({
                           .filter(n => !isNaN(n) && n > 0);
                         const avg = scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '-';
                         return (
-                          <td key={col.id} style={{ padding: '0.85rem 1rem', color: '#a594fd' }}>
+                          <td key={col.id} style={{ padding: '0.85rem 1rem', color: '#ff9dce' }}>
                             {avg !== '-' ? `${avg}đ` : '-'}
                           </td>
                         );
@@ -3825,7 +3835,7 @@ export function TeacherPortal({
             <div
               style={{
                 padding: '0.85rem 1.25rem',
-                borderTop: '1px solid #26233a',
+                borderTop: '1px solid #2e1d26',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
@@ -3855,7 +3865,7 @@ export function TeacherPortal({
                 <div
                   style={{
                     padding: '1rem 1.25rem',
-                    borderBottom: '1px solid #26233a',
+                    borderBottom: '1px solid #2e1d26',
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
@@ -3864,7 +3874,7 @@ export function TeacherPortal({
                 >
                   <div>
                     <h3 style={{ margin: 0, color: '#f3f2f8', fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <UploadCloud size={18} style={{ color: '#7c6df2' }} />
+                      <UploadCloud size={18} style={{ color: '#f868c4' }} />
                       <span>Nhập Điểm Sổ Điểm LMS</span>
                     </h3>
                     <p style={{ margin: '0.2rem 0 0', color: '#9894ad', fontSize: '0.8rem' }}>
@@ -3900,7 +3910,7 @@ export function TeacherPortal({
                       padding: '0.85rem 1rem',
                       background: 'rgba(20, 18, 34, 0.6)',
                       borderRadius: '12px',
-                      border: '1px solid #26233a',
+                      border: '1px solid #2e1d26',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
@@ -3916,9 +3926,9 @@ export function TeacherPortal({
                         style={{
                           padding: '0.45rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid rgba(124, 109, 242, 0.4)',
+                          border: '1px solid rgba(248, 104, 196, 0.4)',
                           fontWeight: 600,
                           outline: 'none',
                           flex: isMobile ? 1 : 'initial',
@@ -3940,7 +3950,7 @@ export function TeacherPortal({
                           padding: '0.45rem 0.85rem',
                           borderRadius: '6px',
                           background: 'rgba(255, 255, 255, 0.08)',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           color: '#f3f2f8',
                           fontSize: '0.8rem',
                           cursor: 'pointer',
@@ -3974,9 +3984,9 @@ export function TeacherPortal({
                     onClick={() => fileInputRef.current?.click()}
                     style={{
                       padding: isMobile ? '1rem' : '1.35rem',
-                      border: dragActive ? '2px dashed #7c6df2' : '2px dashed rgba(124, 109, 242, 0.35)',
+                      border: dragActive ? '2px dashed #f868c4' : '2px dashed rgba(248, 104, 196, 0.35)',
                       borderRadius: '12px',
-                      background: dragActive ? 'rgba(124, 109, 242, 0.12)' : 'rgba(20, 18, 34, 0.6)',
+                      background: dragActive ? 'rgba(248, 104, 196, 0.12)' : 'rgba(20, 18, 34, 0.6)',
                       textAlign: 'center',
                       cursor: 'pointer',
                       transition: 'all 0.2s ease',
@@ -3994,7 +4004,7 @@ export function TeacherPortal({
                       }}
                     />
                     <div style={{ fontSize: '24px', marginBottom: '0.25rem', display: 'flex', justifyContent: 'center' }}>
-                      {isExtracting ? <Sparkles size={24} style={{ color: '#a855f7' }} /> : <UploadCloud size={24} style={{ color: '#7c6df2' }} />}
+                      {isExtracting ? <Sparkles size={24} style={{ color: '#ff7ad9' }} /> : <UploadCloud size={24} style={{ color: '#f868c4' }} />}
                     </div>
                     <h4 style={{ margin: '0 0 0.2rem', fontSize: '0.9rem', color: '#f3f2f8' }}>
                       {isExtracting ? 'Đang phân tích và trích xuất bảng điểm...' : 'Tải lên bảng điểm (Excel, Hình ảnh hoặc PDF)'}
@@ -4061,8 +4071,8 @@ export function TeacherPortal({
                             <div
                               key={student.id}
                               style={{
-                                background: '#141220',
-                                border: isMod || isFbMod ? '1px solid rgba(32, 191, 169, 0.4)' : '1px solid #26233a',
+                                background: '#180f14',
+                                border: isMod || isFbMod ? '1px solid rgba(32, 191, 169, 0.4)' : '1px solid #2e1d26',
                                 borderRadius: '10px',
                                 padding: '0.75rem',
                                 display: 'flex',
@@ -4072,7 +4082,7 @@ export function TeacherPortal({
                             >
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span style={{ fontSize: '0.75rem', color: '#7c6df2', fontWeight: 700 }}>#{idx + 1}</span>
+                                  <span style={{ fontSize: '0.75rem', color: '#f868c4', fontWeight: 700 }}>#{idx + 1}</span>
                                   <strong style={{ fontSize: '0.9rem', color: '#f3f2f8' }}>{student.fullname}</strong>
                                 </div>
                                 <span style={{ fontSize: '0.72rem', color: '#9894ad' }}>{student.username}</span>
@@ -4080,7 +4090,7 @@ export function TeacherPortal({
 
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flex: '0 0 auto' }}>
-                                  <label style={{ fontSize: '0.8rem', color: '#cfc8ff', fontWeight: 600 }}>Điểm:</label>
+                                  <label style={{ fontSize: '0.8rem', color: '#ffe0f3', fontWeight: 600 }}>Điểm:</label>
                                   <input
                                     type="number"
                                     min="0"
@@ -4093,11 +4103,11 @@ export function TeacherPortal({
                                       width: '75px',
                                       padding: '0.4rem 0.5rem',
                                       borderRadius: '6px',
-                                      background: isMod ? 'rgba(32, 191, 169, 0.15)' : '#171526',
+                                      background: isMod ? 'rgba(32, 191, 169, 0.15)' : '#22141c',
                                       color: isMod ? '#20bfa9' : '#f3f2f8',
                                       fontWeight: 700,
                                       fontSize: '16px',
-                                      border: isMod ? '1px solid #20bfa9' : '1px solid rgba(124, 109, 242, 0.35)',
+                                      border: isMod ? '1px solid #20bfa9' : '1px solid rgba(248, 104, 196, 0.35)',
                                       textAlign: 'center',
                                       outline: 'none',
                                     }}
@@ -4113,9 +4123,9 @@ export function TeacherPortal({
                                       width: '100%',
                                       padding: '0.4rem 0.6rem',
                                       borderRadius: '6px',
-                                      background: isFbMod ? 'rgba(124, 109, 242, 0.15)' : '#171526',
+                                      background: isFbMod ? 'rgba(248, 104, 196, 0.15)' : '#22141c',
                                       color: '#f3f2f8',
-                                      border: isFbMod ? '1px solid #7c6df2' : '1px solid #26233a',
+                                      border: isFbMod ? '1px solid #f868c4' : '1px solid #2e1d26',
                                       fontSize: '16px',
                                       outline: 'none',
                                     }}
@@ -4135,21 +4145,21 @@ export function TeacherPortal({
                       /* Desktop Spreadsheet Table */
                       <div
                         style={{
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           borderRadius: '10px',
                           overflow: 'hidden',
-                          background: '#141220',
+                          background: '#180f14',
                         }}
                       >
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
                           <thead>
-                            <tr style={{ background: 'rgba(20, 18, 34, 0.9)', color: '#9894ad', textAlign: 'left', borderBottom: '1px solid #26233a' }}>
+                            <tr style={{ background: 'rgba(20, 18, 34, 0.9)', color: '#9894ad', textAlign: 'left', borderBottom: '1px solid #2e1d26' }}>
                               <th style={{ padding: '0.75rem 1rem', width: '40px' }}>STT</th>
                               <th style={{ padding: '0.75rem 1rem' }}>Sinh viên</th>
-                              <th style={{ padding: '0.75rem 1rem', width: '160px', color: '#cfc8ff' }}>
+                              <th style={{ padding: '0.75rem 1rem', width: '160px', color: '#ffe0f3' }}>
                                 {activeGradeColumns.find(c => c.id === (selectedGradeColumnId !== 'all' ? selectedGradeColumnId : activeGradeColumns[0]?.id))?.name || 'Điểm'}
                               </th>
-                              <th style={{ padding: '0.75rem 1rem', color: '#cfc8ff' }}>
+                              <th style={{ padding: '0.75rem 1rem', color: '#ffe0f3' }}>
                                 Nhận xét (str_feedback)
                               </th>
                             </tr>
@@ -4166,7 +4176,7 @@ export function TeacherPortal({
                                 <tr
                                   key={student.id}
                                   style={{
-                                    borderBottom: '1px solid #26233a',
+                                    borderBottom: '1px solid #2e1d26',
                                     background: isMod || isFbMod ? 'rgba(32, 191, 169, 0.05)' : 'transparent',
                                   }}
                                 >
@@ -4178,7 +4188,7 @@ export function TeacherPortal({
                                           width: '28px',
                                           height: '28px',
                                           borderRadius: '50%',
-                                          background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                                          background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                                           color: '#fff',
                                           display: 'flex',
                                           alignItems: 'center',
@@ -4209,11 +4219,11 @@ export function TeacherPortal({
                                           width: '75px',
                                           padding: '0.4rem 0.5rem',
                                           borderRadius: '6px',
-                                          background: isMod ? 'rgba(32, 191, 169, 0.12)' : '#171526',
+                                          background: isMod ? 'rgba(32, 191, 169, 0.12)' : '#22141c',
                                           color: isMod ? '#20bfa9' : '#f3f2f8',
                                           fontWeight: 700,
                                           fontSize: '0.9rem',
-                                          border: isMod ? '1px solid #20bfa9' : '1px solid rgba(124, 109, 242, 0.35)',
+                                          border: isMod ? '1px solid #20bfa9' : '1px solid rgba(248, 104, 196, 0.35)',
                                           textAlign: 'center',
                                           outline: 'none',
                                         }}
@@ -4235,9 +4245,9 @@ export function TeacherPortal({
                                         width: '100%',
                                         padding: '0.4rem 0.65rem',
                                         borderRadius: '6px',
-                                        background: isFbMod ? 'rgba(124, 109, 242, 0.15)' : '#171526',
+                                        background: isFbMod ? 'rgba(248, 104, 196, 0.15)' : '#22141c',
                                         color: '#f3f2f8',
-                                        border: isFbMod ? '1px solid #7c6df2' : '1px solid #26233a',
+                                        border: isFbMod ? '1px solid #f868c4' : '1px solid #2e1d26',
                                         fontSize: '0.82rem',
                                         outline: 'none',
                                       }}
@@ -4257,7 +4267,7 @@ export function TeacherPortal({
                 <div
                   style={{
                     padding: '0.85rem 1.25rem',
-                    borderTop: '1px solid #26233a',
+                    borderTop: '1px solid #2e1d26',
                     display: 'flex',
                     justifyContent: 'flex-end',
                     alignItems: 'center',
@@ -4272,7 +4282,7 @@ export function TeacherPortal({
                       padding: '0 1.25rem',
                       height: '42px',
                       borderRadius: '8px',
-                      border: '1px solid #363252',
+                      border: '1px solid #4a2433',
                       background: 'rgba(255, 255, 255, 0.05)',
                       color: '#c4c1d6',
                       fontSize: '0.88rem',
@@ -4300,7 +4310,7 @@ export function TeacherPortal({
                       height: '42px',
                       borderRadius: '8px',
                       border: 'none',
-                      background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                      background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                       color: '#fff',
                       fontWeight: 600,
                       fontSize: '0.88rem',
@@ -4309,7 +4319,7 @@ export function TeacherPortal({
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: '0.45rem',
-                      boxShadow: '0 4px 14px rgba(124, 109, 242, 0.35)',
+                      boxShadow: '0 4px 14px rgba(248, 104, 196, 0.35)',
                       whiteSpace: 'nowrap',
                       flex: isMobile ? 1 : 'initial',
                       boxSizing: 'border-box',
@@ -4344,9 +4354,9 @@ export function TeacherPortal({
           <div
             style={{
               padding: isMobile ? '1rem' : '1.5rem',
-              background: '#171526',
+              background: '#22141c',
               borderRadius: '16px',
-              border: '1px solid #26233a',
+              border: '1px solid #2e1d26',
               boxShadow: '0 8px 32px rgba(0, 0, 0, 0.35)',
               display: 'flex',
               flexDirection: 'column',
@@ -4356,7 +4366,7 @@ export function TeacherPortal({
             {/* Header */}
             <div>
               <h2 style={{ margin: '0 0 0.25rem', fontSize: '1.15rem', color: '#f3f2f8', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Sparkles size={18} style={{ color: '#7c6df2' }} />
+                <Sparkles size={18} style={{ color: '#f868c4' }} />
                 <span>Khởi Tạo Ngân Hàng Câu Hỏi Moodle XML</span>
               </h2>
               <p style={{ margin: 0, fontSize: '0.82rem', color: '#9894ad' }}>
@@ -4367,12 +4377,12 @@ export function TeacherPortal({
             {/* 1. Question Format (Multi-Select) */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '8px' }}>
-                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#cfc8ff', margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#ffe0f3', margin: 0 }}>
                   1. ĐỊNH DẠNG CÂU HỎI (CHỌN 1 HOẶC NHIỀU ĐỊNH DẠNG TÙY Ý):
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span style={{ fontSize: '0.75rem', color: '#9894ad' }}>
-                    Đã chọn: <strong style={{ color: '#a594fd' }}>{quizQuestionTypes.length}/5</strong> dạng
+                    Đã chọn: <strong style={{ color: '#ff9dce' }}>{quizQuestionTypes.length}/5</strong> dạng
                   </span>
                   <button
                     type="button"
@@ -4389,9 +4399,9 @@ export function TeacherPortal({
                     style={{
                       padding: '3px 10px',
                       borderRadius: '6px',
-                      background: 'rgba(124, 109, 242, 0.15)',
-                      border: '1px solid rgba(124, 109, 242, 0.35)',
-                      color: '#cfc8ff',
+                      background: 'rgba(248, 104, 196, 0.15)',
+                      border: '1px solid rgba(248, 104, 196, 0.35)',
+                      color: '#ffe0f3',
                       fontSize: '0.75rem',
                       cursor: 'pointer',
                       fontWeight: 500,
@@ -4431,13 +4441,13 @@ export function TeacherPortal({
                       style={{
                         padding: isMobile ? '0.65rem 0.75rem' : '0.85rem 1rem',
                         borderRadius: '12px',
-                        border: isSelected ? '1.5px solid #7c6df2' : '1px solid #26233a',
-                        background: isSelected ? 'rgba(124, 109, 242, 0.2)' : '#141220',
+                        border: isSelected ? '1.5px solid #f868c4' : '1px solid #2e1d26',
+                        background: isSelected ? 'rgba(248, 104, 196, 0.2)' : '#180f14',
                         color: isSelected ? '#f3f2f8' : '#9894ad',
                         textAlign: 'left',
                         cursor: 'pointer',
                         transition: 'all 0.2s ease',
-                        boxShadow: isSelected ? '0 0 18px rgba(124, 109, 242, 0.3)' : 'none',
+                        boxShadow: isSelected ? '0 0 18px rgba(248, 104, 196, 0.3)' : 'none',
                         display: 'flex',
                         flexDirection: 'column',
                         gap: '0.25rem',
@@ -4453,8 +4463,8 @@ export function TeacherPortal({
                             width: '16px',
                             height: '16px',
                             borderRadius: '4px',
-                            border: isSelected ? '1.5px solid #a594fd' : '1px solid rgba(255, 255, 255, 0.2)',
-                            background: isSelected ? '#7c6df2' : 'transparent',
+                            border: isSelected ? '1.5px solid #ff9dce' : '1px solid rgba(255, 255, 255, 0.2)',
+                            background: isSelected ? '#f868c4' : 'transparent',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
@@ -4466,7 +4476,7 @@ export function TeacherPortal({
                           {isSelected ? '✓' : ''}
                         </span>
                       </div>
-                      <small style={{ fontSize: isMobile ? '0.72rem' : '0.76rem', color: isSelected ? '#a594fd' : '#6b6684', lineHeight: 1.3 }}>
+                      <small style={{ fontSize: isMobile ? '0.72rem' : '0.76rem', color: isSelected ? '#ff9dce' : '#6b6684', lineHeight: 1.3 }}>
                         {item.desc}
                       </small>
                     </button>
@@ -4477,7 +4487,7 @@ export function TeacherPortal({
 
             {/* 2. Số Lượng Câu Hỏi (Own Full Line) */}
             <div>
-              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.45rem' }}>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.45rem' }}>
                 2. SỐ LƯỢNG CÂU HỎI:
               </label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
@@ -4503,7 +4513,7 @@ export function TeacherPortal({
                       width: '65px',
                       padding: '0.45rem 0.5rem',
                       borderRadius: '8px',
-                      background: '#141220',
+                      background: '#180f14',
                       color: '#20bfa9',
                       border: '1.5px solid #20bfa9',
                       fontWeight: 700,
@@ -4527,8 +4537,8 @@ export function TeacherPortal({
                         style={{
                           padding: isMobile ? '0.45rem 0.75rem' : '0.55rem 1rem',
                           borderRadius: '8px',
-                          border: isSelected ? '1.5px solid #20bfa9' : '1px solid #26233a',
-                          background: isSelected ? 'rgba(32, 191, 169, 0.22)' : '#141220',
+                          border: isSelected ? '1.5px solid #20bfa9' : '1px solid #2e1d26',
+                          background: isSelected ? 'rgba(32, 191, 169, 0.22)' : '#180f14',
                           color: isSelected ? '#20bfa9' : '#9894ad',
                           fontWeight: 700,
                           fontSize: '0.84rem',
@@ -4547,7 +4557,7 @@ export function TeacherPortal({
 
             {/* 3. Độ Khó (Own Full Line) */}
             <div>
-              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.45rem' }}>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.45rem' }}>
                 3. ĐỘ KHÓ:
               </label>
               <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -4565,8 +4575,8 @@ export function TeacherPortal({
                       style={{
                         padding: isMobile ? '0.45rem 0.8rem' : '0.55rem 1rem',
                         borderRadius: '8px',
-                        border: isSelected ? '1.5px solid #f59e0b' : '1px solid #26233a',
-                        background: isSelected ? 'rgba(245, 158, 11, 0.22)' : '#141220',
+                        border: isSelected ? '1.5px solid #f59e0b' : '1px solid #2e1d26',
+                        background: isSelected ? 'rgba(245, 158, 11, 0.22)' : '#180f14',
                         color: isSelected ? '#fbbf24' : '#9894ad',
                         fontWeight: 600,
                         fontSize: '0.84rem',
@@ -4584,7 +4594,7 @@ export function TeacherPortal({
 
             {/* Section 4: Focus Topic */}
             <div>
-              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.45rem' }}>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.45rem' }}>
                 4. CHỦ ĐỀ / PHẠM VI TRỌNG TÂM (TÙY CHỌN)
               </label>
               <input
@@ -4596,9 +4606,9 @@ export function TeacherPortal({
                   width: '100%',
                   padding: '0.75rem 0.85rem',
                   borderRadius: '10px',
-                  background: '#141220',
+                  background: '#180f14',
                   color: '#f3f2f8',
-                  border: '1px solid #26233a',
+                  border: '1px solid #2e1d26',
                   fontSize: '15px',
                   outline: 'none',
                 }}
@@ -4607,7 +4617,7 @@ export function TeacherPortal({
 
             {/* Section 5: External Knowledge Option */}
             <div>
-              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.45rem' }}>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.45rem' }}>
                 5. PHẠM VI NỘI DUNG RA ĐỀ
               </label>
               <div className="level-selector" style={{ gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '0.65rem' }}>
@@ -4618,8 +4628,8 @@ export function TeacherPortal({
                   style={{
                     padding: isMobile ? '0.75rem' : '0.85rem',
                     borderRadius: '12px',
-                    border: quizRagMode === 'strict' ? '1.5px solid #ef4444' : '1px solid #26233a',
-                    background: quizRagMode === 'strict' ? 'rgba(239, 68, 68, 0.12)' : '#141220',
+                    border: quizRagMode === 'strict' ? '1.5px solid #ef4444' : '1px solid #2e1d26',
+                    background: quizRagMode === 'strict' ? 'rgba(239, 68, 68, 0.12)' : '#180f14',
                     color: quizRagMode === 'strict' ? '#f3f2f8' : '#9894ad',
                     textAlign: 'left',
                     cursor: 'pointer',
@@ -4640,7 +4650,7 @@ export function TeacherPortal({
                       style={{
                         background: quizRagMode === 'strict' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(255, 255, 255, 0.08)',
                         color: quizRagMode === 'strict' ? '#fca5a5' : '#94a3b8',
-                        border: quizRagMode === 'strict' ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid #26233a',
+                        border: quizRagMode === 'strict' ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid #2e1d26',
                         padding: '2px 7px',
                         borderRadius: '6px',
                         fontSize: '0.72rem',
@@ -4662,8 +4672,8 @@ export function TeacherPortal({
                   style={{
                     padding: isMobile ? '0.75rem' : '0.85rem',
                     borderRadius: '12px',
-                    border: quizRagMode === 'hybrid' ? '1.5px solid #f59e0b' : '1px solid #26233a',
-                    background: quizRagMode === 'hybrid' ? 'rgba(245, 158, 11, 0.12)' : '#141220',
+                    border: quizRagMode === 'hybrid' ? '1.5px solid #f59e0b' : '1px solid #2e1d26',
+                    background: quizRagMode === 'hybrid' ? 'rgba(245, 158, 11, 0.12)' : '#180f14',
                     color: quizRagMode === 'hybrid' ? '#f3f2f8' : '#9894ad',
                     textAlign: 'left',
                     cursor: 'pointer',
@@ -4684,7 +4694,7 @@ export function TeacherPortal({
                       style={{
                         background: quizRagMode === 'hybrid' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255, 255, 255, 0.08)',
                         color: quizRagMode === 'hybrid' ? '#fcd34d' : '#94a3b8',
-                        border: quizRagMode === 'hybrid' ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #26233a',
+                        border: quizRagMode === 'hybrid' ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #2e1d26',
                         padding: '2px 7px',
                         borderRadius: '6px',
                         fontSize: '0.72rem',
@@ -4706,8 +4716,8 @@ export function TeacherPortal({
                   style={{
                     padding: isMobile ? '0.75rem' : '0.85rem',
                     borderRadius: '12px',
-                    border: quizRagMode === 'creative' ? '1.5px solid #38bdf8' : '1px solid #26233a',
-                    background: quizRagMode === 'creative' ? 'rgba(56, 189, 248, 0.12)' : '#141220',
+                    border: quizRagMode === 'creative' ? '1.5px solid #38bdf8' : '1px solid #2e1d26',
+                    background: quizRagMode === 'creative' ? 'rgba(56, 189, 248, 0.12)' : '#180f14',
                     color: quizRagMode === 'creative' ? '#f3f2f8' : '#9894ad',
                     textAlign: 'left',
                     cursor: 'pointer',
@@ -4728,7 +4738,7 @@ export function TeacherPortal({
                       style={{
                         background: quizRagMode === 'creative' ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.08)',
                         color: quizRagMode === 'creative' ? '#38bdf8' : '#94a3b8',
-                        border: quizRagMode === 'creative' ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid #26233a',
+                        border: quizRagMode === 'creative' ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid #2e1d26',
                         padding: '2px 7px',
                         borderRadius: '6px',
                         fontSize: '0.72rem',
@@ -4746,7 +4756,7 @@ export function TeacherPortal({
             </div>
 
             {/* Footer with Big Vibrant Action Button */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.85rem', paddingTop: '0.5rem', borderTop: '1px solid #26233a' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.85rem', paddingTop: '0.5rem', borderTop: '1px solid #2e1d26' }}>
               <div style={{ fontSize: '0.8rem', color: '#9894ad', flex: '1 1 200px' }}>
                 Tệp xuất ra đạt chuẩn <strong>Moodle XML</strong> có sẵn CDATA, feedback, penalty và fraction 100%.
               </div>
@@ -4768,19 +4778,30 @@ export function TeacherPortal({
                     fontSize: '12px',
                     fontWeight: 600,
                     borderRadius: '10px',
-                    background: quizModel !== 'auto' ? 'rgba(124, 109, 242, 0.25)' : 'rgba(255, 255, 255, 0.05)',
-                    borderColor: quizModel !== 'auto' ? 'rgba(124, 109, 242, 0.55)' : 'rgba(255, 255, 255, 0.12)',
+                    background: quizModel !== 'auto' ? 'rgba(248, 104, 196, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                    borderColor: quizModel !== 'auto' ? 'rgba(248, 104, 196, 0.55)' : 'rgba(255, 255, 255, 0.12)',
                     color: '#e2e8f0',
                     cursor: 'pointer',
                     padding: '0 12px',
                   }}
                 >
                   <option value="auto">Model: Tự động</option>
-                  {teacherAvailableModels.map(m => (
-                    <option key={m.id} value={m.id} disabled={m.available === false}>
-                      {m.available === false ? '[Offline] ' : ''}{m.label}
-                    </option>
-                  ))}
+                  <optgroup label="Model hệ thống">
+                    {teacherAvailableModels.filter(m => m.keyMode !== 'byok').map(m => (
+                      <option key={m.id} value={m.id} disabled={m.available === false}>
+                        {m.available === false ? '[Offline] ' : ''}{m.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {teacherAvailableModels.some(m => m.keyMode === 'byok') && (
+                    <optgroup label="Model BYOK — kiểm tra key cá nhân">
+                      {teacherAvailableModels.filter(m => m.keyMode === 'byok').map(m => (
+                        <option key={m.id} value={m.id} disabled={m.available === false}>
+                          {m.available === false ? '[Offline] ' : ''}{m.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
 
                 {isGeneratingQuiz ? (
@@ -4792,7 +4813,7 @@ export function TeacherPortal({
                       padding: '0.75rem 1.4rem',
                       borderRadius: '10px',
                       border: 'none',
-                      background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                      background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                       color: '#fff',
                       fontWeight: 600,
                       fontSize: '0.94rem',
@@ -4842,7 +4863,7 @@ export function TeacherPortal({
                     padding: '0.75rem 1.6rem',
                     borderRadius: '10px',
                     border: 'none',
-                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                     color: '#fff',
                     fontWeight: 600,
                     fontSize: '0.94rem',
@@ -4851,7 +4872,7 @@ export function TeacherPortal({
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '0.5rem',
-                    boxShadow: '0 4px 18px rgba(124, 109, 242, 0.45)',
+                    boxShadow: '0 4px 18px rgba(248, 104, 196, 0.45)',
                     transition: 'all 0.2s ease',
                     width: isMobile ? '100%' : 'auto',
                     minHeight: '46px',
@@ -4909,9 +4930,9 @@ export function TeacherPortal({
                   flexWrap: 'wrap',
                   gap: '0.75rem',
                   padding: '0.85rem 1.15rem',
-                  background: '#171526',
+                  background: '#22141c',
                   borderRadius: '12px',
-                  border: '1px solid #26233a',
+                  border: '1px solid #2e1d26',
                 }}
               >
                 <div>
@@ -4931,7 +4952,7 @@ export function TeacherPortal({
                       padding: '0.5rem 0.8rem',
                       borderRadius: '8px',
                       background: 'rgba(255, 255, 255, 0.05)',
-                      border: '1px solid #26233a',
+                      border: '1px solid #2e1d26',
                       color: '#f3f2f8',
                       fontSize: '0.82rem',
                       cursor: 'pointer',
@@ -4952,9 +4973,9 @@ export function TeacherPortal({
                     style={{
                       padding: '0.5rem 0.8rem',
                       borderRadius: '8px',
-                      background: 'rgba(124, 109, 242, 0.15)',
-                      border: '1px solid rgba(124, 109, 242, 0.35)',
-                      color: '#cfc8ff',
+                      background: 'rgba(248, 104, 196, 0.15)',
+                      border: '1px solid rgba(248, 104, 196, 0.35)',
+                      color: '#ffe0f3',
                       fontSize: '0.82rem',
                       cursor: 'pointer',
                       flex: isMobile ? 1 : 'initial',
@@ -5007,9 +5028,9 @@ export function TeacherPortal({
                     key={q.id || idx}
                     style={{
                       padding: isMobile ? '0.85rem' : '1.25rem',
-                      background: '#171526',
+                      background: '#22141c',
                       borderRadius: '12px',
-                      border: '1px solid #26233a',
+                      border: '1px solid #2e1d26',
                     }}
                   >
                     <div
@@ -5024,7 +5045,7 @@ export function TeacherPortal({
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                         <span
                           style={{
-                            background: '#7c6df2',
+                            background: '#f868c4',
                             color: '#fff',
                             fontWeight: 700,
                             fontSize: '0.78rem',
@@ -5040,16 +5061,16 @@ export function TeacherPortal({
                             padding: '0.2rem 0.5rem',
                             borderRadius: '6px',
                             background: isMulti
-                              ? 'rgba(168, 85, 247, 0.2)'
+                              ? 'rgba(255, 122, 217, 0.2)'
                               : isTF
                               ? 'rgba(56, 189, 248, 0.2)'
                               : isMatching
                               ? 'rgba(234, 179, 8, 0.2)'
                               : isShortAnswer
                               ? 'rgba(236, 72, 153, 0.2)'
-                              : 'rgba(124, 109, 242, 0.2)',
+                              : 'rgba(248, 104, 196, 0.2)',
                             color: isMulti
-                              ? '#d8b4fe'
+                              ? '#ffc2e8'
                               : isTF
                               ? '#7dd3fc'
                               : isMatching
@@ -5106,9 +5127,9 @@ export function TeacherPortal({
                         width: '100%',
                         padding: '0.5rem 0.7rem',
                         borderRadius: '8px',
-                        background: '#141220',
+                        background: '#180f14',
                         color: '#f3f2f8',
-                        border: '1px solid #26233a',
+                        border: '1px solid #2e1d26',
                         fontSize: '16px',
                         fontWeight: 600,
                         marginBottom: '0.65rem',
@@ -5185,9 +5206,9 @@ export function TeacherPortal({
                                 flex: 1,
                                 padding: '0.35rem 0.55rem',
                                 borderRadius: '6px',
-                                background: '#141220',
+                                background: '#180f14',
                                 color: '#f3f2f8',
-                                border: '1px solid #26233a',
+                                border: '1px solid #2e1d26',
                                 fontSize: '15px',
                                 minWidth: isMobile ? '100%' : '140px',
                               }}
@@ -5212,9 +5233,9 @@ export function TeacherPortal({
                                 flex: 1,
                                 padding: '0.35rem 0.55rem',
                                 borderRadius: '6px',
-                                background: '#141220',
+                                background: '#180f14',
                                 color: '#f3f2f8',
-                                border: '1px solid #26233a',
+                                border: '1px solid #2e1d26',
                                 fontSize: '15px',
                                 minWidth: isMobile ? '100%' : '140px',
                               }}
@@ -5319,9 +5340,9 @@ export function TeacherPortal({
                                 flex: 1,
                                 padding: '0.35rem 0.55rem',
                                 borderRadius: '6px',
-                                background: '#141220',
+                                background: '#180f14',
                                 color: '#f3f2f8',
-                                border: '1px solid #26233a',
+                                border: '1px solid #2e1d26',
                                 fontSize: '15px',
                               }}
                             />
@@ -5407,7 +5428,7 @@ export function TeacherPortal({
                                   padding: '0.3rem 0.55rem',
                                   borderRadius: '6px',
                                   border: 'none',
-                                  background: isCorrect ? '#20bfa9' : '#26233a',
+                                  background: isCorrect ? '#20bfa9' : '#2e1d26',
                                   color: isCorrect ? '#fff' : '#9894ad',
                                   fontWeight: 700,
                                   fontSize: '0.8rem',
@@ -5438,9 +5459,9 @@ export function TeacherPortal({
                                   flex: 1,
                                   padding: '0.35rem 0.55rem',
                                   borderRadius: '6px',
-                                  background: '#141220',
+                                  background: '#180f14',
                                   color: '#f3f2f8',
-                                  border: '1px solid #26233a',
+                                  border: '1px solid #2e1d26',
                                   fontSize: '16px',
                                   minWidth: 0,
                                 }}
@@ -5475,9 +5496,9 @@ export function TeacherPortal({
                           width: '100%',
                           padding: '0.35rem 0.55rem',
                           borderRadius: '6px',
-                          background: '#141220',
-                          color: '#cfc8ff',
-                          border: '1px solid #26233a',
+                          background: '#180f14',
+                          color: '#ffe0f3',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                         }}
                       />
@@ -5527,9 +5548,9 @@ export function TeacherPortal({
                 width: '100%',
                 padding: '0.75rem',
                 borderRadius: '8px',
-                background: '#141220',
+                background: '#180f14',
                 color: '#f3f2f8',
-                border: '1px solid #26233a',
+                border: '1px solid #2e1d26',
                 fontSize: '16px',
                 fontFamily: 'monospace',
                 marginBottom: '1rem',
@@ -5543,7 +5564,7 @@ export function TeacherPortal({
                   padding: '0.5rem 1rem',
                   borderRadius: '8px',
                   background: 'transparent',
-                  border: '1px solid #26233a',
+                  border: '1px solid #2e1d26',
                   color: '#9894ad',
                   cursor: 'pointer',
                   flex: isMobile ? 1 : 'initial',
@@ -5559,7 +5580,7 @@ export function TeacherPortal({
                   padding: '0.5rem 1.25rem',
                   borderRadius: '8px',
                   border: 'none',
-                  background: '#7c6df2',
+                  background: '#f868c4',
                   color: '#fff',
                   fontWeight: 600,
                   cursor: 'pointer',
@@ -5590,11 +5611,11 @@ export function TeacherPortal({
                 overflow: 'auto',
                 padding: '1rem',
                 borderRadius: '10px',
-                background: '#0e0d17',
-                color: '#a594fd',
+                background: '#140b10',
+                color: '#ff9dce',
                 fontSize: '0.82rem',
                 fontFamily: 'monospace',
-                border: '1px solid #26233a',
+                border: '1px solid #2e1d26',
                 whiteSpace: 'pre-wrap',
                 margin: 0,
                 lineHeight: 1.5,
@@ -5603,7 +5624,7 @@ export function TeacherPortal({
               {xmlContent || convertQuestionsToMoodleXml(generatedQuestions, courses.find(c => String(c.id) === String(selectedCourseId))?.name || 'Ngân hàng câu hỏi')}
             </pre>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.65rem', flexWrap: 'wrap', paddingTop: '0.65rem', borderTop: '1px solid #26233a' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.65rem', flexWrap: 'wrap', paddingTop: '0.65rem', borderTop: '1px solid #2e1d26' }}>
               <button
                 type="button"
                 onClick={() => {
@@ -5615,7 +5636,7 @@ export function TeacherPortal({
                   padding: '0.55rem 1.1rem',
                   borderRadius: '8px',
                   background: 'rgba(255, 255, 255, 0.08)',
-                  border: '1px solid #26233a',
+                  border: '1px solid #2e1d26',
                   color: '#f3f2f8',
                   cursor: 'pointer',
                   minHeight: '40px',
@@ -5672,7 +5693,7 @@ export function TeacherPortal({
                   width: '28px',
                   height: '28px',
                   borderRadius: '50%',
-                  background: '#7c6df2',
+                  background: '#f868c4',
                   color: '#fff',
                   display: 'grid',
                   placeItems: 'center',
@@ -5697,7 +5718,7 @@ export function TeacherPortal({
                   width: '28px',
                   height: '28px',
                   borderRadius: '50%',
-                  background: '#7c6df2',
+                  background: '#f868c4',
                   color: '#fff',
                   display: 'grid',
                   placeItems: 'center',
@@ -5722,7 +5743,7 @@ export function TeacherPortal({
                   width: '28px',
                   height: '28px',
                   borderRadius: '50%',
-                  background: '#7c6df2',
+                  background: '#f868c4',
                   color: '#fff',
                   display: 'grid',
                   placeItems: 'center',
@@ -5742,7 +5763,7 @@ export function TeacherPortal({
             </div>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '0.5rem', borderTop: '1px solid #26233a' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '0.5rem', borderTop: '1px solid #2e1d26' }}>
             <button
               type="button"
               onClick={() => setShowGuideModal(false)}
@@ -5750,7 +5771,7 @@ export function TeacherPortal({
                 padding: '0.55rem 1.4rem',
                 borderRadius: '8px',
                 border: 'none',
-                background: '#7c6df2',
+                background: '#f868c4',
                 color: '#fff',
                 fontWeight: 600,
                 cursor: 'pointer',
@@ -5772,7 +5793,7 @@ export function TeacherPortal({
           {/* Header Banner */}
           <div
             style={{
-              background: 'linear-gradient(135deg, rgba(236, 72, 153, 0.12), rgba(124, 109, 242, 0.08))',
+              background: 'linear-gradient(135deg, rgba(236, 72, 153, 0.12), rgba(248, 104, 196, 0.08))',
               border: '1px solid rgba(236, 72, 153, 0.25)',
               borderRadius: '16px',
               padding: '1.25rem 1.5rem',
@@ -5820,8 +5841,8 @@ export function TeacherPortal({
             <div
               className="teacher-notification-form"
               style={{
-                background: '#161426',
-                border: '1px solid #26233a',
+                background: '#1a1016',
+                border: '1px solid #2e1d26',
                 borderRadius: '16px',
                 padding: '1.5rem',
                 display: 'flex',
@@ -5839,7 +5860,7 @@ export function TeacherPortal({
               <form onSubmit={handleCreateManualNotification} style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
                 {/* Title */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                     Tiêu đề thông báo: <span style={{ color: '#ef4444' }}>*</span>
                   </label>
                   <input
@@ -5852,9 +5873,9 @@ export function TeacherPortal({
                       width: '100%',
                       padding: '0.65rem 0.85rem',
                       borderRadius: '8px',
-                      background: '#141220',
+                      background: '#180f14',
                       color: '#f3f2f8',
-                      border: '1px solid #26233a',
+                      border: '1px solid #2e1d26',
                       fontSize: '0.9rem',
                       outline: 'none',
                       boxSizing: 'border-box',
@@ -5864,7 +5885,7 @@ export function TeacherPortal({
 
                 {/* Deliver Time Picker */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                     Thời điểm diễn ra sự kiện: <span style={{ color: '#ef4444' }}>*</span>
                   </label>
                   <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -5878,9 +5899,9 @@ export function TeacherPortal({
                         width: '100%',
                         padding: '0.65rem 0.85rem 0.65rem 36px',
                         borderRadius: '8px',
-                        background: '#141220',
+                        background: '#180f14',
                         color: '#f3f2f8',
-                        border: '1px solid #26233a',
+                        border: '1px solid #2e1d26',
                         fontSize: '0.9rem',
                         outline: 'none',
                         boxSizing: 'border-box',
@@ -5895,7 +5916,7 @@ export function TeacherPortal({
 
                 {/* Reminders Selection */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                     Mốc thông báo nhắc nhở: <span style={{ color: '#ef4444' }}>*</span>
                   </label>
                   
@@ -5917,8 +5938,8 @@ export function TeacherPortal({
                           style={{
                             padding: '0.35rem 0.75rem',
                             borderRadius: '20px',
-                            border: isChecked ? '1px solid #ec4899' : '1px solid #26233a',
-                            background: isChecked ? 'rgba(236, 72, 153, 0.2)' : '#141220',
+                            border: isChecked ? '1px solid #ec4899' : '1px solid #2e1d26',
+                            background: isChecked ? 'rgba(236, 72, 153, 0.2)' : '#180f14',
                             color: isChecked ? '#f472b6' : '#9894ad',
                             fontSize: '0.78rem',
                             fontWeight: isChecked ? 600 : 400,
@@ -5946,9 +5967,9 @@ export function TeacherPortal({
                         minWidth: '100px',
                         padding: '0.55rem 0.75rem',
                         borderRadius: '8px',
-                        background: '#141220',
+                        background: '#180f14',
                         color: '#f3f2f8',
-                        border: '1px solid #26233a',
+                        border: '1px solid #2e1d26',
                         fontSize: '0.85rem',
                         outline: 'none',
                       }}
@@ -5965,9 +5986,9 @@ export function TeacherPortal({
                       style={{
                         padding: '0.55rem 0.75rem',
                         borderRadius: '8px',
-                        background: '#141220',
+                        background: '#180f14',
                         color: '#f3f2f8',
-                        border: '1px solid #26233a',
+                        border: '1px solid #2e1d26',
                         fontSize: '0.85rem',
                         outline: 'none',
                         cursor: 'pointer',
@@ -5984,7 +6005,7 @@ export function TeacherPortal({
                         padding: '0.55rem 1rem',
                         borderRadius: '8px',
                         border: 'none',
-                        background: '#26233a',
+                        background: '#2e1d26',
                         color: '#f3f2f8',
                         fontSize: '0.82rem',
                         cursor: 'pointer',
@@ -6048,7 +6069,7 @@ export function TeacherPortal({
 
                 {/* Event Details (Custom Message Body) */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                     Nội dung thông báo chi tiết:
                   </label>
                   <textarea
@@ -6060,9 +6081,9 @@ export function TeacherPortal({
                       width: '100%',
                       padding: '0.65rem 0.85rem',
                       borderRadius: '8px',
-                      background: '#141220',
+                      background: '#180f14',
                       color: '#f3f2f8',
-                      border: '1px solid #26233a',
+                      border: '1px solid #2e1d26',
                       fontSize: '0.9rem',
                       outline: 'none',
                       boxSizing: 'border-box',
@@ -6117,8 +6138,8 @@ export function TeacherPortal({
             {/* List Section: Active Announcements for this course */}
             <div
               style={{
-                background: '#161426',
-                border: '1px solid #26233a',
+                background: '#1a1016',
+                border: '1px solid #2e1d26',
                 borderRadius: '16px',
                 padding: '1.5rem',
                 display: 'flex',
@@ -6128,7 +6149,7 @@ export function TeacherPortal({
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255, 255, 255, 0.06)', paddingBottom: '0.85rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Bell size={18} style={{ color: '#a5b4fc' }} />
+                  <Bell size={18} style={{ color: '#ffc2e8' }} />
                   <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#f3f2f8' }}>
                     Thông Báo Đang Hoạt Động ({manualEvents.length})
                   </h3>
@@ -6188,8 +6209,8 @@ export function TeacherPortal({
                       <div
                         key={item.id}
                         style={{
-                          background: '#141220',
-                          border: '1px solid #26233a',
+                          background: '#180f14',
+                          border: '1px solid #2e1d26',
                           borderRadius: '12px',
                           padding: '1rem',
                           display: 'flex',
@@ -6226,7 +6247,7 @@ export function TeacherPortal({
                           </p>
                         )}
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: isPast ? '#ef4444' : '#a5b4fc', marginTop: '2px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: isPast ? '#ef4444' : '#ffc2e8', marginTop: '2px' }}>
                           <Clock size={13} />
                           <span>
                             {dTime.toLocaleString('vi-VN', {
@@ -6304,7 +6325,7 @@ export function TeacherPortal({
                     width: '36px',
                     height: '36px',
                     borderRadius: '10px',
-                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -6351,10 +6372,10 @@ export function TeacherPortal({
                   style={{
                     display: 'grid',
                     gridTemplateColumns: 'repeat(3, 1fr)',
-                    background: '#141220',
+                    background: '#180f14',
                     padding: '4px',
                     borderRadius: '10px',
-                    border: '1px solid #26233a',
+                    border: '1px solid #2e1d26',
                     gap: '4px',
                   }}
                 >
@@ -6373,8 +6394,8 @@ export function TeacherPortal({
                         style={{
                           padding: '0.6rem 0.5rem',
                           borderRadius: '8px',
-                          border: isSelected ? '1px solid rgba(124, 109, 242, 0.5)' : '1px solid transparent',
-                          background: isSelected ? 'rgba(124, 109, 242, 0.2)' : 'transparent',
+                          border: isSelected ? '1px solid rgba(248, 104, 196, 0.5)' : '1px solid transparent',
+                          background: isSelected ? 'rgba(248, 104, 196, 0.2)' : 'transparent',
                           color: isSelected ? '#ffffff' : '#9894ad',
                           cursor: 'pointer',
                           display: 'flex',
@@ -6386,7 +6407,7 @@ export function TeacherPortal({
                           transition: 'all 0.2s ease',
                         }}
                       >
-                        <Icon size={15} style={{ color: isSelected ? '#a594fd' : '#71717a' }} />
+                        <Icon size={15} style={{ color: isSelected ? '#ff9dce' : '#71717a' }} />
                         <span>{tab.label}</span>
                       </button>
                     );
@@ -6415,9 +6436,9 @@ export function TeacherPortal({
                       onClick={() => uploadFileInputRef.current?.click()}
                       style={{
                         padding: '1.75rem 1.25rem',
-                        border: uploadDragActive ? '2px dashed #7c6df2' : '2px dashed rgba(124, 109, 242, 0.4)',
+                        border: uploadDragActive ? '2px dashed #f868c4' : '2px dashed rgba(248, 104, 196, 0.4)',
                         borderRadius: '12px',
-                        background: uploadDragActive ? 'rgba(124, 109, 242, 0.15)' : 'rgba(20, 18, 34, 0.6)',
+                        background: uploadDragActive ? 'rgba(248, 104, 196, 0.15)' : 'rgba(20, 18, 34, 0.6)',
                         textAlign: 'center',
                         cursor: 'pointer',
                         transition: 'all 0.2s ease',
@@ -6453,9 +6474,9 @@ export function TeacherPortal({
                             width: '100%',
                             maxWidth: '380px',
                             padding: '0.65rem 0.85rem',
-                            background: '#141220',
+                            background: '#180f14',
                             borderRadius: '10px',
-                            border: '1px solid rgba(124, 109, 242, 0.35)',
+                            border: '1px solid rgba(248, 104, 196, 0.35)',
                           }}
                           onClick={e => e.stopPropagation()}
                         >
@@ -6464,11 +6485,11 @@ export function TeacherPortal({
                               width: '32px',
                               height: '32px',
                               borderRadius: '8px',
-                              background: 'rgba(124, 109, 242, 0.2)',
+                              background: 'rgba(248, 104, 196, 0.2)',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
-                              color: '#a594fd',
+                              color: '#ff9dce',
                               flexShrink: 0,
                             }}
                           >
@@ -6517,11 +6538,11 @@ export function TeacherPortal({
                               width: '44px',
                               height: '44px',
                               borderRadius: '50%',
-                              background: 'rgba(124, 109, 242, 0.15)',
+                              background: 'rgba(248, 104, 196, 0.15)',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
-                              color: '#a594fd',
+                              color: '#ff9dce',
                               marginBottom: '0.2rem',
                             }}
                           >
@@ -6538,7 +6559,7 @@ export function TeacherPortal({
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Tên hiển thị tài liệu (Tùy chọn):
                       </label>
                       <input
@@ -6550,9 +6571,9 @@ export function TeacherPortal({
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -6566,7 +6587,7 @@ export function TeacherPortal({
                 {uploadTab === 'url' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Địa chỉ liên kết Web (URL): <span style={{ color: '#ef4444' }}>*</span>
                       </label>
                       <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -6581,9 +6602,9 @@ export function TeacherPortal({
                             width: '100%',
                             padding: '0.65rem 0.85rem 0.65rem 36px',
                             borderRadius: '8px',
-                            background: '#141220',
+                            background: '#180f14',
                             color: '#f3f2f8',
-                            border: '1px solid #26233a',
+                            border: '1px solid #2e1d26',
                             fontSize: '16px',
                             outline: 'none',
                             boxSizing: 'border-box',
@@ -6593,7 +6614,7 @@ export function TeacherPortal({
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Tiêu đề liên kết / Tên tài liệu:
                       </label>
                       <input
@@ -6605,9 +6626,9 @@ export function TeacherPortal({
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -6621,7 +6642,7 @@ export function TeacherPortal({
                 {uploadTab === 'text' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Tiêu đề ghi chú:
                       </label>
                       <input
@@ -6633,9 +6654,9 @@ export function TeacherPortal({
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -6644,7 +6665,7 @@ export function TeacherPortal({
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Nội dung bài học / Ghi chép: <span style={{ color: '#ef4444' }}>*</span>
                       </label>
                       <textarea
@@ -6657,9 +6678,9 @@ export function TeacherPortal({
                           width: '100%',
                           padding: '0.75rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           resize: 'vertical',
@@ -6690,7 +6711,7 @@ export function TeacherPortal({
                   style={{
                     padding: '0.55rem 1.15rem',
                     borderRadius: '8px',
-                    border: '1px solid #26233a',
+                    border: '1px solid #2e1d26',
                     background: 'transparent',
                     color: '#9894ad',
                     fontWeight: 600,
@@ -6707,12 +6728,12 @@ export function TeacherPortal({
                     padding: '0.55rem 1.35rem',
                     borderRadius: '8px',
                     border: 'none',
-                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                     color: '#ffffff',
                     fontWeight: 700,
                     fontSize: '0.88rem',
                     cursor: uploadLoading ? 'not-allowed' : 'pointer',
-                    boxShadow: '0 4px 14px rgba(124, 109, 242, 0.4)',
+                    boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '6px',

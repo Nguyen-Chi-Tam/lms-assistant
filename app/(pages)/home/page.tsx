@@ -51,6 +51,7 @@ const QuizAnalysisModal = dynamic(
 import { ErrorBoundary } from '@/app/components/ErrorBoundary';
 
 import { CourseTopBar, type NotificationItem } from '@/app/components/CourseTopBar';
+import { SiteFooter } from '@/app/components/SiteFooter';
 import {
   getStoredAnalysis,
   saveStoredAnalysis,
@@ -75,7 +76,7 @@ import { ensureFcmTokenRegistered, registerFcmToken, unregisterFcmToken } from '
 
 export type { Course, LibraryFile, QuizQuestion };
 
-const defaultColors = ['#6c5ce7', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
+const defaultColors = ['#e056a0', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
 const MOODLE_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 
 /* ── Helpers ─────────────────────────────────────────────── */
@@ -670,8 +671,8 @@ function Dashboard({
                   }}
                   onFocus={e => {
                     e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-                    e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.6)';
-                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(124, 109, 242, 0.15)';
+                    e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.6)';
+                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(248, 104, 196, 0.15)';
                   }}
                   onBlur={e => {
                     e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
@@ -713,28 +714,28 @@ function Dashboard({
                 gap: '6px',
                 padding: '7px 16px',
                 borderRadius: '999px',
-                background: 'rgba(124, 109, 242, 0.12)',
-                border: '1px solid rgba(124, 109, 242, 0.35)',
-                color: '#c4b5fd',
+                background: 'rgba(248, 104, 196, 0.12)',
+                border: '1px solid rgba(248, 104, 196, 0.35)',
+                color: '#ffc2e8',
                 fontSize: '12px',
                 fontWeight: 600,
                 textDecoration: 'none',
-                boxShadow: '0 2px 10px rgba(124, 109, 242, 0.12)',
+                boxShadow: '0 2px 10px rgba(248, 104, 196, 0.12)',
                 backdropFilter: 'blur(8px)',
                 transition: 'all 0.2s ease',
               }}
               onMouseEnter={e => {
-                e.currentTarget.style.background = 'rgba(124, 109, 242, 0.22)';
-                e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.55)';
-                e.currentTarget.style.color = '#e0d8ff';
-                e.currentTarget.style.boxShadow = '0 4px 14px rgba(124, 109, 242, 0.25)';
+                e.currentTarget.style.background = 'rgba(248, 104, 196, 0.22)';
+                e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.55)';
+                e.currentTarget.style.color = '#fff3fa';
+                e.currentTarget.style.boxShadow = '0 4px 14px rgba(248, 104, 196, 0.25)';
                 e.currentTarget.style.transform = 'translateY(-1px)';
               }}
               onMouseLeave={e => {
-                e.currentTarget.style.background = 'rgba(124, 109, 242, 0.12)';
-                e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.35)';
-                e.currentTarget.style.color = '#c4b5fd';
-                e.currentTarget.style.boxShadow = '0 2px 10px rgba(124, 109, 242, 0.12)';
+                e.currentTarget.style.background = 'rgba(248, 104, 196, 0.12)';
+                e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.35)';
+                e.currentTarget.style.color = '#ffc2e8';
+                e.currentTarget.style.boxShadow = '0 2px 10px rgba(248, 104, 196, 0.12)';
                 e.currentTarget.style.transform = 'translateY(0)';
               }}
             >
@@ -755,26 +756,26 @@ function Dashboard({
                   gap: '6px',
                   padding: '7px 16px',
                   borderRadius: '999px',
-                  background: 'linear-gradient(135deg, rgba(124, 109, 242, 0.25) 0%, rgba(99, 102, 241, 0.15) 100%)',
-                  border: '1px solid rgba(124, 109, 242, 0.45)',
+                  background: 'linear-gradient(135deg, rgba(248, 104, 196, 0.25) 0%, rgba(248, 104, 196, 0.15) 100%)',
+                  border: '1px solid rgba(248, 104, 196, 0.45)',
                   color: '#ffffff',
                   fontSize: '12px',
                   fontWeight: 600,
                   cursor: 'pointer',
-                  boxShadow: '0 2px 10px rgba(124, 109, 242, 0.18)',
+                  boxShadow: '0 2px 10px rgba(248, 104, 196, 0.18)',
                   backdropFilter: 'blur(8px)',
                   transition: 'all 0.2s ease',
                 }}
                 onMouseEnter={e => {
-                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(124, 109, 242, 0.4) 0%, rgba(99, 102, 241, 0.3) 100%)';
-                  e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.75)';
-                  e.currentTarget.style.boxShadow = '0 4px 16px rgba(124, 109, 242, 0.4)';
+                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(248, 104, 196, 0.4) 0%, rgba(248, 104, 196, 0.3) 100%)';
+                  e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.75)';
+                  e.currentTarget.style.boxShadow = '0 4px 16px rgba(248, 104, 196, 0.4)';
                   e.currentTarget.style.transform = 'translateY(-1px)';
                 }}
                 onMouseLeave={e => {
-                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(124, 109, 242, 0.25) 0%, rgba(99, 102, 241, 0.15) 100%)';
-                  e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.45)';
-                  e.currentTarget.style.boxShadow = '0 2px 10px rgba(124, 109, 242, 0.18)';
+                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(248, 104, 196, 0.25) 0%, rgba(248, 104, 196, 0.15) 100%)';
+                  e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.45)';
+                  e.currentTarget.style.boxShadow = '0 2px 10px rgba(248, 104, 196, 0.18)';
                   e.currentTarget.style.transform = 'translateY(0)';
                 }}
               >
@@ -917,8 +918,8 @@ function Dashboard({
                           marginTop: '0.85rem',
                           padding: '0.75rem 0.9rem',
                           borderRadius: '10px',
-                          background: 'linear-gradient(135deg, rgba(124, 109, 242, 0.15), rgba(90, 73, 215, 0.1))',
-                          border: '1px solid rgba(124, 109, 242, 0.35)',
+                          background: 'linear-gradient(135deg, rgba(248, 104, 196, 0.15), rgba(219, 63, 138, 0.1))',
+                          border: '1px solid rgba(248, 104, 196, 0.35)',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '0.35rem',
@@ -931,13 +932,13 @@ function Dashboard({
                             gap: '0.35rem',
                             fontSize: '11px',
                             fontWeight: 700,
-                            color: '#cfc8ff',
+                            color: '#ffe0f3',
                             textTransform: 'uppercase',
                             letterSpacing: '0.5px',
                           }}
                         >
                           <MessageSquare size={13} style={{ flexShrink: 0 }} />
-                          <span>Nhận xét của Giảng viên:</span>
+                          <span>Nhận xét:</span>
                         </div>
                         <p style={{ margin: 0, fontSize: '13px', color: '#f3f2f8', fontStyle: 'italic', lineHeight: '1.45' }}>
                           "{latestResult.feedback}"
@@ -958,7 +959,7 @@ function Dashboard({
                           color: '#94a3b8',
                         }}
                       >
-                        <span style={{ fontWeight: 600, color: '#a5b4fc', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                        <span style={{ fontWeight: 600, color: '#ffc2e8', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
                           <MessageSquare size={13} style={{ flexShrink: 0 }} />
                           <span>Nhận xét:</span>
                         </span>
@@ -1047,7 +1048,7 @@ function Dashboard({
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 4, 15, 0.82)',
+            background: 'rgba(8, 4, 6, 0.82)',
             backdropFilter: 'blur(10px)',
             zIndex: 100000,
             display: 'flex',
@@ -1065,10 +1066,10 @@ function Dashboard({
               width: '100%',
               maxWidth: '820px',
               maxHeight: '88vh',
-              background: 'linear-gradient(180deg, #18152e 0%, #110e22 100%)',
-              border: '1px solid rgba(124, 109, 242, 0.35)',
+              background: 'linear-gradient(180deg, #26101f 0%, #10070e 100%)',
+              border: '1px solid rgba(248, 104, 196, 0.35)',
               borderRadius: '22px',
-              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.65), 0 0 40px rgba(124, 109, 242, 0.18)',
+              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.65), 0 0 40px rgba(248, 104, 196, 0.18)',
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -1093,11 +1094,11 @@ function Dashboard({
                     width: '42px',
                     height: '42px',
                     borderRadius: '12px',
-                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    boxShadow: '0 4px 14px rgba(124, 109, 242, 0.4)',
+                    boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
                     flexShrink: 0,
                   }}
                 >
@@ -1105,10 +1106,10 @@ function Dashboard({
                 </div>
                 <div>
                   <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#fff' }}>
-                    Lịch sử điểm &amp; Nhận xét tất cả các môn
+                    Lịch sử điểm
                   </h3>
                   <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#94a3b8' }}>
-                    Tổng hợp {allExamResults.length} đầu điểm từ LMS kèm nhận xét giảng viên
+                    Tổng hợp {allExamResults.length} đầu điểm từ LMS
                   </p>
                 </div>
               </div>
@@ -1157,7 +1158,7 @@ function Dashboard({
                     borderRadius: '9px',
                     border: 'none',
                     background:
-                      gradeModalFilter === 'all' ? 'rgba(124, 109, 242, 0.35)' : 'rgba(255, 255, 255, 0.04)',
+                      gradeModalFilter === 'all' ? 'rgba(248, 104, 196, 0.35)' : 'rgba(255, 255, 255, 0.04)',
                     color: gradeModalFilter === 'all' ? '#fff' : '#94a3b8',
                     fontSize: '12px',
                     fontWeight: 600,
@@ -1184,9 +1185,9 @@ function Dashboard({
                         border: 'none',
                         background:
                           gradeModalFilter === String(c.id ?? c.code)
-                            ? 'rgba(124, 109, 242, 0.35)'
+                            ? 'rgba(248, 104, 196, 0.35)'
                             : 'rgba(255, 255, 255, 0.04)',
-                        color: gradeModalFilter === String(c.id ?? c.code) ? '#c4b5fd' : '#94a3b8',
+                        color: gradeModalFilter === String(c.id ?? c.code) ? '#ffc2e8' : '#94a3b8',
                         fontSize: '12px',
                         fontWeight: 600,
                         cursor: 'pointer',
@@ -1285,7 +1286,7 @@ function Dashboard({
                         <h4 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#f8fafc' }}>
                           {res.name}
                         </h4>
-                        <small style={{ fontSize: '12px', color: '#64748b' }}>
+                        <small className="grade-item-type" style={{ fontSize: '12px', color: '#64748b' }}>
                           Loại bài: {res.itemModule || 'Kiểm tra'}
                         </small>
                       </div>
@@ -1326,8 +1327,8 @@ function Dashboard({
                           padding: '0.65rem 0.85rem',
                           borderRadius: '10px',
                           background:
-                            'linear-gradient(135deg, rgba(124, 109, 242, 0.12), rgba(90, 73, 215, 0.08))',
-                          border: '1px solid rgba(124, 109, 242, 0.28)',
+                            'linear-gradient(135deg, rgba(248, 104, 196, 0.12), rgba(219, 63, 138, 0.08))',
+                          border: '1px solid rgba(248, 104, 196, 0.28)',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '0.25rem',
@@ -1337,7 +1338,7 @@ function Dashboard({
                           style={{
                             fontSize: '11px',
                             fontWeight: 700,
-                            color: '#c4b5fd',
+                            color: '#ffc2e8',
                             textTransform: 'uppercase',
                             letterSpacing: '0.4px',
                             display: 'inline-flex',
@@ -1346,7 +1347,7 @@ function Dashboard({
                           }}
                         >
                           <MessageSquare size={13} style={{ flexShrink: 0 }} />
-                          <span>Nhận xét của Giảng viên:</span>
+                          <span>Nhận xét:</span>
                         </span>
                         <p
                           style={{
@@ -1374,7 +1375,7 @@ function Dashboard({
                           color: '#94a3b8',
                         }}
                       >
-                        <span style={{ fontWeight: 600, color: '#a5b4fc', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                        <span style={{ fontWeight: 600, color: '#ffc2e8', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
                           <MessageSquare size={13} style={{ flexShrink: 0 }} />
                           <span>Nhận xét:</span>
                         </span>
@@ -1666,8 +1667,8 @@ function HomeworkModal({
   let eyebrowText = 'BÀI TẬP MOODLE';
   let timeLabel = 'Hạn nộp bài';
   let iconBadge = '▤';
-  let iconStyle: React.CSSProperties = { backgroundColor: 'rgba(124, 109, 242, 0.2)', color: '#c4b5fd' };
-  let statusDotColor = '#818cf8';
+  let iconStyle: React.CSSProperties = { backgroundColor: 'rgba(248, 104, 196, 0.2)', color: '#ffc2e8' };
+  let statusDotColor = '#ff8ad4';
 
   if (isManual) {
     eyebrowText = 'THÔNG BÁO TỪ GIẢNG VIÊN';
@@ -1691,8 +1692,8 @@ function HomeworkModal({
     eyebrowText = 'BÀI TẬP';
     timeLabel = 'Hạn nộp bài';
     iconBadge = '▤';
-    iconStyle = { backgroundColor: 'rgba(124, 109, 242, 0.2)', color: '#c4b5fd' };
-    statusDotColor = '#818cf8';
+    iconStyle = { backgroundColor: 'rgba(248, 104, 196, 0.2)', color: '#ffc2e8' };
+    statusDotColor = '#ff8ad4';
   }
 
   return (
@@ -2600,6 +2601,7 @@ function HomeContent() {
           />
         )}
         </ErrorBoundary>
+        <SiteFooter />
       </section>
 
 

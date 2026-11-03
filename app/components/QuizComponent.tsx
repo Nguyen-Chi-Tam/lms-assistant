@@ -590,12 +590,12 @@ export function QuizComponent({
                 alignItems: 'center',
                 gap: '10px',
                 textAlign: 'left',
-                border: generatorMode === 'comprehensive' ? '1.5px solid #8b5cf6' : '1px solid rgba(255, 255, 255, 0.1)',
-                background: generatorMode === 'comprehensive' ? 'rgba(139, 92, 246, 0.2)' : 'rgba(255, 255, 255, 0.03)',
+                border: generatorMode === 'comprehensive' ? '1.5px solid #f868c4' : '1px solid rgba(255, 255, 255, 0.1)',
+                background: generatorMode === 'comprehensive' ? 'rgba(248, 104, 196, 0.2)' : 'rgba(255, 255, 255, 0.03)',
                 cursor: 'pointer',
               }}
             >
-              <Globe size={20} color="#8b5cf6" style={{ flexShrink: 0 }} />
+              <Globe size={20} color="#f868c4" style={{ flexShrink: 0 }} />
               <div>
                 <strong style={{ display: 'block', fontSize: '13px', color: '#fff' }}>Ôn tổng hợp toàn khóa</strong>
                 <small style={{ fontSize: '11.5px', color: '#94a3b8' }}>Bao quát tất cả tài liệu & giáo trình môn học</small>
@@ -715,7 +715,7 @@ export function QuizComponent({
               step={5}
               value={questionCount}
               onChange={e => setQuestionCount(Number(e.target.value))}
-              style={{ flex: 1, minWidth: '180px', accentColor: '#8b5cf6' }}
+              style={{ flex: 1, minWidth: '180px', accentColor: '#f868c4' }}
             />
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <input
@@ -743,8 +743,8 @@ export function QuizComponent({
                 style={{
                   padding: '4px 10px',
                   fontSize: '11.5px',
-                  background: questionCount === cnt ? 'rgba(124, 58, 237, 0.35)' : undefined,
-                  borderColor: questionCount === cnt ? '#8b5cf6' : undefined,
+                  background: questionCount === cnt ? 'rgba(224, 86, 160, 0.35)' : undefined,
+                  borderColor: questionCount === cnt ? '#f868c4' : undefined,
                 }}
                 onClick={() => setQuestionCount(cnt)}
               >
@@ -804,7 +804,7 @@ export function QuizComponent({
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                Đã chọn: <strong style={{ color: '#c4b5fd' }}>{selectedQuestionTypes.length}/5</strong> dạng
+                Đã chọn: <strong style={{ color: '#ffc2e8' }}>{selectedQuestionTypes.length}/5</strong> dạng
               </span>
               <button
                 type="button"
@@ -875,13 +875,13 @@ export function QuizComponent({
                   }}
                   style={{
                     position: 'relative',
-                    borderColor: isSelected ? '#8b5cf6' : undefined,
-                    background: isSelected ? 'rgba(139, 92, 246, 0.18)' : undefined,
+                    borderColor: isSelected ? '#f868c4' : undefined,
+                    background: isSelected ? 'rgba(248, 104, 196, 0.18)' : undefined,
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     <strong style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isSelected ? '#fff' : '#c4c1d6' }}>
-                      <Icon size={14} color={isSelected ? '#a78bfa' : '#94a3b8'} />
+                      <Icon size={14} color={isSelected ? '#ff9dce' : '#94a3b8'} />
                       {item.title}
                     </strong>
                     <span
@@ -889,8 +889,8 @@ export function QuizComponent({
                         width: '18px',
                         height: '18px',
                         borderRadius: '4px',
-                        border: isSelected ? '1.5px solid #a78bfa' : '1px solid rgba(255, 255, 255, 0.2)',
-                        background: isSelected ? '#7c3aed' : 'transparent',
+                        border: isSelected ? '1.5px solid #ff9dce' : '1px solid rgba(255, 255, 255, 0.2)',
+                        background: isSelected ? '#e056a0' : 'transparent',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -1177,11 +1177,11 @@ export function QuizComponent({
                     margin: 0,
                     padding: '7px 16px',
                     fontSize: '12.5px',
-                    background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                    background: 'linear-gradient(135deg, #f868c4, #ec4899)',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '6px',
-                    boxShadow: '0 4px 12px rgba(139, 92, 246, 0.3)',
+                    boxShadow: '0 4px 12px rgba(248, 104, 196, 0.3)',
                   }}
                   onClick={handleAnalyzeCurrentQuiz}
                 >
@@ -1212,16 +1212,16 @@ export function QuizComponent({
                   : isShortAnswer
                   ? 'rgba(234, 179, 8, 0.2)'
                   : isMultiSelect
-                  ? 'rgba(168, 85, 247, 0.2)'
+                  ? 'rgba(255, 122, 217, 0.2)'
                   : isTrueFalse
                   ? 'rgba(56, 189, 248, 0.2)'
-                  : 'rgba(124, 109, 242, 0.15)',
+                  : 'rgba(248, 104, 196, 0.15)',
                 color: isMatching
                   ? '#38bdf8'
                   : isShortAnswer
                   ? '#fde047'
                   : isMultiSelect
-                  ? '#d8b4fe'
+                  ? '#ffc2e8'
                   : isTrueFalse
                   ? '#7dd3fc'
                   : '#c4c1d6',
@@ -1300,8 +1300,8 @@ export function QuizComponent({
                         width: '24px',
                         height: '24px',
                         borderRadius: '6px',
-                        background: 'rgba(124, 109, 242, 0.25)',
-                        color: '#cfc8ff',
+                        background: 'rgba(248, 104, 196, 0.25)',
+                        color: '#ffe0f3',
                         fontSize: '12px',
                         fontWeight: 700,
                         display: 'flex',
@@ -1324,13 +1324,13 @@ export function QuizComponent({
                         width: '100%',
                         padding: '8px 12px',
                         borderRadius: '8px',
-                        background: '#141220',
+                        background: '#180f14',
                         color: studentChosen ? '#f3f2f8' : '#94a3b8',
                         border: isPairCorrect
                           ? '1.5px solid #20bfa9'
                           : isPairWrong
                           ? '1.5px solid #ef4444'
-                          : '1px solid rgba(124, 109, 242, 0.4)',
+                          : '1px solid rgba(248, 104, 196, 0.4)',
                         fontSize: '13.5px',
                         outline: 'none',
                         cursor: submitted ? 'default' : 'pointer',

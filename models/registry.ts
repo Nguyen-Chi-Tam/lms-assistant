@@ -28,6 +28,7 @@ import {
   callOpenRouterStream,
   OPENROUTER_MODEL,
   OPENROUTER_BACKUP_MODELS,
+  normalizeOpenRouterModel,
 } from './openrouter';
 import {
   isCloudflareAvailable,
@@ -44,6 +45,7 @@ import {
   APMIX_BACKUP_MODELS,
 } from './apmix';
 import { buildUniversalLanguageDirective } from '@/lib/language-detector';
+import { getUserApiKeysMap } from '@/lib/key-manager';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,6 +60,8 @@ export interface ModelOption {
   modelId: string;
   label: string;
   available: boolean;
+  /** Whether this manual option deliberately uses the system pool or BYOK pool. */
+  keyMode?: 'system' | 'byok';
 }
 
 export interface GenerateTextOptions {
@@ -99,11 +103,23 @@ export interface GenerateTextOptions {
    * If it fails, errors are immediately thrown without falling back to cascade.
    */
   strictModel?: boolean;
+  /** BYOK: User identifier for retrieving personalized keys */
+  userId?: number;
+  /** BYOK: Pre-resolved or custom user API keys prioritized over system keys */
+  userApiKeys?: {
+    gemini?: string[];
+    groq?: string[];
+    openrouter?: string[];
+  };
+  /** Force a provider to use only system keys or only the caller's BYOK keys. */
+  keyMode?: 'system' | 'byok';
+  /** Internal callback used to expose the key source that actually completed a request. */
+  onKeySource?: (source: 'system' | 'byok') => void;
 }
 
 export interface GenerateTextStreamOptions extends GenerateTextOptions {
   onDelta: (delta: string) => void;
-  onMeta?: (meta: { modelName: string; modelId: string; provider: AIProvider }) => void;
+  onMeta?: (meta: { modelName: string; modelId: string; provider: AIProvider; keySource?: 'system' | 'byok' }) => void;
 }
 
 export interface GenerateTextResult {
@@ -114,6 +130,7 @@ export interface GenerateTextResult {
   provider?: AIProvider;
   modelName?: string;
   finishReason?: 'stop' | 'length' | 'content_filter' | 'error' | string;
+  keySource?: 'system' | 'byok';
 }
 
 // ---------------------------------------------------------------------------
@@ -231,25 +248,47 @@ export function isQuotaExhaustedError(err: unknown): boolean {
 // Available Models
 // ---------------------------------------------------------------------------
 
-export function getAvailableModels(allowExternalSource?: boolean): ModelOption[] {
+export function getAvailableModels(
+  allowExternalSource?: boolean,
+  userKeys?: { gemini?: string[]; groq?: string[]; openrouter?: string[] }
+): ModelOption[] {
   const env = runtimeEnv();
   const models: ModelOption[] = [];
+  const splitKeyModes = (options: ModelOption[], systemAvailable: boolean, hasByok: boolean): ModelOption[] => [
+    ...options.map(option => ({
+      ...option,
+      id: `${option.id}#system`,
+      label: `${option.label} — Hệ thống`,
+      available: systemAvailable,
+      keyMode: 'system' as const,
+    })),
+    ...(hasByok
+      ? options.map(option => ({
+          ...option,
+          id: `${option.id}#byok`,
+          label: `${option.label} — BYOK`,
+          available: true,
+          keyMode: 'byok' as const,
+        }))
+      : []),
+  ];
 
-  // Gemini - check pool availability
+  // Gemini - check pool availability or user BYOK keys
   const activeGeminiSlots = getAvailableKeySlots();
-  const geminiAvailable = activeGeminiSlots.length > 0 && !isProviderBlocked('gemini');
+  const hasUserGemini = Boolean(userKeys?.gemini && userKeys.gemini.length > 0);
+  const geminiSystemAvailable = activeGeminiSlots.length > 0 && !isProviderBlocked('gemini');
   const geminiModels = [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS];
   const geminiLabels: Record<string, string> = {
     'gemini-3.8-flash': 'Gemini 3.8 Flash',
     'gemini-3.1-pro-preview': 'Gemini 3.1 Pro (Preview)',
   };
-  const geminiOptions: ModelOption[] = geminiModels.map(m => ({
+  const geminiOptions = splitKeyModes(geminiModels.map(m => ({
     id: `gemini:${m}`,
     provider: 'gemini',
     modelId: m,
     label: geminiLabels[m] || m,
-    available: geminiAvailable,
-  }));
+    available: geminiSystemAvailable,
+  })), geminiSystemAvailable, hasUserGemini);
 
   // Anthropic
   const anthropicKey = env.ANTHROPIC_API_KEY || '';
@@ -263,20 +302,21 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
   }));
 
   // Groq
-  const groqKey = env.GROQ_API_KEY || '';
-  const groqAvailable = !!groqKey && !groqKey.startsWith('gsk_your') && !isProviderBlocked('groq');
+  const groqKey = env.GROQ_API_KEYS || env.GROQ_API_KEY || '';
+  const hasUserGroq = Boolean(userKeys?.groq && userKeys.groq.length > 0);
+  const groqSystemAvailable = !!groqKey && !groqKey.startsWith('gsk_your') && !isProviderBlocked('groq');
   const groqModels = [GROQ_MODEL, ...GROQ_BACKUP_MODELS];
   const groqLabels: Record<string, string> = {
     'openai/gpt-oss-120b': 'Groq GPT-OSS 120B',
     'qwen/qwen3.8-27b': 'Groq Qwen 3.8 27B',
   };
-  const groqOptions: ModelOption[] = groqModels.map(m => ({
+  const groqOptions = splitKeyModes(groqModels.map(m => ({
     id: `groq:${m}`,
     provider: 'groq',
     modelId: m,
     label: groqLabels[m] || m,
-    available: groqAvailable,
-  }));
+    available: groqSystemAvailable,
+  })), groqSystemAvailable, hasUserGroq);
 
   // Cohere
   const cohereAvailable = isCohereAvailable() && !isProviderBlocked('cohere');
@@ -294,22 +334,24 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
   }));
 
   // OpenRouter
-  const openRouterAvailable = isOpenRouterAvailable() && !isProviderBlocked('openrouter');
+  const hasUserOpenRouter = Boolean(userKeys?.openrouter && userKeys.openrouter.length > 0);
+  const openRouterSystemAvailable = isOpenRouterAvailable() && !isProviderBlocked('openrouter');
   const openRouterModels = [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS];
   const openRouterLabels: Record<string, string> = {
     'qwen/qwen3.8-27b:free': 'OpenRouter Qwen 3.8 27B (Free)',
+    'qwen/qwen3.8-27b': 'OpenRouter Qwen 3.8 27B',
     'nvidia/nemotron-3.5-lightning:free': 'OpenRouter Nemotron 3.5 (Free)',
     'liquid/lfm-2.5-2.6b:free': 'OpenRouter LFM 2.5 2.6B (Free)',
     'google/gemma-4-31b-it:free': 'OpenRouter Gemma 4 31B (Free)',
     'meta-llama/llama-3.1-8b-instruct:free': 'OpenRouter Qwen 3.8 27B (Free)',
   };
-  const openRouterOptions: ModelOption[] = openRouterModels.map(m => ({
+  const openRouterOptions = splitKeyModes(openRouterModels.map(m => ({
     id: `openrouter:${m}`,
     provider: 'openrouter',
     modelId: m,
     label: openRouterLabels[m] || `OpenRouter ${m.split('/').pop()?.replace(':free', '') || m}`,
-    available: openRouterAvailable,
-  }));
+    available: openRouterSystemAvailable,
+  })), openRouterSystemAvailable, hasUserOpenRouter);
 
   // Cloudflare Workers AI
   const cfAvailable = isCloudflareAvailable() && !isProviderBlocked('cloudflare');
@@ -366,7 +408,7 @@ export function getAvailableModels(allowExternalSource?: boolean): ModelOption[]
  * Parse a model selector string like "anthropic:claude-3-5-sonnet" into provider and modelId.
  * Returns null for 'auto' or invalid formats.
  */
-export function parseModelSelector(selector?: string): { provider: AIProvider; modelId: string } | null {
+export function parseModelSelector(selector?: string): { provider: AIProvider; modelId: string; keyMode?: 'system' | 'byok' } | null {
   if (!selector || selector === 'auto') return null;
   if (selector.startsWith('@cf/')) {
     return { provider: 'cloudflare', modelId: selector };
@@ -375,12 +417,21 @@ export function parseModelSelector(selector?: string): { provider: AIProvider; m
   if (idx <= 0) return null;
   const provider = selector.slice(0, idx) as AIProvider;
   let modelId = selector.slice(idx + 1);
+  const modeMatch = modelId.match(/#(system|byok)$/);
+  const keyMode = modeMatch?.[1] as 'system' | 'byok' | undefined;
+  if (modeMatch) modelId = modelId.slice(0, -modeMatch[0].length);
   if (!['cohere', 'gemini', 'groq', 'anthropic', 'datacurso', 'cache', 'openrouter', 'cloudflare', 'apmix'].includes(provider) || !modelId) return null;
+  if (provider === 'openrouter') {
+    const normalizedModelId = normalizeOpenRouterModel(modelId);
+    if (normalizedModelId !== modelId) {
+      modelId = normalizedModelId;
+    }
+  }
   // Transparent migration for legacy OpenRouter model slugs that are no longer free
   if (provider === 'openrouter' && (modelId.includes('llama-3.1-8b') || modelId.includes('llama-3.3-70b') || modelId.includes('gemini-2.0-flash-exp'))) {
     modelId = OPENROUTER_MODEL;
   }
-  return { provider, modelId };
+  return { provider, modelId, keyMode };
 }
 
 /** Call a specific provider with the given model. */
@@ -439,36 +490,47 @@ async function callProvider(
   if (isProviderBlocked(provider)) {
     return null;
   }
+  let keySource: 'system' | 'byok' | undefined;
+  const providerOpts: GenerateTextOptions = {
+    ...opts,
+    userApiKeys: opts.keyMode === 'system'
+      ? { gemini: [], groq: [], openrouter: [] }
+      : opts.userApiKeys,
+    onKeySource: source => {
+      keySource = source;
+      opts.onKeySource?.(source);
+    },
+  };
   let res: GenerateTextResult | null = null;
   switch (provider) {
     case 'cohere':
-      res = await callCohere(modelId, opts);
+      res = await callCohere(modelId, providerOpts);
       break;
     case 'gemini':
-      res = await callGemini(modelId, opts);
+      res = await callGemini(modelId, providerOpts);
       break;
     case 'groq':
-      res = await callGroq(modelId, opts);
+      res = await callGroq(modelId, providerOpts);
       break;
     case 'cloudflare':
-      res = await callCloudflareAI(modelId, opts);
+      res = await callCloudflareAI(modelId, providerOpts);
       break;
     case 'openrouter':
-      res = await callOpenRouter(modelId, opts);
+      res = await callOpenRouter(modelId, providerOpts);
       break;
     case 'apmix':
-      res = await callApmix(modelId, opts);
+      res = await callApmix(modelId, providerOpts);
       break;
     case 'anthropic':
-      res = await callAnthropic(modelId, opts);
+      res = await callAnthropic(modelId, providerOpts);
       break;
     case 'datacurso': {
-      res = await callGroq(GROQ_MODEL, opts);
+      res = await callGroq(GROQ_MODEL, providerOpts);
       if (!res?.text && GROQ_BACKUP_MODELS[0]) {
-        res = await callGroq(GROQ_BACKUP_MODELS[0], opts);
+        res = await callGroq(GROQ_BACKUP_MODELS[0], providerOpts);
       }
       if (!res?.text) {
-        res = await callGemini(GEMINI_MODEL, opts);
+        res = await callGemini(GEMINI_MODEL, providerOpts);
       }
       break;
     }
@@ -481,6 +543,7 @@ async function callProvider(
       provider,
       modelId,
       modelName: getModelDisplayName(provider, modelId),
+      keySource,
     };
   }
   return res;
@@ -658,10 +721,23 @@ export async function generateText(
   const enrichedSystem = opts.system
     ? `${opts.system}\n\n${langDirective}`
     : langDirective;
+
+  // BYOK: Load personalized user keys if userId provided and keys not already populated
+  let resolvedUserKeys = opts.userApiKeys;
+  if (opts.userId && !resolvedUserKeys) {
+    try {
+      resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+    } catch (e) {
+      console.warn('[BYOK Registry] Could not load user keys:', e);
+    }
+  }
+
   const effectiveOpts: GenerateTextOptions = {
     ...opts,
     system: enrichedSystem,
     taskCategory: effectiveCategory,
+    userApiKeys: resolvedUserKeys,
+    keyMode: parsed?.keyMode,
   };
 
   // If a specific model is selected
@@ -707,10 +783,10 @@ export async function generateText(
     if (provider === 'cohere' && !isCohereAvailable()) {
       continue;
     }
-    if (provider === 'openrouter' && !isOpenRouterAvailable()) {
+    if (provider === 'openrouter' && !isOpenRouterAvailable() && !(resolvedUserKeys?.openrouter && resolvedUserKeys.openrouter.length > 0)) {
       continue;
     }
-    if (provider === 'groq' && !getGroqClient()) {
+    if (provider === 'groq' && !getGroqClient() && !(resolvedUserKeys?.groq && resolvedUserKeys.groq.length > 0)) {
       continue;
     }
     if (provider === 'cloudflare' && !isCloudflareAvailable()) {
@@ -755,10 +831,23 @@ export async function generateTextStream(
   const enrichedSystem = opts.system
     ? `${opts.system}\n\n${langDirective}`
     : langDirective;
+
+  // BYOK: Load personalized user keys if userId provided and keys not already populated
+  let resolvedUserKeys = opts.userApiKeys;
+  if (opts.userId && !resolvedUserKeys) {
+    try {
+      resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+    } catch (e) {
+      console.warn('[BYOK Registry] Could not load user keys for stream:', e);
+    }
+  }
+
   const effectiveOpts: GenerateTextStreamOptions = {
     ...opts,
     system: enrichedSystem,
     taskCategory: effectiveCategory,
+    userApiKeys: resolvedUserKeys,
+    keyMode: parsed?.keyMode,
   };
 
   let accumulatedText = '';
@@ -843,10 +932,10 @@ export async function generateTextStream(
     if (provider === 'cohere' && !isCohereAvailable()) {
       continue;
     }
-    if (provider === 'openrouter' && !isOpenRouterAvailable()) {
+    if (provider === 'openrouter' && !isOpenRouterAvailable() && !(resolvedUserKeys?.openrouter && resolvedUserKeys.openrouter.length > 0)) {
       continue;
     }
-    if (provider === 'groq' && !getGroqClient()) {
+    if (provider === 'groq' && !getGroqClient() && !(resolvedUserKeys?.groq && resolvedUserKeys.groq.length > 0)) {
       continue;
     }
     if (provider === 'cloudflare' && !isCloudflareAvailable()) {
@@ -893,6 +982,7 @@ export async function generateTextStream(
             modelId: result?.modelId || modelId,
             modelName: result?.modelName || getModelDisplayName(provider, modelId),
             finishReason: activeFinishReason || result?.finishReason || 'stop',
+            keySource: result?.keySource,
           };
         }
       } catch (err) {
@@ -930,6 +1020,7 @@ export async function generateTextStream(
       modelId: fallback.modelId || activeModelId,
       modelName: fallback.modelName || activeModelName,
       finishReason: fallback.finishReason || activeFinishReason || 'stop',
+      keySource: fallback.keySource,
     };
   } catch (fallbackErr) {
     if (accumulatedText.trim().length > 0) {
@@ -957,9 +1048,17 @@ async function callProviderStream(
   if (isProviderBlocked(provider)) {
     return null;
   }
+  let keySource: 'system' | 'byok' | undefined;
   let metaSent = false;
   const wrappedOpts: GenerateTextStreamOptions = {
     ...opts,
+    userApiKeys: opts.keyMode === 'system'
+      ? { gemini: [], groq: [], openrouter: [] }
+      : opts.userApiKeys,
+    onKeySource: source => {
+      keySource = source;
+      opts.onKeySource?.(source);
+    },
     onDelta: (delta: string) => {
       if (!metaSent) {
         metaSent = true;
@@ -967,6 +1066,7 @@ async function callProviderStream(
           modelName: getModelDisplayName(provider, modelId),
           modelId,
           provider,
+          keySource,
         });
       }
       opts.onDelta(delta);
@@ -1015,6 +1115,7 @@ async function callProviderStream(
       provider,
       modelId,
       modelName: getModelDisplayName(provider, modelId),
+      keySource,
     };
   }
   return res;
@@ -1106,7 +1207,7 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const groundingMetadata = candidate?.groundingMetadata || null;
       return { text, groundingMetadata, finishReason };
-    }, opts.signal);
+    }, { signal: opts.signal, userKeys: opts.userApiKeys?.gemini, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
   } catch (err) {
     if (opts.signal?.aborted) throw err;
     if (isQuotaExhaustedError(err)) {
@@ -1253,7 +1354,7 @@ async function callGroq(modelId: string, opts: GenerateTextOptions): Promise<Gen
       const completion = await client.chat.completions.create(createOpts);
       finishReason = completion.choices[0]?.finish_reason || undefined;
       return completion.choices[0]?.message?.content?.trim() || '';
-    }, opts.signal);
+    }, { signal: opts.signal, userKeys: opts.userApiKeys?.groq, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
 
     if (!text) return null;
     return { text, finishReason };
@@ -1317,7 +1418,7 @@ async function callGroqStream(modelId: string, opts: GenerateTextStreamOptions):
         }
       }
       return streamAccumulated.trim();
-    }, opts.signal);
+    }, { signal: opts.signal, userKeys: opts.userApiKeys?.groq, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
 
     if (!fullText) return null;
     return { text: fullText, finishReason };
@@ -1414,7 +1515,7 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
       const trimmed = fullText.trim();
       if (!trimmed) return null;
       return { text: trimmed, groundingMetadata, finishReason };
-    }, opts.signal);
+    }, { signal: opts.signal, userKeys: opts.userApiKeys?.gemini, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
   } catch (err) {
     if (opts.signal?.aborted) throw err;
     if (isQuotaExhaustedError(err)) {

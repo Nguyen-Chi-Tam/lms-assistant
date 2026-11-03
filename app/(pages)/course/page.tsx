@@ -869,7 +869,7 @@ function CourseDetailContent() {
   // Compute all available courses (exclusively from Moodle live courses)
   const allCourses: Course[] = useMemo(() => {
     const coursesMap = new Map<string, Course>();
-    const defaultColors = ['#6c5ce7', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
+    const defaultColors = ['#e056a0', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
 
     if (moodle?.courses?.length) {
       moodle.courses.forEach((mc, index) => {
@@ -936,7 +936,7 @@ function CourseDetailContent() {
         code: codeStr,
         name: nameStr,
         progress: 0,
-        color: '#6c5ce7',
+        color: '#e056a0',
         icon: codeStr.slice(0, 2).toUpperCase(),
         next: 'Khóa học Moodle',
       };
@@ -948,7 +948,7 @@ function CourseDetailContent() {
         code: '',
         name: 'Chưa chọn khóa học',
         progress: 0,
-        color: '#6c5ce7',
+        color: '#e056a0',
         icon: 'LM',
         next: '',
       }
@@ -1080,6 +1080,8 @@ function CourseDetailContent() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Throttles SSE-driven React state updates (~20fps) to avoid per-token re-renders
+  const streamUiThrottleRef = useRef(0);
   const [chat, setChat] = useState<ChatMessage[]>([
     {
       role: 'ai',
@@ -2029,26 +2031,31 @@ function CourseDetailContent() {
                 } else {
                   fullAnswer += parsed.delta;
                 }
-                setChat(v => {
-                  const updated = [...v];
-                  if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
-                    updated[updated.length - 1] = {
-                      ...updated[updated.length - 1],
-                      text: fullAnswer,
-                      model: responseModelName || updated[updated.length - 1].model,
-                      provider: responseProviderName || updated[updated.length - 1].provider,
-                    };
-                  } else {
-                    updated.push({
-                      role: 'ai',
-                      text: fullAnswer,
-                      sources: [],
-                      model: responseModelName,
-                      provider: responseProviderName,
-                    });
-                  }
-                  return updated;
-                });
+                const now = Date.now();
+                // Throttle UI state flushes while streaming (deltas arrive token by token)
+                if (now - streamUiThrottleRef.current >= 50) {
+                  streamUiThrottleRef.current = now;
+                  setChat(v => {
+                    const updated = [...v];
+                    if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
+                      updated[updated.length - 1] = {
+                        ...updated[updated.length - 1],
+                        text: fullAnswer,
+                        model: responseModelName || updated[updated.length - 1].model,
+                        provider: responseProviderName || updated[updated.length - 1].provider,
+                      };
+                    } else {
+                      updated.push({
+                        role: 'ai',
+                        text: fullAnswer,
+                        sources: [],
+                        model: responseModelName,
+                        provider: responseProviderName,
+                      });
+                    }
+                    return updated;
+                  });
+                }
               }
               if (parsed.sources && Array.isArray(parsed.sources)) {
                 receivedSources = parsed.sources;
@@ -2577,7 +2584,11 @@ function CourseDetailContent() {
           const uploadData = (await uploadRes.json()) as {
             material?: { id?: string | number; storage_url?: string; storageUrl?: string };
             fileUrl?: string;
+            warning?: string;
           };
+          if (uploadData?.warning) {
+            notify(uploadData.warning);
+          }
           if (uploadData?.material?.storage_url || uploadData?.material?.storageUrl || uploadData?.fileUrl) {
             uploadedFileUrl = uploadData.material?.storage_url || uploadData.material?.storageUrl || uploadData.fileUrl;
           }
@@ -2899,7 +2910,7 @@ function CourseDetailContent() {
               <div className="source-panel-header">
                 <div className="panel-title">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                    <Folder size={15} style={{ color: '#a78bfa' }} />
+                    <Folder size={15} style={{ color: '#ff9dce' }} />
                     <strong>Nguồn tài liệu</strong>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
@@ -3054,7 +3065,7 @@ function CourseDetailContent() {
                       title="Mở danh sách tài liệu môn học"
                       style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                     >
-                      <Folder size={14} style={{ color: '#a78bfa' }} />
+                      <Folder size={14} style={{ color: '#ff9dce' }} />
                       <span className="expand-source-text">Nguồn tài liệu</span>
                       <span className="source-count-badge">{selectedSourceNames.length}</span>
                     </button>
@@ -3136,7 +3147,7 @@ function CourseDetailContent() {
                     {courseExamResults.length > 0 && (
                       <span
                         style={{
-                          background: showGradeHistory ? '#7c6df2' : 'rgba(124, 109, 242, 0.3)',
+                          background: showGradeHistory ? '#f868c4' : 'rgba(248, 104, 196, 0.3)',
                           color: '#fff',
                           fontSize: '10px',
                           fontWeight: 700,
@@ -3275,23 +3286,6 @@ function CourseDetailContent() {
 
                               return (
                                 <div className="citations">
-                                  {/* Green Course Document Badges */}
-                                  {courseSources.map((s, idx) => {
-                                    const isObj = typeof s === 'object' && s !== null;
-                                    const rawName = isObj ? s.name : String(s);
-                                    const cleanName = rawName.replace(/^(▤|\s*)+/, '').trim();
-                                    const chapter = isObj && s.chapter ? ` (Chương ${s.chapter})` : '';
-                                    return (
-                                      <div
-                                        key={`course-${cleanName}-${idx}`}
-                                        className="citation-pill course-citation"
-                                        title={`Tài liệu môn học được đối chiếu & bám sát: ${cleanName}${chapter}`}
-                                      >
-                                        <BookOpen size={12} style={{ color: '#10b981', flexShrink: 0 }} />
-                                        <span className="citation-text">Nguồn: {cleanName}{chapter}</span>
-                                      </div>
-                                    );
-                                  })}
 
                                   {/* Orange Extended Knowledge Fallback Badge */}
                                   {hasFallbackSource && (
@@ -3396,7 +3390,7 @@ function CourseDetailContent() {
                                         background: isCohere
                                           ? 'rgba(244, 63, 94, 0.16)'
                                           : isGemini
-                                          ? 'rgba(168, 85, 247, 0.16)'
+                                          ? 'rgba(255, 122, 217, 0.16)'
                                           : isGroq
                                           ? 'rgba(249, 115, 22, 0.14)'
                                           : isCache
@@ -3405,7 +3399,7 @@ function CourseDetailContent() {
                                         color: isCohere
                                           ? '#fb7185'
                                           : isGemini
-                                          ? '#c084fc'
+                                          ? '#ff9dce'
                                           : isGroq
                                           ? '#fb923c'
                                           : isCache
@@ -3415,7 +3409,7 @@ function CourseDetailContent() {
                                           isCohere
                                             ? 'rgba(244, 63, 94, 0.35)'
                                             : isGemini
-                                            ? 'rgba(168, 85, 247, 0.35)'
+                                            ? 'rgba(255, 122, 217, 0.35)'
                                             : isGroq
                                             ? 'rgba(249, 115, 22, 0.35)'
                                             : isCache
@@ -3512,7 +3506,7 @@ function CourseDetailContent() {
                       <div className="grade-strategy-toolbar">
                         <div className="grade-strategy-label-wrap">
                           <span className="grade-strategy-title">
-                            <Sparkles size={13} style={{ color: '#a855f7' }} />
+                            <Sparkles size={13} style={{ color: '#ff7ad9' }} />
                             Phương pháp phản hồi:
                           </span>
                           <span className="grade-strategy-count-pill" title="Số lượng phương pháp đang kết hợp cùng lúc">
@@ -3709,8 +3703,8 @@ function CourseDetailContent() {
                             fontSize: '11px',
                             fontWeight: 600,
                             borderRadius: '8px',
-                            background: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.22)' : 'rgba(255, 255, 255, 0.05)',
-                            borderColor: selectedModel !== 'auto' ? 'rgba(124, 109, 242, 0.5)' : 'rgba(255, 255, 255, 0.12)',
+                            background: selectedModel !== 'auto' ? 'rgba(248, 104, 196, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                            borderColor: selectedModel !== 'auto' ? 'rgba(248, 104, 196, 0.5)' : 'rgba(255, 255, 255, 0.12)',
                             color: '#e2e8f0',
                             cursor: 'pointer',
                           }}
@@ -3929,7 +3923,7 @@ function CourseDetailContent() {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 4, 15, 0.82)',
+            background: 'rgba(8, 4, 6, 0.82)',
             backdropFilter: 'blur(8px)',
             zIndex: 100000,
             display: 'flex',
@@ -3947,10 +3941,10 @@ function CourseDetailContent() {
               width: '100%',
               maxWidth: '720px',
               maxHeight: '86vh',
-              background: 'linear-gradient(180deg, #18152e 0%, #110e22 100%)',
-              border: '1px solid rgba(124, 109, 242, 0.35)',
+              background: 'linear-gradient(180deg, #26101f 0%, #10070e 100%)',
+              border: '1px solid rgba(248, 104, 196, 0.35)',
               borderRadius: '20px',
-              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.7), 0 0 40px rgba(124, 109, 242, 0.18)',
+              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.7), 0 0 40px rgba(248, 104, 196, 0.18)',
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -3975,12 +3969,12 @@ function CourseDetailContent() {
                     width: '42px',
                     height: '42px',
                     borderRadius: '12px',
-                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     flexShrink: 0,
-                    boxShadow: '0 4px 14px rgba(124, 109, 242, 0.45)',
+                    boxShadow: '0 4px 14px rgba(248, 104, 196, 0.45)',
                     color: '#fff',
                   }}
                 >
@@ -3997,9 +3991,9 @@ function CourseDetailContent() {
                         fontWeight: 700,
                         padding: '2px 8px',
                         borderRadius: '999px',
-                        background: 'rgba(124, 109, 242, 0.25)',
-                        border: '1px solid rgba(124, 109, 242, 0.4)',
-                        color: '#c4b5fd',
+                        background: 'rgba(248, 104, 196, 0.25)',
+                        border: '1px solid rgba(248, 104, 196, 0.4)',
+                        color: '#ffc2e8',
                       }}
                     >
                       {courseExamResults.length} đầu điểm
@@ -4158,8 +4152,8 @@ function CourseDetailContent() {
                           padding: '0.65rem 0.85rem',
                           borderRadius: '10px',
                           background:
-                            'linear-gradient(135deg, rgba(124, 109, 242, 0.12), rgba(90, 73, 215, 0.08))',
-                          border: '1px solid rgba(124, 109, 242, 0.28)',
+                            'linear-gradient(135deg, rgba(248, 104, 196, 0.12), rgba(219, 63, 138, 0.08))',
+                          border: '1px solid rgba(248, 104, 196, 0.28)',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '0.25rem',
@@ -4169,7 +4163,7 @@ function CourseDetailContent() {
                           style={{
                             fontSize: '11px',
                             fontWeight: 700,
-                            color: '#c4b5fd',
+                            color: '#ffc2e8',
                             textTransform: 'uppercase',
                             letterSpacing: '0.4px',
                             display: 'flex',
@@ -4206,7 +4200,7 @@ function CourseDetailContent() {
                           color: '#94a3b8',
                         }}
                       >
-                        <span style={{ fontWeight: 600, color: '#a5b4fc', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                        <span style={{ fontWeight: 600, color: '#ffc2e8', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
                           <MessageSquare size={13} style={{ flexShrink: 0 }} />
                           <span>Nhận xét:</span>
                         </span>
@@ -4296,7 +4290,7 @@ function CourseDetailContent() {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 4, 15, 0.82)',
+            background: 'rgba(8, 4, 6, 0.82)',
             backdropFilter: 'blur(8px)',
             zIndex: 100000,
             display: 'flex',
@@ -4314,7 +4308,7 @@ function CourseDetailContent() {
               width: '100%',
               maxWidth: '680px',
               maxHeight: '86vh',
-              background: 'linear-gradient(180deg, #18152e 0%, #110e22 100%)',
+              background: 'linear-gradient(180deg, #26101f 0%, #10070e 100%)',
               border: '1px solid rgba(32, 191, 169, 0.35)',
               borderRadius: '20px',
               boxShadow: '0 25px 80px rgba(0, 0, 0, 0.7), 0 0 40px rgba(32, 191, 169, 0.15)',
@@ -4655,9 +4649,9 @@ function CourseDetailContent() {
                           style={{
                             padding: '6px 14px',
                             borderRadius: '8px',
-                            background: 'rgba(124, 109, 242, 0.18)',
-                            border: '1px solid rgba(124, 109, 242, 0.35)',
-                            color: '#c4b5fd',
+                            background: 'rgba(248, 104, 196, 0.18)',
+                            border: '1px solid rgba(248, 104, 196, 0.35)',
+                            color: '#ffc2e8',
                             fontSize: '12px',
                             fontWeight: 600,
                             cursor: 'pointer',
@@ -4767,7 +4761,7 @@ function CourseDetailContent() {
                     width: '36px',
                     height: '36px',
                     borderRadius: '10px',
-                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -4814,10 +4808,10 @@ function CourseDetailContent() {
                   style={{
                     display: 'grid',
                     gridTemplateColumns: 'repeat(3, 1fr)',
-                    background: '#141220',
+                    background: '#180f14',
                     padding: '4px',
                     borderRadius: '10px',
-                    border: '1px solid #26233a',
+                    border: '1px solid #2e1d26',
                     gap: '4px',
                   }}
                 >
@@ -4836,8 +4830,8 @@ function CourseDetailContent() {
                         style={{
                           padding: '0.6rem 0.5rem',
                           borderRadius: '8px',
-                          border: isSelected ? '1px solid rgba(124, 109, 242, 0.5)' : '1px solid transparent',
-                          background: isSelected ? 'rgba(124, 109, 242, 0.2)' : 'transparent',
+                          border: isSelected ? '1px solid rgba(248, 104, 196, 0.5)' : '1px solid transparent',
+                          background: isSelected ? 'rgba(248, 104, 196, 0.2)' : 'transparent',
                           color: isSelected ? '#ffffff' : '#9894ad',
                           cursor: 'pointer',
                           display: 'flex',
@@ -4849,7 +4843,7 @@ function CourseDetailContent() {
                           transition: 'all 0.2s ease',
                         }}
                       >
-                        <Icon size={15} style={{ color: isSelected ? '#a594fd' : '#71717a' }} />
+                        <Icon size={15} style={{ color: isSelected ? '#ff9dce' : '#71717a' }} />
                         <span>{tab.label}</span>
                       </button>
                     );
@@ -4878,9 +4872,9 @@ function CourseDetailContent() {
                       onClick={() => uploadFileInputRef.current?.click()}
                       style={{
                         padding: '1.75rem 1.25rem',
-                        border: uploadDragActive ? '2px dashed #7c6df2' : '2px dashed rgba(124, 109, 242, 0.4)',
+                        border: uploadDragActive ? '2px dashed #f868c4' : '2px dashed rgba(248, 104, 196, 0.4)',
                         borderRadius: '12px',
-                        background: uploadDragActive ? 'rgba(124, 109, 242, 0.15)' : 'rgba(20, 18, 34, 0.6)',
+                        background: uploadDragActive ? 'rgba(248, 104, 196, 0.15)' : 'rgba(20, 18, 34, 0.6)',
                         textAlign: 'center',
                         cursor: 'pointer',
                         transition: 'all 0.2s ease',
@@ -4908,8 +4902,8 @@ function CourseDetailContent() {
                       />
 
                       {uploadFile ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%', maxWidth: '380px', padding: '0.65rem 0.85rem', background: '#141220', borderRadius: '10px', border: '1px solid rgba(124, 109, 242, 0.35)' }} onClick={e => e.stopPropagation()}>
-                          <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(124, 109, 242, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a594fd', flexShrink: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%', maxWidth: '380px', padding: '0.65rem 0.85rem', background: '#180f14', borderRadius: '10px', border: '1px solid rgba(248, 104, 196, 0.35)' }} onClick={e => e.stopPropagation()}>
+                          <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(248, 104, 196, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff9dce', flexShrink: 0 }}>
                             <FileText size={18} />
                           </div>
                           <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
@@ -4934,7 +4928,7 @@ function CourseDetailContent() {
                         </div>
                       ) : (
                         <>
-                          <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(124, 109, 242, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a594fd', marginBottom: '0.2rem' }}>
+                          <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(248, 104, 196, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff9dce', marginBottom: '0.2rem' }}>
                             <UploadCloud size={24} />
                           </div>
                           <strong style={{ fontSize: '0.92rem', color: '#f3f2f8' }}>
@@ -4948,7 +4942,7 @@ function CourseDetailContent() {
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Tên hiển thị tài liệu (Tùy chọn):
                       </label>
                       <input
@@ -4960,9 +4954,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -4976,7 +4970,7 @@ function CourseDetailContent() {
                 {uploadTab === 'url' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Địa chỉ liên kết Web (URL): <span style={{ color: '#ef4444' }}>*</span>
                       </label>
                       <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -4991,9 +4985,9 @@ function CourseDetailContent() {
                             width: '100%',
                             padding: '0.65rem 0.85rem 0.65rem 36px',
                             borderRadius: '8px',
-                            background: '#141220',
+                            background: '#180f14',
                             color: '#f3f2f8',
-                            border: '1px solid #26233a',
+                            border: '1px solid #2e1d26',
                             fontSize: '16px',
                             outline: 'none',
                             boxSizing: 'border-box',
@@ -5003,7 +4997,7 @@ function CourseDetailContent() {
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Tiêu đề liên kết / Tên tài liệu:
                       </label>
                       <input
@@ -5015,9 +5009,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -5031,7 +5025,7 @@ function CourseDetailContent() {
                 {uploadTab === 'text' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Tiêu đề ghi chú:
                       </label>
                       <input
@@ -5043,9 +5037,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -5054,7 +5048,7 @@ function CourseDetailContent() {
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#cfc8ff', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
                         Nội dung bài học / Ghi chép: <span style={{ color: '#ef4444' }}>*</span>
                       </label>
                       <textarea
@@ -5067,9 +5061,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.75rem',
                           borderRadius: '8px',
-                          background: '#141220',
+                          background: '#180f14',
                           color: '#f3f2f8',
-                          border: '1px solid #26233a',
+                          border: '1px solid #2e1d26',
                           fontSize: '16px',
                           outline: 'none',
                           resize: 'vertical',
@@ -5100,7 +5094,7 @@ function CourseDetailContent() {
                   style={{
                     padding: '0.55rem 1.15rem',
                     borderRadius: '8px',
-                    border: '1px solid #26233a',
+                    border: '1px solid #2e1d26',
                     background: 'transparent',
                     color: '#9894ad',
                     fontWeight: 600,
@@ -5117,12 +5111,12 @@ function CourseDetailContent() {
                     padding: '0.55rem 1.35rem',
                     borderRadius: '8px',
                     border: 'none',
-                    background: 'linear-gradient(135deg, #7c6df2, #5a49d7)',
+                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
                     color: '#ffffff',
                     fontWeight: 700,
                     fontSize: '0.88rem',
                     cursor: uploadLoading ? 'not-allowed' : 'pointer',
-                    boxShadow: '0 4px 14px rgba(124, 109, 242, 0.4)',
+                    boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '6px',

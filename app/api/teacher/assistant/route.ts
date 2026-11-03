@@ -16,11 +16,12 @@ import {
   getExistingCourseFileIds,
   isWebOrTransientSource,
   hydrateChunksWithParentText,
-} from '@/lib/supabase-vector';
+} from '@/lib/pinecone-vector';
 import { stripFluff, COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
 import { getCircuitBreakerNotice } from '@/lib/language-detector';
 import { findCachedAnswer, storeCachedAnswer, isPersonalQuery } from '@/lib/semantic-cache';
 import { reformulateQueryWithGroq } from '@/lib/query-reformulation';
+import { getUserApiKeys } from '@/lib/key-manager';
 import type { RagMode, CitationSource } from '@/app/types';
 
 interface ChatHistoryItem {
@@ -80,6 +81,7 @@ export async function POST(request: Request) {
       course = '',
       courseCode = '',
       courseId,
+      userId,
       sources = [],
       sourceNames = [],
       history = [],
@@ -97,6 +99,7 @@ export async function POST(request: Request) {
       course?: string;
       courseCode?: string;
       courseId?: string | number;
+      userId?: number;
       sources?: SourceItem[];
       sourceNames?: string[];
       history?: ChatHistoryItem[];
@@ -113,6 +116,13 @@ export async function POST(request: Request) {
 
     if (!question.trim()) {
       return NextResponse.json({ error: 'Câu hỏi không được để trống.' }, { status: 400 });
+    }
+
+    // BYOK: prioritize the acting user's own Gemini key for OCR/embeddings when available.
+    const teacherGeminiKeys = typeof userId === 'number' ? await getUserApiKeys(userId, 'gemini').catch(() => []) : [];
+    if (teacherGeminiKeys.length > 0) {
+      const maskedTeacherKeys = teacherGeminiKeys.map(k => `${k.slice(0, 6)}...${k.slice(-4)}`);
+      console.log(`[Gemini Pool] BYOK: user ${userId} personal Gemini key(s) in use: ${maskedTeacherKeys.join(', ')} (${teacherGeminiKeys.length} key(s)) - tried before the system pool.`);
     }
 
     const ragMode: RagMode = rawRagMode || (legacyAllowExternalSource ? 'creative' : 'hybrid');
@@ -169,7 +179,7 @@ export async function POST(request: Request) {
     const checkedUploadSources = preFilteredSources.filter(isWebOrTransientSource);
     const checkedLmsSources = preFilteredSources.filter(s => !isWebOrTransientSource(s));
 
-    // A. For checked LMS sources in Supabase pgvector:
+    // A. For checked LMS sources in Pinecone:
     let storedLmsChunks: DocumentChunk[] = [];
     if (moodleCourseId && checkedLmsSources.length > 0) {
       try {
@@ -184,7 +194,7 @@ export async function POST(request: Request) {
             lmsToIngest.map(async src => {
               if (!src.url) return;
               try {
-                const extractedText = await parseDocumentFromUrl(src.url, src.name);
+                const extractedText = await parseDocumentFromUrl(src.url, src.name, { userKeys: teacherGeminiKeys });
                 if (extractedText && extractedText.trim().length > 20) {
                   const fid = Number(src.fileId || src.moduleId) || 1;
                   await vectorizeAndStoreLmsSource({
@@ -215,11 +225,11 @@ export async function POST(request: Request) {
           docTitles: isSubset ? lmsTitles : undefined,
         });
       } catch (lmsVecErr) {
-        console.warn('Teacher Assistant pgvector retrieval note:', lmsVecErr);
+        console.warn('Teacher Assistant Pinecone retrieval note:', lmsVecErr);
       }
     }
 
-    // Fallback: If any checked LMS source has no chunks in storedLmsChunks (or pgvector empty/offline),
+    // Fallback: If any checked LMS source has no chunks in storedLmsChunks (or Pinecone is unavailable),
     // parse the file from URL into in-memory chunks so no checked source is ever missed
     const missingLmsSources = checkedLmsSources.filter(src => {
       const lower = src.name.toLowerCase();
@@ -230,7 +240,7 @@ export async function POST(request: Request) {
       await Promise.allSettled(
         missingLmsSources.map(async src => {
           try {
-            const extractedText = await parseDocumentFromUrl(src.url!, src.name);
+            const extractedText = await parseDocumentFromUrl(src.url!, src.name, { userKeys: teacherGeminiKeys });
             if (extractedText && extractedText.trim().length > 20) {
               docMap.set(src.name.toLowerCase(), extractedText.trim());
             }
@@ -267,7 +277,7 @@ export async function POST(request: Request) {
               const lowerTitle = String(mat.title).toLowerCase();
               if (mat.storage_url && !docMap.has(lowerTitle)) {
                 try {
-                  const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title));
+                  const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), { userKeys: teacherGeminiKeys });
                   if (text && text.length > 20) {
                     docMap.set(lowerTitle, text);
                   }
@@ -713,6 +723,7 @@ ${answerStyle === 'concise' && !isOverviewQuery
       const result = await generateText(model, {
         system: systemInstruction,
         userPrompt,
+        userId: typeof userId === 'number' ? userId : undefined,
         history: history.slice(-8).map(msg => ({
           role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: msg.text,
@@ -730,6 +741,7 @@ ${answerStyle === 'concise' && !isOverviewQuery
       });
       aiText = result.text;
       chosenModelName = result.modelName || chosenModelName;
+      if (result.keySource === 'byok') chosenModelName += ' (BYOK)';
       chosenProviderName = result.provider || chosenProviderName;
       groundingMetadata = result.groundingMetadata || null;
       if (result.finishReason) resultFinishReason = result.finishReason;

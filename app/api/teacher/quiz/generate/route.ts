@@ -5,6 +5,7 @@ import { parseDocumentFromUrl } from '@/lib/document-parser';
 import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import { stripFluff } from '@/lib/anti-fluff';
+import { getUserApiKeys } from '@/lib/key-manager';
 
 export async function POST(request: Request) {
   try {
@@ -56,6 +57,11 @@ export async function POST(request: Request) {
 
     const rawDocs: Array<{ title: string; text: string }> = [];
 
+    const teacherUserId = (body as any).userId ? parseInt(String((body as any).userId), 10) : undefined;
+    // BYOK: prioritize the acting teacher's own Gemini key for OCR/embeddings.
+    const teacherQuizGeminiKeys =
+      teacherUserId && !isNaN(teacherUserId) ? await getUserApiKeys(teacherUserId, 'gemini').catch(() => []) : [];
+
     if (body.documentText?.trim()) {
       rawDocs.push({ title: 'Tài liệu cung cấp', text: body.documentText.trim() });
     }
@@ -69,7 +75,7 @@ export async function POST(request: Request) {
           for (const m of mats) {
             if (m.storage_url) {
               try {
-                const text = await parseDocumentFromUrl(String(m.storage_url), String(m.title || 'Tài liệu'));
+                const text = await parseDocumentFromUrl(String(m.storage_url), String(m.title || 'Tài liệu'), { userKeys: teacherQuizGeminiKeys });
                 if (text && text.length > 50) rawDocs.push({ title: String(m.title || 'Tài liệu'), text });
               } catch {
                 // ignore unavailable material
@@ -87,7 +93,7 @@ export async function POST(request: Request) {
       for (const s of body.sources.slice(0, 5)) {
         if (s.url) {
           try {
-            const parsed = await parseDocumentFromUrl(s.url, s.name);
+            const parsed = await parseDocumentFromUrl(s.url, s.name, { userKeys: teacherQuizGeminiKeys });
             if (parsed && parsed.trim()) {
               rawDocs.push({ title: s.name, text: parsed });
             }
@@ -239,6 +245,7 @@ CẤU TRÚC JSON BẮT BUỘC:
     const result = await generateText(modelToUse, {
       system: systemPrompt,
       userPrompt,
+      userId: teacherUserId && !isNaN(teacherUserId) ? teacherUserId : undefined,
       temperature: ragMode === 'strict' ? 0.0 : ragMode === 'hybrid' ? 0.3 : 0.7,
       topP: ragMode === 'strict' ? 0.001 : ragMode === 'hybrid' ? 0.7 : 0.9,
       jsonMode: true,

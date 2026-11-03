@@ -139,7 +139,7 @@ export default function LoginPage() {
               {loading ? (stepMessage || 'Đang đăng nhập...') : 'Đăng nhập'}
             </button>
             {loading && stepMessage && (
-              <p style={{ marginTop: '8px', fontSize: '12px', color: '#c4b5fd', textAlign: 'center' }}>
+              <p style={{ marginTop: '8px', fontSize: '12px', color: '#ffc2e8', textAlign: 'center' }}>
                 {stepMessage}
               </p>
             )}

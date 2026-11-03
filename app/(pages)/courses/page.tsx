@@ -200,7 +200,7 @@ function CoursesPageContent() {
         style={{
           maxWidth: '1440px',
           margin: '0 auto',
-          padding: '88px 2.5rem 4rem',
+          padding: '88px 0 4rem',
           width: '100%',
           boxSizing: 'border-box',
         }}
@@ -243,7 +243,7 @@ function CoursesPageContent() {
             className="modal-content"
             onClick={e => e.stopPropagation()}
             style={{
-              background: '#13121a',
+              background: '#180e14',
               border: '1px solid rgba(255, 255, 255, 0.12)',
               borderRadius: '16px',
               padding: '1.75rem',

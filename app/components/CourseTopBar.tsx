@@ -2,8 +2,9 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { Bell, FileText, RotateCcw, Megaphone, GraduationCap, ExternalLink, Clock, CheckSquare } from 'lucide-react';
+import { Bell, FileText, RotateCcw, Megaphone, GraduationCap, ExternalLink, Clock, CheckSquare, Key } from 'lucide-react';
 import type { MoodleUser } from '@/app/types';
+import { ByokSettingsModal } from './ByokSettingsModal';
 
 export interface NotificationItem {
   id: number | string;
@@ -38,6 +39,7 @@ export interface CourseTopBarProps {
   onOpenNotification?: (item: NotificationItem) => void;
   lmsUrl?: string;
   isTeacher?: boolean;
+  onOpenByok?: () => void;
 }
 
 export function CourseTopBar({
@@ -60,11 +62,13 @@ export function CourseTopBar({
   onOpenNotification,
   lmsUrl,
   isTeacher = false,
+  onOpenByok,
 }: CourseTopBarProps) {
   const notifRef = useRef<HTMLDivElement>(null);
   const [dbEvents, setDbEvents] = useState<NotificationItem[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
+  const [showByok, setShowByok] = useState(false);
   const isTeacherUser = Boolean(
     isTeacher ||
     user?.role === 'teacher' ||
@@ -186,18 +190,46 @@ export function CourseTopBar({
 
       {/* Right: Actions, Notification Bell, User Avatar */}
       <div className="course-topbar-right">
-        {/* Sync LMS data button (desktop) */}
+        {/* Sync LMS data button - always visible; icon-only on limited screens */}
         {onSync && (
           <button
             type="button"
-            className={`course-topbar-btn desktop-only sync-btn ${syncing ? 'syncing' : ''}`}
+            className={`course-topbar-btn sync-btn ${syncing ? 'syncing' : ''}`}
             onClick={onSync}
             title="Đồng bộ lại tài liệu từ LMS"
+            aria-label="Đồng bộ lại tài liệu từ LMS"
           >
             <RotateCcw size={13} className={syncing ? 'animate-spin' : ''} />
-            <span>{syncing ? 'Đang tải…' : 'Đồng bộ LMS'}</span>
+            <span className="sync-btn-label">{syncing ? 'Đang tải…' : 'Đồng bộ LMS'}</span>
           </button>
         )}
+
+        {/* BYOK API Key button */}
+        <button
+          type="button"
+          className="course-topbar-btn byok-btn"
+          onClick={() => {
+            if (onOpenByok) onOpenByok();
+            else setShowByok(true);
+          }}
+          title="Cài đặt API Key cá nhân (Google AI Studio, Groq, OpenRouter)"
+          aria-label="Cài đặt API Key cá nhân"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+            border: '1px solid rgba(59, 130, 246, 0.25)',
+            color: '#93c5fd',
+            padding: '6px 10px',
+            borderRadius: '8px',
+            fontSize: '12px',
+            cursor: 'pointer',
+          }}
+        >
+          <Key size={13} className={showByok ? 'key-rotate' : ''} />
+          <span className="byok-btn-label">API Key</span>
+        </button>
 
         {/* Notification Bell (Mobile & Desktop) - Students only */}
         {!isTeacherUser && (
@@ -211,7 +243,7 @@ export function CourseTopBar({
             }}
             title="Thông báo"
           >
-            <Bell size={17} />
+            <Bell size={17} className={notifications ? 'bell-ring' : ''} />
             {displayEvents.length > 0 && <span className="course-topbar-unread-dot" />}
           </button>
 
@@ -359,6 +391,12 @@ export function CourseTopBar({
           </div>
         </button>
       </div>
+
+      <ByokSettingsModal
+        isOpen={showByok}
+        onClose={() => setShowByok(false)}
+        userId={user?.id}
+      />
     </header>
   );
 }

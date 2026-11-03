@@ -2,6 +2,7 @@ import { getGeminiClient, executeWithGeminiPool } from '@/models/gemini';
 import { isProviderBlocked, blockProviderUntilTomorrow, isQuotaExhaustedError } from '@/models/registry';
 import { generateCloudflareEmbeddings, isCloudflareAvailable } from '@/models/cloudflare';
 import { reformulateQueryWithGroq, cleanQueryRuleBased, type QueryReformulationResult } from './query-reformulation';
+import { getUserApiKeys } from './key-manager';
 
 export interface DocumentMetadata {
   sectionId?: string | number;
@@ -11,6 +12,7 @@ export interface DocumentMetadata {
   docId?: string;
   courseId?: string | number;
   courseCode?: string;
+  pageNumber?: number;
 }
 
 export interface DocumentChunk {
@@ -469,8 +471,12 @@ let geminiEmbeddingCooldownUntil = 0;
 
 /**
  * Generates vector embeddings for a list of texts using Gemini, or falls back to BM25.
+ * Prioritizes user's custom Gemini key if available.
  */
-export async function generateEmbeddings(texts: string[]): Promise<Array<number[] | null>> {
+export async function generateEmbeddings(
+  texts: string[],
+  options?: { userId?: number; userKeys?: string[] }
+): Promise<Array<number[] | null>> {
   if (!texts || texts.length === 0) return [];
 
   const results: Array<number[] | null> = new Array(texts.length).fill(null);
@@ -490,9 +496,20 @@ export async function generateEmbeddings(texts: string[]): Promise<Array<number[
     return results;
   }
 
-  // 2. Try Gemini embedding if not in temporary embedding cooldown
+  // Load user Gemini keys if provided
+  let userGeminiKeys = options?.userKeys;
+  if (options?.userId && !userGeminiKeys) {
+    try {
+      userGeminiKeys = await getUserApiKeys(options.userId, 'gemini');
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. Try Gemini embedding if not in temporary embedding cooldown (or user has custom key)
   const now = Date.now();
-  if (now >= geminiEmbeddingCooldownUntil && !isProviderBlocked('gemini')) {
+  const hasUserGemini = Boolean(userGeminiKeys && userGeminiKeys.length > 0);
+  if ((now >= geminiEmbeddingCooldownUntil && !isProviderBlocked('gemini')) || hasUserGemini) {
     try {
       // Process in small batches of 6 with gentle pacing to respect free-tier 100 RPM quota
       for (let i = 0; i < uncachedIndices.length; i += 6) {
@@ -530,7 +547,7 @@ export async function generateEmbeddings(texts: string[]): Promise<Array<number[
             }
           });
           return await Promise.all(batchPromises);
-        });
+        }, { userKeys: userGeminiKeys });
 
         batchRes.forEach((vec, bIdx) => {
           const originalIdx = batchIndices[bIdx];
@@ -896,4 +913,3 @@ export function formatChunksForPrompt(chunks: DocumentChunk[]): string {
     )
     .join('\n\n');
 }
-

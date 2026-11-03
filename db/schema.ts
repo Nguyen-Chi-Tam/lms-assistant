@@ -124,6 +124,21 @@ export const userCourses = pgTable('user_courses', {
   pk: primaryKey({ columns: [table.userId, table.moodleCourseId] }),
 }));
 
+// Bảng user_api_keys: Quản lý API Key người dùng tự cấp (BYOK)
+export const userApiKeys = pgTable('user_api_keys', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: integer('user_id')
+    .references(() => users.moodleUserId, { onDelete: 'cascade' })
+    .notNull(),
+  provider: varchar('provider', { length: 50 }).notNull(),
+  keyName: varchar('key_name', { length: 255 }),
+  encryptedApiKey: text('encrypted_api_key').notNull(),
+  encryptionIv: text('encryption_iv').notNull(),
+  authTag: text('auth_tag').notNull(),
+  // Newer keys are attempted before older keys (created_at DESC).
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // TypeScript types
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -158,19 +173,8 @@ export type NewEvent = typeof events.$inferInsert;
 export type UserCourse = typeof userCourses.$inferSelect;
 export type NewUserCourse = typeof userCourses.$inferInsert;
 
-// Bảng document_embeddings: Vector database pgvector cho tài liệu LMS
-export const documentEmbeddings = pgTable('document_embeddings', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  moodleCourseId: integer('moodle_course_id').notNull(),
-  documentTitle: varchar('document_title', { length: 255 }).notNull(),
-  pageNumber: integer('page_number'),
-  chunkText: text('chunk_text').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
-  moodleFileId: integer('moodle_file_id').notNull(),
-});
-
-export type DocumentEmbedding = typeof documentEmbeddings.$inferSelect;
-export type NewDocumentEmbedding = typeof documentEmbeddings.$inferInsert;
+export type UserApiKey = typeof userApiKeys.$inferSelect;
+export type NewUserApiKey = typeof userApiKeys.$inferInsert;
 
 // Bảng semantic_query_cache: Semantic Cache cho AI response theo môn học
 export const semanticQueryCache = pgTable('semantic_query_cache', {
@@ -185,5 +189,4 @@ export const semanticQueryCache = pgTable('semantic_query_cache', {
 
 export type SemanticQueryCache = typeof semanticQueryCache.$inferSelect;
 export type NewSemanticQueryCache = typeof semanticQueryCache.$inferInsert;
-
 

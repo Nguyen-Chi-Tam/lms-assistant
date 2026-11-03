@@ -1238,7 +1238,7 @@ export function InteractiveMindmap({
       await exportElementToPng(
         canvasRef.current,
         `${sanitizedName}_Mindmap_${orientation}`,
-        { cropToNodes: true, padding: 48, backgroundColor: '#0c0a1f' }
+        { cropToNodes: true, padding: 48, backgroundColor: '#140b10' }
       );
       notify('Đã tải ảnh PNG thành công!');
     } catch {
@@ -1406,8 +1406,8 @@ export function InteractiveMindmap({
             type="button"
             className="reconfigure-btn"
             style={{
-              background: orientation === 'vertical' ? 'rgba(56, 189, 248, 0.2)' : 'rgba(124, 58, 237, 0.2)',
-              borderColor: orientation === 'vertical' ? '#38bdf8' : '#8b5cf6',
+              background: orientation === 'vertical' ? 'rgba(56, 189, 248, 0.2)' : 'rgba(224, 86, 160, 0.2)',
+              borderColor: orientation === 'vertical' ? '#38bdf8' : '#f868c4',
               color: '#ffffff',
               fontWeight: 600,
               display: 'inline-flex',
@@ -1505,8 +1505,8 @@ export function InteractiveMindmap({
             type="button"
             className="reconfigure-btn"
             style={{
-              background: 'rgba(124, 58, 237, 0.25)',
-              borderColor: '#8b5cf6',
+              background: 'rgba(224, 86, 160, 0.25)',
+              borderColor: '#f868c4',
               color: '#ffffff',
               display: 'inline-flex',
               alignItems: 'center',
@@ -1590,7 +1590,7 @@ export function InteractiveMindmap({
             <defs>
               {BRANCH_PALETTES.map(p => (
                 <linearGradient key={`branchGradient-${p.id}`} id={`branchGradient-${p.id}`} x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity="1" />
+                  <stop offset="0%" stopColor="#f868c4" stopOpacity="1" />
                   <stop offset="100%" stopColor={p.main} stopOpacity="1" />
                 </linearGradient>
               ))}
@@ -1613,7 +1613,7 @@ export function InteractiveMindmap({
                     <path
                       d={pathD}
                       fill="none"
-                      stroke="#050314"
+                      stroke="#0e070c"
                       strokeWidth="5"
                       strokeLinecap="round"
                     />
@@ -1636,7 +1636,7 @@ export function InteractiveMindmap({
                       style={{ cursor: 'pointer' }}
                     >
                       <title>Nhấn để gỡ bỏ đường nối này</title>
-                      <circle cx={midX} cy={midY} r="9" fill="#181438" stroke="#38bdf8" strokeWidth="1.5" />
+                      <circle cx={midX} cy={midY} r="9" fill="#24111c" stroke="#38bdf8" strokeWidth="1.5" />
                       <text
                         x={midX}
                         y={midY + 3.5}
@@ -1654,7 +1654,7 @@ export function InteractiveMindmap({
 
               const strokeColor = conn.isFromRoot ? `url(#branchGradient-${palette.id})` : palette.main;
               const glowColor = palette.glow;
-              const startDotColor = conn.isFromRoot ? '#8b5cf6' : palette.main;
+              const startDotColor = conn.isFromRoot ? '#f868c4' : palette.main;
               const endDotColor = palette.main;
 
               return (
@@ -1663,7 +1663,7 @@ export function InteractiveMindmap({
                   <path
                     d={pathD}
                     fill="none"
-                    stroke="#050314"
+                    stroke="#0e070c"
                     strokeWidth="5.5"
                     strokeLinecap="round"
                   />
@@ -1731,10 +1731,10 @@ export function InteractiveMindmap({
                     node.depth === 0
                       ? undefined
                       : node.depth === 1
-                      ? '#181438'
+                      ? '#24111c'
                       : node.depth === 2
-                      ? '#141130'
-                      : '#120f28',
+                      ? '#1b1017'
+                      : '#1b1017',
                   zIndex: isDragging ? 60 : 10,
                   opacity: 1,
                 }}
@@ -1760,7 +1760,7 @@ export function InteractiveMindmap({
                       alignItems: 'center',
                       gap: '4px',
                       background: '#1a163a',
-                      border: '1px solid #7c3aed',
+                      border: '1px solid #e056a0',
                       borderRadius: '8px',
                       padding: '3px 6px',
                       boxShadow: '0 6px 18px rgba(0, 0, 0, 0.75)',
@@ -1777,8 +1777,8 @@ export function InteractiveMindmap({
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '3px',
-                        background: 'rgba(124, 58, 237, 0.3)',
-                        border: '1px solid rgba(139, 92, 246, 0.5)',
+                        background: 'rgba(224, 86, 160, 0.3)',
+                        border: '1px solid rgba(248, 104, 196, 0.5)',
                         color: '#ffffff',
                         fontSize: '11px',
                         fontWeight: 600,
@@ -1799,8 +1799,8 @@ export function InteractiveMindmap({
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '3px',
-                        background: 'rgba(124, 58, 237, 0.3)',
-                        border: '1px solid rgba(139, 92, 246, 0.5)',
+                        background: 'rgba(224, 86, 160, 0.3)',
+                        border: '1px solid rgba(248, 104, 196, 0.5)',
                         color: '#ffffff',
                         fontSize: '11px',
                         fontWeight: 600,
@@ -1821,8 +1821,8 @@ export function InteractiveMindmap({
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '3px',
-                        background: 'rgba(124, 58, 237, 0.3)',
-                        border: '1px solid rgba(139, 92, 246, 0.5)',
+                        background: 'rgba(224, 86, 160, 0.3)',
+                        border: '1px solid rgba(248, 104, 196, 0.5)',
                         color: '#ffffff',
                         fontSize: '11px',
                         fontWeight: 600,
@@ -1920,7 +1920,7 @@ export function InteractiveMindmap({
                       style={{
                         width: '100%',
                         background: '#0d0b21',
-                        border: '1.5px solid #8b5cf6',
+                        border: '1.5px solid #f868c4',
                         borderRadius: '6px',
                         color: '#f8fafc',
                         fontSize: '12.5px',
@@ -1930,7 +1930,7 @@ export function InteractiveMindmap({
                         resize: 'vertical',
                         minHeight: '46px',
                         outline: 'none',
-                        boxShadow: '0 0 12px rgba(139, 92, 246, 0.45)',
+                        boxShadow: '0 0 12px rgba(248, 104, 196, 0.45)',
                         boxSizing: 'border-box',
                         fontFamily: 'inherit',
                       }}
@@ -2043,9 +2043,9 @@ export function InteractiveMindmap({
                     <div
                       className="node-anchor right"
                       style={{
-                        backgroundColor: node.depth === 0 ? '#8b5cf6' : nodePalette.main,
+                        backgroundColor: node.depth === 0 ? '#f868c4' : nodePalette.main,
                         borderColor: '#ffffff',
-                        boxShadow: `0 0 6px ${node.depth === 0 ? 'rgba(139, 92, 246, 0.5)' : nodePalette.glow}`,
+                        boxShadow: `0 0 6px ${node.depth === 0 ? 'rgba(248, 104, 196, 0.5)' : nodePalette.glow}`,
                       }}
                     />
                   )
@@ -2054,9 +2054,9 @@ export function InteractiveMindmap({
                     <div
                       className="node-anchor bottom"
                       style={{
-                        backgroundColor: node.depth === 0 ? '#8b5cf6' : nodePalette.main,
+                        backgroundColor: node.depth === 0 ? '#f868c4' : nodePalette.main,
                         borderColor: '#ffffff',
-                        boxShadow: `0 0 6px ${node.depth === 0 ? 'rgba(139, 92, 246, 0.5)' : nodePalette.glow}`,
+                        boxShadow: `0 0 6px ${node.depth === 0 ? 'rgba(248, 104, 196, 0.5)' : nodePalette.glow}`,
                       }}
                     />
                   )

@@ -328,7 +328,7 @@ export function CourseSwitcher({
                 style={{
                   background: 'none',
                   border: 'none',
-                  color: '#818cf8',
+                  color: '#ff8ad4',
                   fontSize: '12px',
                   fontWeight: 500,
                   cursor: 'pointer',
@@ -339,8 +339,8 @@ export function CourseSwitcher({
                   borderRadius: '6px',
                   transition: 'color 0.2s',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.color = '#a5b4fc')}
-                onMouseLeave={e => (e.currentTarget.style.color = '#818cf8')}
+                onMouseEnter={e => (e.currentTarget.style.color = '#ffc2e8')}
+                onMouseLeave={e => (e.currentTarget.style.color = '#ff8ad4')}
               >
                 <LayoutGrid size={13} />
                 <span>Tất cả khóa học</span>

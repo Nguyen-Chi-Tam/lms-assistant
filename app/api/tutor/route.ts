@@ -17,14 +17,14 @@ import {
   getStoredCourseEmbeddings,
   getExistingCourseFileIds,
   vectorizeAndStoreLmsSource,
-  sweepOrphanedCourseEmbeddings,
   getDocumentTOC,
   hydrateChunksWithParentText,
   isWebOrTransientSource,
-} from '@/lib/supabase-vector';
+} from '@/lib/pinecone-vector';
 import { rerankChunksWithCohere } from '@/models/cohere';
 import { getLearningArtifacts } from '@/lib/learning-artifacts';
 import { getPersonalMaterials } from '@/lib/firebase-data';
+import { getUserApiKeys } from '@/lib/key-manager';
 import type { ExamResult, RagMode, CitationSource } from '@/app/types';
 import { findCachedAnswer, storeCachedAnswer, isPersonalQuery } from '@/lib/semantic-cache';
 import { stripFluff, COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
@@ -124,6 +124,13 @@ export async function POST(request: Request) {
         : sourceNames.map(name => ({ name }));
 
     const effectiveSourceNames = effectiveSources.map(s => s.name);
+
+    // BYOK: prioritize the acting user's own Gemini key for OCR/embeddings when available.
+    const userGeminiKeys = typeof userId === 'number' ? await getUserApiKeys(userId, 'gemini').catch(() => []) : [];
+    if (userGeminiKeys.length > 0) {
+      const maskedUserKeys = userGeminiKeys.map(k => `${k.slice(0, 6)}...${k.slice(-4)}`);
+      console.log(`[Gemini Pool] BYOK: user ${userId} personal Gemini key(s) in use: ${maskedUserKeys.join(', ')} (${userGeminiKeys.length} key(s)) - tried before the system pool.`);
+    }
 
     // ── RAG Stage 1: Intent Extraction & Query Reformulation via Groq (Silent Gatekeeper) ──
     // Convert verbose, rambling, or emotional student prompts into compact canonical search keywords
@@ -314,13 +321,19 @@ export async function POST(request: Request) {
     }
 
     if (moodleCourseId) {
-      try {
-        const artifacts = await getLearningArtifacts({
+      // PARALLEL CONTEXT HARVESTING: gọi song song learning artifacts + personal materials (Promise.allSettled) thay vì tuần tự await.
+      const [artifactsResult, matsResult] = await Promise.allSettled([
+        getLearningArtifacts({
           userId: Number(userId) || 4,
           moodleCourseId,
           limit: 10,
-        });
-        if (artifacts.length > 0) {
+        }),
+        getPersonalMaterials({ moodleCourseId, limit: 10 }),
+      ]);
+
+      if (artifactsResult.status === 'fulfilled') {
+        const artifacts = artifactsResult.value;
+        if (artifacts && artifacts.length > 0) {
           artifactContext = artifacts
             .slice(0, 5)
             .map((artifact, index) => {
@@ -329,19 +342,17 @@ export async function POST(request: Request) {
             })
             .join('\n');
         }
-      } catch (artifactErr) {
-        console.warn('Could not query learning artifacts in tutor:', artifactErr);
+      } else {
+        console.warn('Could not query learning artifacts in tutor:', artifactsResult.reason);
       }
-    }
 
-    if (moodleCourseId) {
-      try {
-        const mats = await getPersonalMaterials({ moodleCourseId, limit: 10 });
+      if (matsResult.status === 'fulfilled') {
+        const mats = matsResult.value;
         if (mats) {
           for (const mat of mats) {
             if (mat.storage_url && mat.title && !docMap.has(String(mat.title).toLowerCase())) {
               try {
-                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title));
+                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), { userKeys: userGeminiKeys });
                 if (text && text.length > 50) docMap.set(String(mat.title).toLowerCase(), text);
               } catch {
                 // ignore unavailable material
@@ -349,10 +360,9 @@ export async function POST(request: Request) {
             }
           }
         }
-      } catch (firebaseError) {
-        console.warn('Firebase personal_materials query in tutor:', firebaseError);
+      } else {
+        console.warn('Firebase personal_materials query in tutor:', matsResult.reason);
       }
-
     }
 
     // 1c. Prompt-Aware Metadata Filtering ("Judge the book by its cover")
@@ -363,18 +373,27 @@ export async function POST(request: Request) {
     const preFilteredSources = filterSourcesByPromptMetadata(effectiveSources, question);
 
     // Separate LMS Course Documents vs On-The-Fly In-Memory Sources (Web Links, Personal Uploads)
-    // Rule (Enterprise RAG): Web links, external articles, and student uploads MUST NEVER be stored into Supabase pgvector (0MB footprint).
+    // Rule (Enterprise RAG): Web links, external articles, and student uploads are transient.
     // They are parsed and chunked purely in-memory (On-The-Fly RAG) and filtered via Cohere Rerank.
     const studentSources = preFilteredSources.filter(isWebOrTransientSource);
     const lmsSources = preFilteredSources.filter(s => !isWebOrTransientSource(s));
 
-    // A. For LMS sources in Supabase pgvector:
+    // A. For LMS sources in Pinecone:
     let storedLmsChunks: DocumentChunk[] = [];
     if (moodleCourseId && lmsSources.length > 0) {
       try {
-        const existingLmsFileIds = await getExistingCourseFileIds(moodleCourseId);
+        const isSubset = preFilteredSources.length < effectiveSources.length;
 
-        // Files that need extraction & vectorization into Supabase
+        // PARALLEL RETRIEVAL: chạy song song 2 lệnh Pinecone độc lập (kiểm tra fileId đã có vector chưa + lấy toàn bộ stored vectors) để bỏ một full course-corpus round trip khỏi critical path trước khi ranking chunk / gọi LLM.
+        const [existingLmsFileIds, storedRetrievedChunks] = await Promise.all([
+          getExistingCourseFileIds(moodleCourseId),
+          getStoredCourseEmbeddings(moodleCourseId, {
+            docTitles: isSubset ? lmsSources.map(s => s.name) : undefined,
+          }),
+        ]);
+        storedLmsChunks = storedRetrievedChunks;
+
+        // Files that need extraction and vectorization into Pinecone
         const lmsToIngest = lmsSources.filter(src => {
           const fid = Number(src.fileId || src.moduleId);
           return fid && !existingLmsFileIds.has(fid);
@@ -385,7 +404,7 @@ export async function POST(request: Request) {
             lmsToIngest.map(async src => {
               if (!src.url) return;
               try {
-                const extractedText = await parseDocumentFromUrl(src.url, src.name);
+                const extractedText = await parseDocumentFromUrl(src.url, src.name, { userKeys: userGeminiKeys });
                 if (extractedText && extractedText.trim().length > 20) {
                   const fid = Number(src.fileId || src.moduleId) || 1;
                   await vectorizeAndStoreLmsSource({
@@ -410,21 +429,16 @@ export async function POST(request: Request) {
           );
         }
 
-        // Garbage collection / Sweep in background: clean up any orphaned Moodle vectors
-        const activeLmsFileIds = lmsSources
-          .map(s => Number(s.fileId || s.moduleId))
-          .filter(id => Boolean(id) && !isNaN(id));
-        if (activeLmsFileIds.length > 0) {
-          sweepOrphanedCourseEmbeddings(moodleCourseId, activeLmsFileIds).catch(() => {});
-        }
+        // NOTE: Do NOT sweep orphaned vectors here.
+        // This request only carries the sources the student selected for one question,
+        // not the full course file list. Sweeping against that partial list deletes
+        // embeddings of every other course document (and their parent texts).
+        // Garbage collection runs in the scheduled sync-moodle cron, which knows
+        // the complete Moodle course contents.
 
-        // Retrieve stored LMS vectors from Supabase
-        const isSubset = preFilteredSources.length < effectiveSources.length;
-        storedLmsChunks = await getStoredCourseEmbeddings(moodleCourseId, {
-          docTitles: isSubset ? lmsSources.map(s => s.name) : undefined,
-        });
+        // NOTE: Stored chunks were already retrieved concurrently above via Promise.all.
       } catch (lmsVecErr) {
-        console.warn('LMS pgvector retrieval note:', lmsVecErr);
+        console.warn('LMS Pinecone retrieval note:', lmsVecErr);
       }
     }
 
@@ -436,7 +450,7 @@ export async function POST(request: Request) {
       await Promise.allSettled(
         studentUrlsToFetch.map(async src => {
           try {
-            const extractedText = await parseDocumentFromUrl(src.url!, src.name);
+            const extractedText = await parseDocumentFromUrl(src.url!, src.name, { userKeys: userGeminiKeys });
             if (extractedText && extractedText.trim()) {
               docMap.set(src.name.toLowerCase(), extractedText);
             }
@@ -486,7 +500,7 @@ export async function POST(request: Request) {
       await Promise.allSettled(
         missingLmsSources.map(async src => {
           try {
-            const extractedText = await parseDocumentFromUrl(src.url!, src.name);
+            const extractedText = await parseDocumentFromUrl(src.url!, src.name, { userKeys: userGeminiKeys });
             if (extractedText && extractedText.trim()) {
               docMap.set(src.name.toLowerCase(), extractedText);
             }
@@ -534,7 +548,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Combine candidate chunks: Persistent pgvector chunks + In-memory student chunks
+    // Combine candidate chunks: Persistent Pinecone chunks + in-memory student chunks
     const allCandidateChunks: DocumentChunk[] = [...storedLmsChunks, ...indexedStudentChunks];
 
     // Detect structural / meta queries about the selected documents (TOC, chapters, overview, summary)
@@ -665,7 +679,7 @@ export async function POST(request: Request) {
             }
           }
 
-          // ── RAG Stage 2: Sharp Retrieval via Supabase pgvector & Cohere Rerank ──
+          // ── RAG Stage 2: Sharp Retrieval via Pinecone & Cohere Rerank ──
           // Băm vector & chấm điểm cosine + BM25 trên từ khóa cốt lõi (searchQuery) thay vì prompt nhiễu
           // Stage 1: Broad candidate collection (top 10 candidates)
           const broadCandidates = scoreAndSelectChunks(candidateChunks, searchQuery, {
@@ -676,7 +690,12 @@ export async function POST(request: Request) {
           });
 
           // Stage 2: Cross-Encoder Scanning via Cohere Rerank API (Dedicated Quota, Zero Chat Quota Burn)
-          if (broadCandidates.length > 1) {
+          // Fast-path: skip cross-encoder rerank when the top vector candidate is already
+          // highly confident (top score >= threshold) — saves a full Cohere API round trip +
+          // tokens for obvious queries without hurting answer quality.
+          const topCandidateScore = broadCandidates[0]?.similarityScore ?? 0;
+          const shouldSkipRerank = topCandidateScore >= (ragMode === 'creative' ? 0.85 : 0.90);
+          if (broadCandidates.length > 1 && !shouldSkipRerank) {
             try {
               const reranked = await rerankChunksWithCohere(searchQuery, broadCandidates, {
                 topN: 3,
@@ -691,6 +710,10 @@ export async function POST(request: Request) {
             } catch (rerankErr) {
               console.warn('[IELTS Scanning Gatekeeper] Cohere rerank skipped/error, using vector scoring:', rerankErr);
             }
+          } else if (broadCandidates.length > 0) {
+            // Fast-path: top vector candidate already highly confident -> skip rerank, use top chunks directly
+            console.log(`[IELTS Scanning Gatekeeper] Skipped Cohere rerank: topScore=${topCandidateScore.toFixed(3)} >= threshold (ragMode: ${ragMode})`);
+            relevantChunks = broadCandidates.slice(0, 3);
           }
 
           // Fallback if Cohere Rerank was unavailable: use Dynamic Top-K vector scoring on searchQuery
@@ -750,7 +773,7 @@ export async function POST(request: Request) {
     }
 
     // ── Circuit Breaker (Ngắt mạch logic từ vòng gửi xe cho Strict RAG) ──
-    // Trước khi gọi API của AI, kiểm tra mảng dữ liệu trả về từ Supabase pgvector / Cohere Rerank:
+    // Trước khi gọi API của AI, kiểm tra mảng dữ liệu trả về từ Pinecone / Cohere Rerank:
     // Nếu chunks.length === 0 hoặc điểm topScore dưới 0.5, hàm sẽ return luôn chuỗi:
     // "Tài liệu khóa học hiện tại không chứa thông tin này". LLM sẽ không bị gọi, tiết kiệm 100% token.
     const topScore = relevantChunks.length > 0
@@ -1029,6 +1052,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
             const streamResult = await generateTextStream(model, {
               system: systemInstruction,
               userPrompt,
+              userId: typeof userId === 'number' ? userId : undefined,
               history: history.slice(-6).map(msg => ({
                 role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
                 content: msg.text,
@@ -1129,7 +1153,10 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
                   question,
                 });
 
-            const responseModel = streamResult.modelName || streamResult.modelId || 'AI Assistant';
+            const responseModelBase = streamResult.modelName || streamResult.modelId || 'AI Assistant';
+            const responseModel = streamResult.keySource === 'byok'
+              ? `${responseModelBase} (BYOK)`
+              : responseModelBase;
             const responseProvider = streamResult.provider || 'auto';
 
             controller.enqueue(
@@ -1197,6 +1224,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
       const result = await generateText(model, {
         system: systemInstruction,
         userPrompt,
+        userId: typeof userId === 'number' ? userId : undefined,
         history: history.slice(-6).map(msg => ({
           role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: msg.text,
@@ -1215,6 +1243,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
       groundingMetadata = result.groundingMetadata || null;
       if (result.finishReason) resultFinishReason = result.finishReason;
       if (result.modelName) responseModel = result.modelName;
+      if (result.keySource === 'byok') responseModel += ' (BYOK)';
       if (result.provider) responseProvider = result.provider;
     } catch (err) {
       console.warn('AI generation failed:', err);

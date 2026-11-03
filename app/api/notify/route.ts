@@ -3,6 +3,17 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { adminMessaging } from '@/lib/firebase-admin';
 import { getSubmittedUserIdsForEvent, getEnrolledUserIdsFromMoodleDb, closeMoodlePool } from '@/lib/moodle-db';
 
+function parseAssignId(eventDetails?: string | null): number | null {
+  if (!eventDetails) return null;
+  try {
+    const parsed = JSON.parse(eventDetails) as { assignId?: number | string | null } | null;
+    const assignId = Number(parsed?.assignId);
+    return Number.isFinite(assignId) && assignId > 0 ? assignId : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -20,17 +31,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ success: false, error: 'Chưa cấu hình Supabase Admin' }, { status: 500 });
     }
 
-    // Tự động dọn dẹp sự kiện đã quá hạn (deliver_time < now)
-    try {
-      await supabaseAdmin.rpc('delete_expired_events');
-    } catch {
-      await supabaseAdmin.from('events').delete().lt('deliver_time', now.toISOString());
-    }
-
     const { data: upcomingEvents, error: eventsErr } = await supabaseAdmin
       .from('events')
       .select('*')
-      .gt('deliver_time', now.toISOString())
+      .gte('deliver_time', new Date(now.getTime() - 3 * 60 * 60 * 1000).toISOString())
       .lte('deliver_time', scanWindow)
       .order('deliver_time', { ascending: true });
 
@@ -67,7 +71,12 @@ export async function GET(request: Request) {
       const currentReminders = (ev.sent_reminders || []).map(Number).filter((n: number) => !isNaN(n));
 
       // Kiểm tra các mốc đã đến hạn (diffMinutes <= m)
-      const dueMilestones = currentReminders.filter((m: number) => diffMinutes <= m);
+      // Kiểm tra các mốc đã đến hạn bằng thời điểm chính xác (không dùng
+      // diffMinutes đã làm tròn, tránh gửi sớm tới ~59 giây và khiến sync
+      // tưởng mốc chưa gửi rồi thêm lại gây thông báo trùng).
+      const dueMilestones = currentReminders.filter(
+        (m: number) => deliverTime.getTime() - m * 60000 <= now.getTime()
+      );
 
       if (dueMilestones.length === 0) {
         details.push({
@@ -120,6 +129,14 @@ export async function GET(request: Request) {
         enrolledUserIds = (allUsers || []).map(u => Number(u.moodle_user_id)).filter(Boolean);
       }
 
+      // LOẠI BỎ TRIỆT ĐỂ GIÁO VIÊN: Bắt buộc chỉ giữ lại tài khoản có role = 'student'
+      const { data: studentUsers } = await supabaseAdmin
+        .from('users')
+        .select('moodle_user_id')
+        .eq('role', 'student');
+      const studentIdSet = new Set((studentUsers || []).map(u => Number(u.moodle_user_id)));
+      enrolledUserIds = enrolledUserIds.filter(id => studentIdSet.has(id));
+
       if (enrolledUserIds.length === 0) {
         details.push({
           eventId: ev.id,
@@ -161,12 +178,16 @@ export async function GET(request: Request) {
       let submittedUserIds = new Set<number>();
 
       // Yêu cầu 3: "LAZY CHECK" MySQL Moodle - Ai ĐÃ NỘP BÀI? (Chỉ áp dụng cho bài tập assign/due, không áp dụng cho Quiz trước giờ mở đề)
-      if (ev.event_type === 'assign' || ev.event_type === 'due') {
+      if (ev.event_type === 'assign' || ev.event_type === 'due' || ev.event_type === 'assignment') {
         submittedUserIds = await getSubmittedUserIdsForEvent(
           ev.moodle_event_id,
           targetUserIds,
           ev.moodle_course_id,
-          ev.title
+          ev.title,
+          null,
+          null,
+          deliverTime.getTime(),
+          parseAssignId(ev.event_details)
         );
 
         // LOẠI BỎ những người đã nộp bài khỏi danh sách nhận thông báo
@@ -297,4 +318,3 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
   }
 }
-

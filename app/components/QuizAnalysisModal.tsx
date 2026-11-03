@@ -113,15 +113,15 @@ export function QuizAnalysisModal({
       <div
         className="grade-history-modal"
         style={{
-          background: 'linear-gradient(145deg, #13121f, #0d0c15)',
-          border: '1px solid rgba(124, 109, 242, 0.35)',
+          background: 'linear-gradient(145deg, #1d0f17, #0e070c)',
+          border: '1px solid rgba(248, 104, 196, 0.35)',
           borderRadius: '18px',
           width: '100%',
           maxWidth: '860px',
           maxHeight: '82vh',
           display: 'flex',
           flexDirection: 'column',
-          boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.85), 0 0 35px rgba(124, 109, 242, 0.2)',
+          boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.85), 0 0 35px rgba(248, 104, 196, 0.2)',
           overflow: 'hidden',
           overscrollBehavior: 'contain',
           color: '#f3f2f8',
@@ -135,7 +135,7 @@ export function QuizAnalysisModal({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            background: 'rgba(124, 109, 242, 0.08)',
+            background: 'rgba(248, 104, 196, 0.08)',
             flexShrink: 0,
           }}
         >
@@ -145,11 +145,11 @@ export function QuizAnalysisModal({
                 width: '34px',
                 height: '34px',
                 borderRadius: '10px',
-                background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                background: 'linear-gradient(135deg, #f868c4, #ec4899)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 4px 14px rgba(139, 92, 246, 0.4)',
+                boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
                 flexShrink: 0,
               }}
             >
@@ -237,15 +237,15 @@ export function QuizAnalysisModal({
                   width: '46px',
                   height: '46px',
                   borderRadius: '50%',
-                  background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(236, 72, 153, 0.2))',
-                  border: '2px solid #8b5cf6',
+                  background: 'linear-gradient(135deg, rgba(248, 104, 196, 0.2), rgba(236, 72, 153, 0.2))',
+                  border: '2px solid #f868c4',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   animation: 'pulse 1.5s infinite',
                 }}
               >
-                <Sparkles size={22} color="#c084fc" />
+                <Sparkles size={22} color="#ff9dce" />
               </div>
               <h4 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
                 {loadingStage === 'fetching_saved'
@@ -262,13 +262,13 @@ export function QuizAnalysisModal({
                   style={{
                     margin: 0,
                     fontSize: '11.5px',
-                    color: '#a5b4fc',
+                    color: '#ffc2e8',
                     maxWidth: '400px',
                     lineHeight: 1.45,
                     padding: '7px 11px',
                     borderRadius: '9px',
-                    background: 'rgba(99, 102, 241, 0.1)',
-                    border: '1px solid rgba(129, 140, 248, 0.25)',
+                    background: 'rgba(248, 104, 196, 0.1)',
+                    border: '1px solid rgba(255, 138, 212, 0.25)',
                   }}
                 >
                   Bạn có thể ẩn cửa sổ này và tiếp tục làm việc khác. Hệ thống sẽ gửi thông báo đẩy ngay khi bản chẩn đoán hoàn tất.
@@ -500,8 +500,8 @@ export function QuizAnalysisModal({
                       width: '36px',
                       height: '36px',
                       borderRadius: '9px',
-                      background: 'rgba(168, 85, 247, 0.18)',
-                      color: '#c084fc',
+                      background: 'rgba(255, 122, 217, 0.18)',
+                      color: '#ff9dce',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -514,7 +514,7 @@ export function QuizAnalysisModal({
                     <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       Lỗ hổng phát hiện
                     </div>
-                    <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#c084fc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#ff9dce', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {(analysis.weakTopics || []).length} chủ đề cốt lõi
                     </div>
                   </div>
@@ -527,16 +527,16 @@ export function QuizAnalysisModal({
                   style={{
                     padding: '0.85rem 1.1rem',
                     borderRadius: '14px',
-                    background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(236, 72, 153, 0.08))',
-                    border: '1px solid rgba(139, 92, 246, 0.3)',
+                    background: 'linear-gradient(135deg, rgba(248, 104, 196, 0.12), rgba(236, 72, 153, 0.08))',
+                    border: '1px solid rgba(248, 104, 196, 0.3)',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '0.65rem',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Target size={15} color="#c084fc" />
-                    <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#d8b4fe', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    <Target size={15} color="#ff9dce" />
+                    <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#ffc2e8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                       Các chủ đề ngộ nhận & cần củng cố ngay (Detected Weak Concepts)
                     </span>
                   </div>
@@ -550,9 +550,9 @@ export function QuizAnalysisModal({
                           gap: '6px',
                           padding: '4px 10px',
                           borderRadius: '16px',
-                          background: 'rgba(139, 92, 246, 0.22)',
-                          border: '1px solid rgba(168, 85, 247, 0.45)',
-                          color: '#f3e8ff',
+                          background: 'rgba(248, 104, 196, 0.22)',
+                          border: '1px solid rgba(255, 122, 217, 0.45)',
+                          color: '#fff3fa',
                           fontSize: '11.5px',
                           fontWeight: 600,
                         }}
@@ -738,19 +738,19 @@ export function QuizAnalysisModal({
                               style={{
                                 padding: '7px 11px',
                                 borderRadius: '8px',
-                                background: 'rgba(139, 92, 246, 0.1)',
-                                border: '1px solid rgba(139, 92, 246, 0.25)',
+                                background: 'rgba(248, 104, 196, 0.1)',
+                                border: '1px solid rgba(248, 104, 196, 0.25)',
                                 display: 'flex',
                                 alignItems: 'flex-start',
                                 gap: '7px',
                                 fontSize: '12px',
-                                color: '#e9d5ff',
+                                color: '#ffe0f3',
                                 lineHeight: 1.45,
                               }}
                             >
-                              <Brain size={14} color="#c084fc" style={{ flexShrink: 0, marginTop: '2px' }} />
+                              <Brain size={14} color="#ff9dce" style={{ flexShrink: 0, marginTop: '2px' }} />
                               <div>
-                                <strong style={{ color: '#d8b4fe' }}>Chẩn đoán tư duy: </strong>
+                                <strong style={{ color: '#ffc2e8' }}>Chẩn đoán tư duy: </strong>
                                 <span>{q.diagnosedReason}</span>
                               </div>
                             </div>
@@ -860,8 +860,8 @@ export function QuizAnalysisModal({
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '7px',
-                background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
-                boxShadow: '0 4px 16px rgba(139, 92, 246, 0.4)',
+                background: 'linear-gradient(135deg, #f868c4, #ec4899)',
+                boxShadow: '0 4px 16px rgba(248, 104, 196, 0.4)',
                 cursor: 'pointer',
               }}
               title="Chọn phương pháp cải thiện điểm số và khắc phục lỗ hổng kiến thức"
@@ -885,11 +885,11 @@ export function QuizAnalysisModal({
                   bottom: 'calc(100% + 10px)',
                   right: 0,
                   width: '320px',
-                  background: 'linear-gradient(145deg, #181628, #100f1c)',
-                  border: '1px solid rgba(124, 109, 242, 0.4)',
+                  background: 'linear-gradient(145deg, #22111a, #10070e)',
+                  border: '1px solid rgba(248, 104, 196, 0.4)',
                   borderRadius: '14px',
                   padding: '8px',
-                  boxShadow: '0 15px 35px -5px rgba(0, 0, 0, 0.9), 0 0 25px rgba(124, 109, 242, 0.3)',
+                  boxShadow: '0 15px 35px -5px rgba(0, 0, 0, 0.9), 0 0 25px rgba(248, 104, 196, 0.3)',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '6px',
@@ -926,12 +926,12 @@ export function QuizAnalysisModal({
                       padding: '10px 12px',
                       borderRadius: '10px',
                       background: 'rgba(255, 255, 255, 0.03)',
-                      border: '1px solid rgba(124, 109, 242, 0.2)',
+                      border: '1px solid rgba(248, 104, 196, 0.2)',
                       cursor: 'pointer',
                       textAlign: 'left',
                       transition: 'all 0.15s ease',
                     }}
-                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(124, 109, 242, 0.2)')}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(248, 104, 196, 0.2)')}
                     onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)')}
                   >
                     <div
@@ -939,14 +939,14 @@ export function QuizAnalysisModal({
                         width: '32px',
                         height: '32px',
                         borderRadius: '8px',
-                        background: 'rgba(124, 109, 242, 0.25)',
+                        background: 'rgba(248, 104, 196, 0.25)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         flexShrink: 0,
                       }}
                     >
-                      <MessageSquare size={16} color="#c4b5fd" />
+                      <MessageSquare size={16} color="#ffc2e8" />
                     </div>
                     <div>
                       <strong style={{ display: 'block', fontSize: '12.5px', color: '#f8fafc', fontWeight: 700 }}>

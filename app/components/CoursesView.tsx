@@ -5,7 +5,7 @@ import { RotateCcw, Search } from 'lucide-react';
 import type { Course, MoodleData } from '@/app/types';
 import { CourseCard } from '@/app/components/CourseCard';
 
-export const defaultCourseColors = ['#6c5ce7', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
+export const defaultCourseColors = ['#e056a0', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
 
 export interface CoursesViewProps {
   moodle: MoodleData | null;
@@ -174,8 +174,8 @@ export function CoursesView({
             }}
             onFocus={e => {
               e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-              e.currentTarget.style.borderColor = 'rgba(124, 109, 242, 0.6)';
-              e.currentTarget.style.boxShadow = '0 0 0 3px rgba(124, 109, 242, 0.15)';
+              e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.6)';
+              e.currentTarget.style.boxShadow = '0 0 0 3px rgba(248, 104, 196, 0.15)';
             }}
             onBlur={e => {
               e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';

@@ -11,4 +11,6 @@ export * from './CourseTopBar';
 export * from './CoursesView';
 export * from './AuraBackground';
 export * from './ErrorBoundary';
+export * from './ByokSettingsModal';
+export * from './SiteFooter';
 

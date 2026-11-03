@@ -5,6 +5,7 @@ import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag';
 import { getLatestQuizAnalysis } from '@/lib/learning-artifacts';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import { stripFluff } from '@/lib/anti-fluff';
+import { getUserApiKeys } from '@/lib/key-manager';
 
 interface SourceItem {
   name: string;
@@ -83,6 +84,7 @@ export async function POST(request: Request) {
     const ragMode: 'strict' | 'hybrid' | 'creative' =
       body.ragMode || (body.allowExternalSource ? 'creative' : 'hybrid');
     const allowExternalSource = ragMode === 'creative';
+    const quizGeminiKeys = body.userId ? await getUserApiKeys(Number(body.userId), 'gemini').catch(() => []) : [];
 
     const effectiveSources: SourceItem[] =
       body.sources && body.sources.length > 0
@@ -103,7 +105,7 @@ export async function POST(request: Request) {
           for (const mat of mats) {
             if (mat.storage_url && mat.title && !docMap.has(String(mat.title).toLowerCase())) {
               try {
-                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title));
+                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), { userKeys: quizGeminiKeys });
                 if (text && text.length > 50) docMap.set(String(mat.title).toLowerCase(), text);
               } catch {
                 // ignore unavailable material
@@ -121,7 +123,7 @@ export async function POST(request: Request) {
       const lowerName = src.name.toLowerCase();
       if (!docMap.has(lowerName) && src.url) {
         try {
-          const extractedText = await parseDocumentFromUrl(src.url, src.name);
+          const extractedText = await parseDocumentFromUrl(src.url, src.name, { userKeys: quizGeminiKeys });
           if (extractedText && extractedText.trim()) {
             docMap.set(lowerName, extractedText);
           }
@@ -323,6 +325,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
       const result = await generateText(body.model, {
         system: 'Bạn là chuyên gia khảo thí và sư phạm đại học. Luôn đảm bảo tuyệt đối tính chính xác của câu hỏi, đáp án đúng và lời giải thích dựa trên sự thật lịch sử và khoa học, chống ảo giác 100%. Trả về đúng JSON schema.',
         userPrompt: prompt,
+        userId: body.userId ? Number(body.userId) : undefined,
         temperature: ragMode === 'strict' ? 0.0 : ragMode === 'hybrid' ? 0.3 : 0.7,
         topP: ragMode === 'strict' ? 0.001 : ragMode === 'hybrid' ? 0.7 : 0.9,
         jsonMode: true,
