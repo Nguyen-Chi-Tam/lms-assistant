@@ -3609,7 +3609,7 @@ function CourseDetailContent() {
                       placeholder={`Đặt câu hỏi về ${activeCourse.name} từ các tài liệu đã chọn...`}
                     />
                     <div className="chat-compose-footer">
-                      <div className="chat-compose-chips">                        
+                      <>
                         {/* 3-State RAG Mode Selector Chip */}
                         <button
                           type="button"
@@ -3682,7 +3682,7 @@ function CourseDetailContent() {
                           <span className="chip-label-full">{answerStyle === 'concise' ? 'Nhanh / Trọng tâm' : 'Chi tiết / Chuyên sâu'}</span>
                           <span className="chip-label-short">{answerStyle === 'concise' ? 'Ngắn' : 'Chi tiết'}</span>
                         </button>
-                      </div>
+                      </>
 
                       {/* AI Model Selector & Healthcheck (CHỈ HIỂN THỊ VỚI GIẢNG VIÊN ĐỂ TEST / HEALTHCHECK) */}
                       {isTeacherCourse && (
@@ -3699,7 +3699,7 @@ function CourseDetailContent() {
                           className="model-selector-chip"
                           title="Chọn model AI để kiểm tra kết nối và độ nhạy"
                           style={{
-                            height: '28px',
+                            height: '32px',
                             fontSize: '11px',
                             fontWeight: 600,
                             borderRadius: '8px',
@@ -3786,8 +3786,8 @@ function CourseDetailContent() {
                       notify={notify}
                     />
                   ) : (
-                    <div className={`artifact-browser ${showArtifactList ? 'with-list' : 'focus-mode'}`}>
-                      {(artifactsMap[tool] || []).length > 0 && showArtifactList && (
+                    <div className={`artifact-browser ${!artifactLoading && showArtifactList ? 'with-list' : 'focus-mode'}`}>
+                      {(artifactsMap[tool] || []).length > 0 && !artifactLoading && showArtifactList && (
                         <aside className="artifact-list" aria-label="Danh sách học liệu đã lưu">
                           <div className="artifact-list-heading">
                             <span>Học liệu đã lưu</span>

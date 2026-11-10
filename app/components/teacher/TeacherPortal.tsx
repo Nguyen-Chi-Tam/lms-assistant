@@ -3074,8 +3074,7 @@ export function TeacherPortal({
                     placeholder={`Nhập yêu cầu: soạn câu hỏi thi, lập giáo án, tóm tắt kiến thức hoặc phân tích môn ${curCourseTitle}...`}
                   />
                   <div className="chat-compose-footer">
-                    <div className="chat-compose-chips">
-                      {/* 3-State RAG Mode Chip */}
+                    {/* 3-State RAG Mode Chip */}
                       <button
                         type="button"
                         onClick={() => {
@@ -3138,7 +3137,6 @@ export function TeacherPortal({
                         <span className="chip-label-full">{answerStyle === 'concise' ? 'Nhanh / Trọng tâm' : 'Chi tiết / Chuyên sâu'}</span>
                         <span className="chip-label-short">{answerStyle === 'concise' ? 'Ngắn' : 'Chi tiết'}</span>
                       </button>
-                    </div>
 
                     {/* AI Model Selector: In same row on desktop, full width row 2 on mobile */}
                     <select
@@ -3154,10 +3152,6 @@ export function TeacherPortal({
                       className="model-selector-chip"
                       title="[Healthcheck] Chọn model AI để kiểm tra kết nối & độ nhạy"
                       style={{
-                        height: '28px',
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        borderRadius: '8px',
                         background: assistantModel !== 'auto' ? 'rgba(248, 104, 196, 0.22)' : 'rgba(255, 255, 255, 0.05)',
                         borderColor: assistantModel !== 'auto' ? 'rgba(248, 104, 196, 0.5)' : 'rgba(255, 255, 255, 0.12)',
                         color: '#e2e8f0',
@@ -3243,8 +3237,8 @@ export function TeacherPortal({
                     savedArtifacts.find(item => item.id === selectedArtifactIds[tool]) ?? null;
 
                   return (
-                    <div className={`artifact-browser ${savedArtifacts.length > 0 ? 'with-list' : 'focus-mode'}`}>
-                      {savedArtifacts.length > 0 && (
+                    <div className={`artifact-browser ${!artifactLoading && savedArtifacts.length > 0 ? 'with-list' : 'focus-mode'}`}>
+                      {!artifactLoading && savedArtifacts.length > 0 && (
                         <aside className="artifact-list" aria-label="Danh sách học liệu đã lưu">
                           <div className="artifact-list-heading">
                             <span>Học liệu đã lưu</span>

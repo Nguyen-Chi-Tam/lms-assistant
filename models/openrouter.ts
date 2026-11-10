@@ -290,9 +290,9 @@ export async function callOpenRouter(
         const isAuth = errStr.includes('401') || errStr.includes('unauthorized') || errStr.includes('invalid_api_key');
         if (isQuota || isAuth) {
           userKeyBlockedUntil.set(uKey, Date.now() + 30000);
-          console.warn(`[BYOK OpenRouter] User key #${uIdx + 1} hit ${isAuth ? 'auth error' : 'quota limit'}. Failing over...`);
+          console.warn(`[BYOK OpenRouter] User key #${uIdx + 1} hit ${isAuth ? 'auth error' : 'quota limit'}. Trying the next BYOK key...`);
         } else {
-          console.warn(`[BYOK OpenRouter] User key #${uIdx + 1} failed (${uErr}). Failing over...`);
+          console.warn(`[BYOK OpenRouter] User key #${uIdx + 1} failed (${uErr}). Trying the next BYOK key...`);
         }
       }
     }
@@ -303,6 +303,7 @@ export async function callOpenRouter(
     if (usableUserKeys.length === 0) {
       throw new Error('No BYOK OpenRouter keys available for this user. Please add an OpenRouter API key (BYOK) before using a BYOK model.');
     }
+    console.warn(`[OpenRouter Pool] All ${usableUserKeys.length} BYOK key(s) failed; switching to system pool...`);
     throw new Error('All BYOK OpenRouter keys failed or are temporarily unavailable.');
   }
 
@@ -443,9 +444,9 @@ export async function callOpenRouterStream(
         const isAuth = errStr.includes('401') || errStr.includes('unauthorized') || errStr.includes('invalid_api_key');
         if (isQuota || isAuth) {
           userKeyBlockedUntil.set(uKey, Date.now() + 30000);
-          console.warn(`[BYOK OpenRouter Stream] User key #${uIdx + 1} hit ${isAuth ? 'auth error' : 'quota limit'}. Failing over...`);
+          console.warn(`[BYOK OpenRouter Stream] User key #${uIdx + 1} hit ${isAuth ? 'auth error' : 'quota limit'}. Trying the next BYOK key...`);
         } else {
-          console.warn(`[BYOK OpenRouter Stream] User key #${uIdx + 1} failed (${uErr}). Failing over...`);
+          console.warn(`[BYOK OpenRouter Stream] User key #${uIdx + 1} failed (${uErr}). Trying the next BYOK key...`);
         }
       }
     }
@@ -456,6 +457,7 @@ export async function callOpenRouterStream(
     if (usableUserKeys.length === 0) {
       throw new Error('No BYOK OpenRouter keys available for this user. Please add an OpenRouter API key (BYOK) before using a BYOK model.');
     }
+    console.warn(`[OpenRouter Pool] All ${usableUserKeys.length} BYOK key(s) failed; switching to system pool...`);
     throw new Error('All BYOK OpenRouter keys failed or are temporarily unavailable.');
   }
 

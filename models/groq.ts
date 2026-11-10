@@ -264,15 +264,18 @@ export async function executeWithGroqPool<T>(
 
         if (isQuota || isAuthError) {
           userKeyBlockedUntil.set(uKey, Date.now() + 30000);
-          console.warn(`[BYOK Groq] User key #${uIdx + 1} (${masked}) hit ${isAuthError ? 'auth error' : 'rate limit'}. Failing over to system pool...`);
+          console.warn(`[BYOK Groq] User key #${uIdx + 1} (${masked}) hit ${isAuthError ? 'auth error' : 'rate limit'}. Trying the next BYOK key...`);
         } else {
-          console.warn(`[BYOK Groq] User key #${uIdx + 1} (${masked}) failed (${userErr}). Failing over to system pool...`);
+          console.warn(`[BYOK Groq] User key #${uIdx + 1} (${masked}) failed (${userErr}). Trying the next BYOK key...`);
         }
       }
     }
   }
 
   if (!(optionsOrSignal instanceof AbortSignal) && optionsOrSignal?.allowSystemFallback === false) {
+    if (userKeys && userKeys.length > 0) {
+      console.warn(`[Groq Pool] All ${userKeys.length} BYOK key(s) failed; switching to system pool...`);
+    }
     throw new Error('All BYOK Groq keys failed or are temporarily unavailable.');
   }
 

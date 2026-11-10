@@ -44,6 +44,20 @@ import {
   APMIX_DEFAULT_MODEL,
   APMIX_BACKUP_MODELS,
 } from './apmix';
+import {
+  isAirforceAvailable,
+  callAirforce,
+  callAirforceStream,
+  AIRFORCE_DEFAULT_MODEL,
+  AIRFORCE_BACKUP_MODELS,
+} from './airforce';
+import {
+  isOrcaRouterAvailable,
+  callOrcaRouter,
+  callOrcaRouterStream,
+  ORCAROUTER_DEFAULT_MODEL,
+  ORCAROUTER_BACKUP_MODELS,
+} from './orcarouter';
 import { buildUniversalLanguageDirective } from '@/lib/language-detector';
 import { getUserApiKeysMap } from '@/lib/key-manager';
 
@@ -51,7 +65,7 @@ import { getUserApiKeysMap } from '@/lib/key-manager';
 // Types
 // ---------------------------------------------------------------------------
 
-export type AIProvider = 'cohere' | 'gemini' | 'groq' | 'anthropic' | 'datacurso' | 'cache' | 'openrouter' | 'cloudflare' | 'apmix';
+export type AIProvider = 'cohere' | 'gemini' | 'groq' | 'anthropic' | 'datacurso' | 'cache' | 'openrouter' | 'cloudflare' | 'apmix' | 'airforce' | 'orcarouter';
 
 export interface ModelOption {
   /** Format: "provider:modelId" */
@@ -132,6 +146,12 @@ export interface GenerateTextResult {
   finishReason?: 'stop' | 'length' | 'content_filter' | 'error' | string;
   keySource?: 'system' | 'byok';
 }
+
+type CascadeRoute = {
+  provider: AIProvider;
+  models: string[];
+  keyMode?: 'system' | 'byok';
+};
 
 // ---------------------------------------------------------------------------
 // Daily Quota Circuit Breaker
@@ -374,8 +394,7 @@ export function getAvailableModels(
   const apmixAvailable = isApmixAvailable() && !isProviderBlocked('apmix');
   const apmixModels = [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS];
   const apmixLabels: Record<string, string> = {
-    'claude-sonnet-4-6-free': 'APMIX Claude Sonnet 4.6 (Free)',
-    'gpt-6-luna-free': 'APMIX GPT-6 Luna (Free - Mở 09/10)',
+    'hy4-free': 'APMIX Hy4 Free',
   };
   const apmixOptions: ModelOption[] = apmixModels.map(m => ({
     id: `apmix:${m}`,
@@ -384,13 +403,42 @@ export function getAvailableModels(
     label: apmixLabels[m] || `APMIX ${m}`,
     available: apmixAvailable,
   }));
+  const airforceAvailable = isAirforceAvailable() && !isProviderBlocked('airforce');
+  const airforceModels = [AIRFORCE_DEFAULT_MODEL, ...AIRFORCE_BACKUP_MODELS];
+  const airforceLabels: Record<string, string> = {
+    'kimi-k2.7-code': 'Airforce Kimi K2.7 Code (Free)',
+    'llama-instant': 'Airforce Llama Instant (Free)',
+    'mistral-large-4': 'Airforce Mistral Large 4 (Free)',
+  };
+  const airforceOptions: ModelOption[] = airforceModels.map(modelId => ({
+    id: `airforce:${modelId}`,
+    provider: 'airforce',
+    modelId,
+    label: airforceLabels[modelId] || `API Airforce (${modelId})`,
+    available: airforceAvailable,
+  }));
+  const orcaRouterAvailable = isOrcaRouterAvailable() && !isProviderBlocked('orcarouter');
+  const orcaRouterModels = [ORCAROUTER_DEFAULT_MODEL, ...ORCAROUTER_BACKUP_MODELS];
+  const orcaRouterLabels: Record<string, string> = {
+    'deepseek/deepseek-v4-flash-free': 'OrcaRouter DeepSeek V4 Flash (Free)',
+    'deepseek/deepseek-v4.1-flash-free': 'OrcaRouter DeepSeek V4.1 Flash (Free)',
+    'z-ai/glm-5.3-flash-free': 'OrcaRouter GLM 5.3 Flash (Free)',
+    'tencent/hy4-preview-free': 'OrcaRouter Tencent Hy4 Preview (Free)',
+  };
+  const orcaRouterOptions: ModelOption[] = orcaRouterModels.map(modelId => ({
+    id: `orcarouter:${modelId}`,
+    provider: 'orcarouter',
+    modelId,
+    label: orcaRouterLabels[modelId] || `OrcaRouter ${modelId}`,
+    available: orcaRouterAvailable,
+  }));
 
   if (allowExternalSource) {
     // ⚔️ External ON: Gemini -> OpenRouter -> APMIX -> Groq -> Cloudflare -> Cohere
-    models.push(...geminiOptions, ...openRouterOptions, ...apmixOptions, ...groqOptions, ...cfOptions, ...cohereOptions);
+    models.push(...geminiOptions, ...openRouterOptions, ...apmixOptions, ...groqOptions, ...cfOptions, ...airforceOptions, ...orcaRouterOptions, ...cohereOptions);
   } else {
     // 🛡️ External OFF: Cohere -> Groq -> Cloudflare -> APMIX -> Gemini -> OpenRouter
-    models.push(...cohereOptions, ...groqOptions, ...cfOptions, ...apmixOptions, ...geminiOptions, ...openRouterOptions);
+    models.push(...cohereOptions, ...groqOptions, ...cfOptions, ...airforceOptions, ...orcaRouterOptions, ...apmixOptions, ...geminiOptions, ...openRouterOptions);
   }
 
   // if (anthropicAvailable) {
@@ -420,7 +468,7 @@ export function parseModelSelector(selector?: string): { provider: AIProvider; m
   const modeMatch = modelId.match(/#(system|byok)$/);
   const keyMode = modeMatch?.[1] as 'system' | 'byok' | undefined;
   if (modeMatch) modelId = modelId.slice(0, -modeMatch[0].length);
-  if (!['cohere', 'gemini', 'groq', 'anthropic', 'datacurso', 'cache', 'openrouter', 'cloudflare', 'apmix'].includes(provider) || !modelId) return null;
+  if (!['cohere', 'gemini', 'groq', 'anthropic', 'datacurso', 'cache', 'openrouter', 'cloudflare', 'apmix', 'airforce', 'orcarouter'].includes(provider) || !modelId) return null;
   if (provider === 'openrouter') {
     const normalizedModelId = normalizeOpenRouterModel(modelId);
     if (normalizedModelId !== modelId) {
@@ -463,9 +511,13 @@ export function getModelDisplayName(provider: AIProvider | string, modelId?: str
     return `OpenRouter (${modelId?.split('/').pop()?.replace(':free', '') || modelId})`;
   }
   if (provider === 'apmix') {
-    if (modelId?.includes('claude-sonnet')) return 'APMIX Claude Sonnet 4.6 (Free)';
-    if (modelId?.includes('gpt-6-luna')) return 'APMIX GPT-6 Luna (Free - Mở 09/10)';
-    return 'APMIX Claude Sonnet 4.6 (Free)';
+    return 'APMIX Hy4 Free';
+  }
+  if (provider === 'airforce') {
+    return `API Airforce (${modelId || AIRFORCE_DEFAULT_MODEL})`;
+  }
+  if (provider === 'orcarouter') {
+    return `OrcaRouter (${modelId || ORCAROUTER_DEFAULT_MODEL})`;
   }
   if (provider === 'anthropic') {
     if (modelId?.includes('haiku')) return 'Claude 3.5 Haiku';
@@ -487,7 +539,7 @@ async function callProvider(
   opts: GenerateTextOptions
 ): Promise<GenerateTextResult | null> {
   opts.signal?.throwIfAborted();
-  if (isProviderBlocked(provider)) {
+  if (opts.keyMode !== 'byok' && isProviderBlocked(provider)) {
     return null;
   }
   let keySource: 'system' | 'byok' | undefined;
@@ -520,6 +572,12 @@ async function callProvider(
       break;
     case 'apmix':
       res = await callApmix(modelId, providerOpts);
+      break;
+    case 'airforce':
+      res = await callAirforce(modelId, providerOpts);
+      break;
+    case 'orcarouter':
+      res = await callOrcaRouter(modelId, providerOpts);
       break;
     case 'anthropic':
       res = await callAnthropic(modelId, providerOpts);
@@ -642,8 +700,9 @@ HÃY TIẾP TỤC viết phần còn lại từ đúng điểm bị gián đoạ
  */
 export function getCascadeLineup(
   modeOrExternal?: 'strict' | 'hybrid' | 'creative' | boolean,
-  taskCategory: 'basic' | 'complex' = 'complex'
-): Array<{ provider: AIProvider; models: string[] }> {
+  taskCategory: 'basic' | 'complex' = 'complex',
+  userApiKeys?: GenerateTextOptions['userApiKeys']
+): CascadeRoute[] {
   let mode: 'strict' | 'hybrid' | 'creative' = 'hybrid';
   if (typeof modeOrExternal === 'string') {
     mode = modeOrExternal;
@@ -653,59 +712,54 @@ export function getCascadeLineup(
 
   const isLunaUnlocked = Date.now() >= new Date('2026-10-09T17:00:00+07:00').getTime();
 
-  // =========================================================================
-  // TRẬN ĐỊA 1: "Thí Chốt" & "Tầm Trung" (taskCategory === 'basic')
-  // Đặc điểm: Slide Cơ bản/Tiêu chuẩn, Flashcard, Quiz, hỏi đáp thuật ngữ ngắn (<4.000 tokens).
-  // =========================================================================
+  const providerModels: Record<AIProvider, string[]> = {
+    cohere: [COHERE_MODEL, ...COHERE_BACKUP_MODELS],
+    gemini: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS],
+    groq: [GROQ_MODEL, ...GROQ_BACKUP_MODELS],
+    anthropic: ANTHROPIC_MODELS.map(model => model.id),
+    datacurso: [GROQ_MODEL, ...GROQ_BACKUP_MODELS],
+    cache: [],
+    openrouter: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS],
+    cloudflare: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS],
+    apmix: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS],
+    airforce: [AIRFORCE_DEFAULT_MODEL, ...AIRFORCE_BACKUP_MODELS],
+    orcarouter: [ORCAROUTER_DEFAULT_MODEL, ...ORCAROUTER_BACKUP_MODELS],
+  };
+
+  const byokProviders: AIProvider[] = taskCategory === 'basic'
+    ? ['groq', 'gemini', 'openrouter']
+    : ['gemini', 'openrouter', 'groq'];
+  const hasByok = (provider: AIProvider): boolean => {
+    if (provider === 'gemini') return Boolean(userApiKeys?.gemini?.length);
+    if (provider === 'groq') return Boolean(userApiKeys?.groq?.length);
+    if (provider === 'openrouter') return Boolean(userApiKeys?.openrouter?.length);
+    return false;
+  };
+
+  const byokRoutes: CascadeRoute[] = byokProviders
+    .filter(hasByok)
+    .map(provider => ({ provider, models: providerModels[provider], keyMode: 'byok' }));
+
+  let systemProviders: AIProvider[];
   if (taskCategory === 'basic') {
     if (mode === 'strict') {
-      // Strict RAG (Temp = 0.0): Groq -> Cloudflare (Edge) -> APMIX -> OpenRouter -> Cohere -> Gemini
-      return [
-        { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
-        { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
-        { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
-        { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
-        { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
-        { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
-      ];
+      systemProviders = ['cloudflare', 'apmix', 'orcarouter', 'airforce', 'groq', 'cohere', 'openrouter', 'gemini'];
+    } else {
+      systemProviders = ['apmix', 'cloudflare', 'airforce', 'orcarouter', 'groq', 'openrouter', 'gemini', 'cohere'];
     }
-
-    // Hybrid & Creative: Groq -> APMIX (chia lửa token suy luận) -> Cloudflare -> OpenRouter -> Gemini -> Cohere
-    return [
-      { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
-      { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
-      { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
-      { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
-      { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
-      { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
-    ];
+  } else if (isLunaUnlocked) {
+    systemProviders = ['apmix', 'cloudflare', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'groq'];
+  } else {
+    systemProviders = ['apmix', 'cloudflare', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'groq'];
   }
 
-  // =========================================================================
-  // TRẬN ĐỊA 2: "Chỉ Huy" (taskCategory === 'complex')
-  // Đặc điểm: Slide Chuyên sâu, Mindmap cấu trúc lớn, URL, tổng hợp toàn khóa học (>=4.000 tokens).
-  // =========================================================================
-  if (isLunaUnlocked) {
-    // Kế hoạch sau 17:00 09/10/2026: gpt-6-luna-free mở khóa -> APMIX đứng tuyến đầu ngang hàng Gemini
-    return [
-      { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
-      { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
-      { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
-      { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
-      { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
-      { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
-    ];
-  }
+  const systemRoutes: CascadeRoute[] = systemProviders.map(provider => ({
+    provider,
+    models: providerModels[provider],
+    keyMode: 'system',
+  }));
 
-  // Hiện tại: Gemini (Context window khổng lồ) -> OpenRouter -> APMIX -> Cloudflare -> Groq -> Cohere
-  return [
-    { provider: 'gemini', models: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS] },
-    { provider: 'openrouter', models: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS] },
-    { provider: 'apmix', models: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS] },
-    { provider: 'cloudflare', models: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS] },
-    { provider: 'groq', models: [GROQ_MODEL, ...GROQ_BACKUP_MODELS] },
-    { provider: 'cohere', models: [COHERE_MODEL, ...COHERE_BACKUP_MODELS] },
-  ];
+  return [...byokRoutes, ...systemRoutes];
 }
 
 /**
@@ -776,17 +830,23 @@ export async function generateText(
   }
 
   const effectiveRagMode = opts.ragMode || (opts.allowExternalSource || opts.googleSearchGrounding ? 'creative' : 'hybrid');
-  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory);
+  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory, resolvedUserKeys);
 
-  for (const { provider, models } of cascadeProviders) {
+  for (const route of cascadeProviders) {
+    const { provider, models } = route;
+    const routeOpts: GenerateTextOptions = { ...effectiveOpts, keyMode: route.keyMode };
     opts.signal?.throwIfAborted();
     if (provider === 'cohere' && !isCohereAvailable()) {
       continue;
     }
-    if (provider === 'openrouter' && !isOpenRouterAvailable() && !(resolvedUserKeys?.openrouter && resolvedUserKeys.openrouter.length > 0)) {
+    if (provider === 'openrouter' && (route.keyMode === 'byok'
+      ? !resolvedUserKeys?.openrouter?.length
+      : !isOpenRouterAvailable())) {
       continue;
     }
-    if (provider === 'groq' && !getGroqClient() && !(resolvedUserKeys?.groq && resolvedUserKeys.groq.length > 0)) {
+    if (provider === 'groq' && (route.keyMode === 'byok'
+      ? !resolvedUserKeys?.groq?.length
+      : !getGroqClient())) {
       continue;
     }
     if (provider === 'cloudflare' && !isCloudflareAvailable()) {
@@ -795,18 +855,30 @@ export async function generateText(
     if (provider === 'apmix' && !isApmixAvailable()) {
       continue;
     }
-    if (isProviderBlocked(provider)) {
+    if (provider === 'airforce' && !isAirforceAvailable()) {
+      continue;
+    }
+    if (provider === 'orcarouter' && !isOrcaRouterAvailable()) {
+      continue;
+    }
+    if (route.keyMode !== 'byok' && isProviderBlocked(provider)) {
       continue;
     }
     for (const modelId of models) {
       try {
         opts.signal?.throwIfAborted();
-        const result = await callProvider(provider, modelId, effectiveOpts);
+        const result = await callProvider(provider, modelId, routeOpts);
         if (result?.text) return result;
+        if (route.keyMode === 'byok') {
+          break;
+        }
       } catch (err) {
         if (opts.signal?.aborted) throw err;
-        if (isQuotaExhaustedError(err)) {
+        if (route.keyMode !== 'byok' && isQuotaExhaustedError(err)) {
           blockProviderUntilTomorrow(provider, String(err));
+          break;
+        }
+        if (route.keyMode === 'byok') {
           break;
         }
         console.warn(`Auto cascade: ${provider}:${modelId} failed:`, err);
@@ -925,17 +997,23 @@ export async function generateTextStream(
   }
 
   const effectiveRagMode = opts.ragMode || (opts.allowExternalSource || opts.googleSearchGrounding ? 'creative' : 'hybrid');
-  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory);
+  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory, resolvedUserKeys);
 
-  for (const { provider, models } of cascadeProviders) {
+  for (const route of cascadeProviders) {
+    const { provider, models } = route;
+    const routeOpts: GenerateTextStreamOptions = { ...effectiveOpts, keyMode: route.keyMode };
     opts.signal?.throwIfAborted();
     if (provider === 'cohere' && !isCohereAvailable()) {
       continue;
     }
-    if (provider === 'openrouter' && !isOpenRouterAvailable() && !(resolvedUserKeys?.openrouter && resolvedUserKeys.openrouter.length > 0)) {
+    if (provider === 'openrouter' && (route.keyMode === 'byok'
+      ? !resolvedUserKeys?.openrouter?.length
+      : !isOpenRouterAvailable())) {
       continue;
     }
-    if (provider === 'groq' && !getGroqClient() && !(resolvedUserKeys?.groq && resolvedUserKeys.groq.length > 0)) {
+    if (provider === 'groq' && (route.keyMode === 'byok'
+      ? !resolvedUserKeys?.groq?.length
+      : !getGroqClient())) {
       continue;
     }
     if (provider === 'cloudflare' && !isCloudflareAvailable()) {
@@ -944,7 +1022,13 @@ export async function generateTextStream(
     if (provider === 'apmix' && !isApmixAvailable()) {
       continue;
     }
-    if (isProviderBlocked(provider)) {
+    if (provider === 'airforce' && !isAirforceAvailable()) {
+      continue;
+    }
+    if (provider === 'orcarouter' && !isOrcaRouterAvailable()) {
+      continue;
+    }
+    if (route.keyMode !== 'byok' && isProviderBlocked(provider)) {
       continue;
     }
     for (const modelId of models) {
@@ -959,7 +1043,7 @@ export async function generateTextStream(
           : opts.userPrompt;
 
         const currentOpts: GenerateTextStreamOptions = {
-          ...effectiveOpts,
+          ...routeOpts,
           userPrompt: currentPrompt,
           onDelta: wrappedOnDelta,
           onMeta: (meta) => {
@@ -985,10 +1069,16 @@ export async function generateTextStream(
             keySource: result?.keySource,
           };
         }
+        if (route.keyMode === 'byok') {
+          break;
+        }
       } catch (err) {
         if (opts.signal?.aborted) throw err;
-        if (isQuotaExhaustedError(err)) {
+        if (route.keyMode !== 'byok' && isQuotaExhaustedError(err)) {
           blockProviderUntilTomorrow(provider, String(err));
+          break;
+        }
+        if (route.keyMode === 'byok') {
           break;
         }
         console.warn(`Auto stream cascade: ${provider}:${modelId} failed (streamed ${accumulatedText.length} chars so far):`, err);
@@ -1045,7 +1135,7 @@ async function callProviderStream(
   opts: GenerateTextStreamOptions
 ): Promise<GenerateTextResult | null> {
   opts.signal?.throwIfAborted();
-  if (isProviderBlocked(provider)) {
+  if (opts.keyMode !== 'byok' && isProviderBlocked(provider)) {
     return null;
   }
   let keySource: 'system' | 'byok' | undefined;
@@ -1092,6 +1182,12 @@ async function callProviderStream(
       break;
     case 'apmix':
       res = await callApmixStream(modelId, wrappedOpts);
+      break;
+    case 'airforce':
+      res = await callAirforceStream(modelId, wrappedOpts);
+      break;
+    case 'orcarouter':
+      res = await callOrcaRouterStream(modelId, wrappedOpts);
       break;
     case 'anthropic':
       res = await callAnthropicStream(modelId, wrappedOpts);

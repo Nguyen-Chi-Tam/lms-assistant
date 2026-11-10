@@ -266,15 +266,18 @@ export async function executeWithGeminiPool<T>(
 
         if (isQuota || isAuthError) {
           userKeyBlockedUntil.set(uKey, Date.now() + 45000);
-          console.warn(`[BYOK Gemini] User key #${uIdx + 1} (${masked}) hit ${isAuthError ? 'auth error' : 'quota limit'}. Failing over to system pool...`);
+          console.warn(`[BYOK Gemini] User key #${uIdx + 1} (${masked}) hit ${isAuthError ? 'auth error' : 'quota limit'}. Trying the next BYOK key...`);
         } else {
-          console.warn(`[BYOK Gemini] User key #${uIdx + 1} (${masked}) failed (${userErr}). Failing over to system pool...`);
+          console.warn(`[BYOK Gemini] User key #${uIdx + 1} (${masked}) failed (${userErr}). Trying the next BYOK key...`);
         }
       }
     }
   }
 
   if (!(optionsOrSignal instanceof AbortSignal) && optionsOrSignal?.allowSystemFallback === false) {
+    if (userKeys && userKeys.length > 0) {
+      console.warn(`[Gemini Pool] All ${userKeys.length} BYOK key(s) failed; switching to system pool...`);
+    }
     throw new Error('All BYOK Gemini keys failed or are temporarily unavailable.');
   }
 
@@ -377,7 +380,7 @@ export function getGeminiPoolStats() {
   };
 }
 
-// Gemini 2.5 is no longer provisioned for new API users. Keep the stable
-// Flash model first and retain a Pro fallback for quality-sensitive requests.
+// Keep the stable Flash model first and retain a Pro fallback for
+// quality-sensitive requests.
 export const GEMINI_MODEL = 'gemini-3.8-flash';
 export const GEMINI_BACKUP_MODELS = ['gemini-3.1-pro-preview'];

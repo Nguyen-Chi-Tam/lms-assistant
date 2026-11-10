@@ -14,10 +14,8 @@ let lastApmixBaseUrl = '';
 
 export const APMIX_DEFAULT_BASE_URL = 'https://api.apmix.ai/v1';
 export const APMIX_DEFAULT_MODEL =
-  process.env.APMIX_MODEL || 'claude-sonnet-4-6-free';
-export const APMIX_BACKUP_MODELS = [
-  'gpt-6-luna-free',
-];
+  process.env.APMIX_MODEL || 'hy4-free';
+export const APMIX_BACKUP_MODELS: string[] = [];
 
 /**
  * Maps model aliases and legacy slugs to currently valid APMIX model identifiers.
@@ -25,16 +23,20 @@ export const APMIX_BACKUP_MODELS = [
 export function resolveApmixModel(modelId?: string): string {
   const trimmed = (modelId || '').trim();
   if (!trimmed || trimmed === 'auto') return APMIX_DEFAULT_MODEL;
-  if (trimmed.includes('claude-sonnet') || trimmed === 'claude-sonnet-4-6-free' || trimmed === 'anthropic/claude-sonnet-4-6-free') {
-    return 'claude-sonnet-4-6-free';
+  if (
+    trimmed === 'hy4' ||
+    trimmed === 'hy4-free' ||
+    trimmed === 'tencent/hy4-free' ||
+    trimmed.includes('claude-sonnet') ||
+    trimmed.includes('gpt-6')
+  ) {
+    return 'hy4-free';
   }
-  if (trimmed.includes('gpt-6') || trimmed === 'gpt-6-luna-free' || trimmed === 'openai/gpt-6-luna-free') {
-    return 'gpt-6-luna-free';
-  }
-  // If user selected legacy/removed model slugs, transparently map to active free Claude Sonnet
+  // If user selected a legacy or removed model slug, use the only free APMIX model.
   if (trimmed.includes('haiku') || trimmed.includes('gemini') || trimmed.includes('deepseek')) {
-    return 'claude-sonnet-4-6-free';
+    return 'hy4-free';
   }
+
   return trimmed;
 }
 
@@ -282,4 +284,3 @@ export async function callApmixStream(
     return null;
   }
 }
-

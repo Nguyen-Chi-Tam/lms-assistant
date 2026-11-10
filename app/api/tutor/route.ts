@@ -1034,6 +1034,11 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
       const readableStream = new ReadableStream({
         async start(controller) {
           let accumulatedText = '';
+          let streamClosed = false;
+          const safeEnqueue = (chunk: Uint8Array): void => {
+            if (streamClosed || controller.desiredSize === null) return;
+            controller.enqueue(chunk);
+          };
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let streamGroundingMetadata: any = null;
 
@@ -1052,6 +1057,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
             const streamResult = await generateTextStream(model, {
               system: systemInstruction,
               userPrompt,
+              signal: request.signal,
               userId: typeof userId === 'number' ? userId : undefined,
               history: history.slice(-6).map(msg => ({
                 role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
@@ -1067,7 +1073,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
               stop: effectiveStopSequences,
               ragMode,
               onMeta: (meta) => {
-                controller.enqueue(
+                safeEnqueue(
                   encoder.encode(
                     `data: ${JSON.stringify({
                       meta: true,
@@ -1084,7 +1090,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
                 if (accumulatedText.trim().startsWith('[OUT_OF_CONTEXT')) {
                   return;
                 }
-                controller.enqueue(
+                safeEnqueue(
                   encoder.encode(`data: ${JSON.stringify({ delta })}\n\n`)
                 );
               },
@@ -1093,7 +1099,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
             if (!accumulatedText && streamResult.text) {
               accumulatedText = streamResult.text;
               if (!accumulatedText.trim().startsWith('[OUT_OF_CONTEXT')) {
-                controller.enqueue(
+                safeEnqueue(
                   encoder.encode(`data: ${JSON.stringify({ delta: accumulatedText })}\n\n`)
                 );
               }
@@ -1115,7 +1121,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
               (accumulatedText.includes('[OUT_OF_CONTEXT]') || accumulatedText.includes('[MISSING_CONTEXT]'));
             if (isOutOfContext) {
               accumulatedText = outOfContextNotice;
-              controller.enqueue(
+              safeEnqueue(
                 encoder.encode(`data: ${JSON.stringify({ delta: outOfContextNotice, replace: true })}\n\n`)
               );
             } else if (accumulatedText.includes('[OUT_OF_CONTEXT]')) {
@@ -1126,7 +1132,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
               const stripped = stripFluff(accumulatedText);
               if (stripped !== accumulatedText) {
                 accumulatedText = stripped;
-                controller.enqueue(
+                safeEnqueue(
                   encoder.encode(`data: ${JSON.stringify({ delta: accumulatedText, replace: true })}\n\n`)
                 );
               }
@@ -1159,7 +1165,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
               : responseModelBase;
             const responseProvider = streamResult.provider || 'auto';
 
-            controller.enqueue(
+            safeEnqueue(
               encoder.encode(`data: ${JSON.stringify({
                 done: true,
                 fullText: accumulatedText,
@@ -1172,10 +1178,10 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
                 finishReason: streamResult.finishReason || 'stop',
               })}\n\n`)
             );
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            safeEnqueue(encoder.encode('data: [DONE]\n\n'));
           } catch (streamErr) {
             console.error('Stream generation error in tutor:', streamErr);
-            controller.enqueue(
+            safeEnqueue(
               encoder.encode(
                 `data: ${JSON.stringify({
                   error:
@@ -1186,7 +1192,10 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
               )
             );
           } finally {
-            controller.close();
+            streamClosed = true;
+            if (controller.desiredSize !== null) {
+              controller.close();
+            }
           }
         },
       });

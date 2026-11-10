@@ -12,8 +12,6 @@ const PDF_OCR_PROMPT = `Bạn là hệ thống trích xuất văn bản tài li�
 // temporarily overloaded (503) or slower for document OCR. OCR therefore tries a
 // short list of vision-capable models instead of betting everything on one model.
 const DEFAULT_VISION_MODELS = [
-  'gemini-3.6-flash',
-  'gemini-3.5-flash',
   'gemini-3.8-flash',
   'gemini-3.1-pro-preview',
 ];
@@ -240,7 +238,7 @@ async function ocrImageWithThirdParty(base64: string, mimeType: string): Promise
     if (apmix) {
       const completion = await apmix.chat.completions.create(
         {
-          model: 'claude-sonnet-4-6-free',
+          model: 'hy4-free',
           temperature: 0,
           max_tokens: 4096,
           messages: [{ role: 'user', content }],
