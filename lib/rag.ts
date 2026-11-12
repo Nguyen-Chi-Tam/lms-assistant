@@ -416,16 +416,34 @@ export function cosineSimilarity(vecA: number[], vecB: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+export const VI_EN_STOP_WORDS = new Set([
+  'và', 'là', 'của', 'có', 'cho', 'được', 'trong', 'với', 'các', 'những', 'này', 'đó', 'một',
+  'bạn', 'tôi', 'em', 'thầy', 'cô', 'biết', 'không', 'hỏi', 'gì', 'nào', 'sao', 'thế', 'thì',
+  'mà', 'như', 'về', 'ở', 'từ', 'đến', 'đã', 'đang', 'sẽ', 'lại', 'ra', 'vào', 'lên', 'xuống',
+  'rất', 'nhiều', 'ít', 'quá', 'hay', 'hoặc', 'nếu', 'nhưng', 'bởi', 'vì', 'do', 'nên', 'để',
+  'khi', 'lúc', 'ai', 'đâu', 'nhé', 'nha', 'ạ', 'vâng', 'dạ', 'ơi',
+  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'and', 'or', 'to', 'in', 'at', 'of', 'for',
+  'with', 'on', 'by', 'from', 'about', 'as', 'into', 'like', 'through', 'after', 'over', 'between',
+  'out', 'against', 'during', 'without', 'before', 'under', 'around', 'among', 'can', 'could',
+  'do', 'does', 'did', 'have', 'has', 'had', 'you', 'your', 'my', 'me', 'we', 'us', 'they', 'them',
+  'it', 'its', 'this', 'that', 'these', 'those', 'what', 'which', 'who', 'whom', 'whose', 'why', 'how',
+]);
+
 /**
- * Tokenizes text for BM25/TF-IDF similarity fallback
+ * Tokenizes text for BM25/TF-IDF similarity fallback, filtering out stopwords
+ * so conversational pleasantries don't artificially match unrelated documents.
  */
-function tokenize(text: string): string[] {
-  return text
+function tokenize(text: string, removeStopwords = true): string[] {
+  const tokens = text
     .toLowerCase()
     .normalize('NFC')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
     .filter(t => t.length > 1);
+
+  if (!removeStopwords) return tokens;
+  const filtered = tokens.filter(t => !VI_EN_STOP_WORDS.has(t));
+  return filtered.length > 0 ? filtered : tokens;
 }
 
 /**
@@ -809,15 +827,23 @@ export function scoreAndSelectChunks(
 
   const topScore = scoredChunks[0]?.similarityScore || 0;
 
+  // ── Layer 2: Hard RAG Kill-Switch ──
+  // If the highest scoring chunk does not meet the minimum similarity threshold,
+  // do NOT force any chunks into context. Return an empty array so Circuit Breaker triggers.
+  const minRequiredTopScore = options.minSimilarity ?? (queryEmbedding ? 0.65 : 0.35);
+  if (topScore < minRequiredTopScore || scoredChunks.length === 0) {
+    return [];
+  }
+
   // Dynamic Top-K Decision (with minimum floor of 3 chunks):
   // The old algorithm allowed 1 chunk at topScore >= 0.88, but a single high-scoring chunk
   // can be a tiny heading/title fragment (198 chars) with no actual content.
   // Fix: Always require at least minChunks (3) to guarantee surrounding context.
   let dynamicK = options.topK || 5;
   if (options.dynamicTopK !== false) {
-    if (topScore >= 0.88) {
+    if (topScore >= 0.85) {
       dynamicK = Math.max(minChunks, 3);
-      console.log(`[Dynamic Top-K] High precision: topScore = ${topScore} >= 0.88 -> Selected top ${dynamicK} chunks (min ${minChunks} enforced)`);
+      console.log(`[Dynamic Top-K] High precision: topScore = ${topScore} >= 0.85 -> Selected top ${dynamicK} chunks (min ${minChunks} enforced)`);
     } else if (topScore >= 0.80) {
       dynamicK = Math.max(minChunks, 3);
       console.log(`[Dynamic Top-K] High confidence: topScore = ${topScore} >= 0.80 -> Selected top ${dynamicK} chunks`);

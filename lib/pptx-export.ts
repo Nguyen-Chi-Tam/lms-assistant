@@ -1,6 +1,30 @@
 import JSZip from 'jszip';
 import PptxGenJS from 'pptxgenjs';
 
+export type SlideLayoutKind =
+  | 'bullets'
+  | 'comparison'
+  | 'timeline'
+  | 'process'
+  | 'stat'
+  | 'quote'
+  | 'cards'
+  | 'quadrant';
+
+export interface SlideVisualData {
+  leftLabel?: string;
+  leftPoints?: string[];
+  rightLabel?: string;
+  rightPoints?: string[];
+  steps?: Array<{ label: string; description?: string }>;
+  value?: string;
+  context?: string;
+  quote?: string;
+  author?: string;
+  cards?: Array<{ title: string; description?: string }>;
+  quadrants?: Array<{ title: string; description?: string }>;
+}
+
 export interface SlideItem {
   slideNumber?: number;
   title: string;
@@ -8,6 +32,8 @@ export interface SlideItem {
   bullets: string[];
   keyTakeaway?: string;
   notes?: string;
+  layout?: SlideLayoutKind;
+  visual?: SlideVisualData;
 }
 
 export interface SlideDeckData {
@@ -44,6 +70,8 @@ export async function exportSlidesToPptx(
     const isTitleSlide = index === 0;
     const title = slideData.title || `Trang ${index + 1}`;
     const subtitle = slideData.subtitle || (isTitleSlide ? courseTitle : '');
+    const layout = slideData.layout || (isTitleSlide ? 'quote' : 'bullets');
+    const visual = slideData.visual || {};
 
     slide.background = { color: isTitleSlide ? '0B0F19' : '0F172A' };
     slide.addShape(pptx.ShapeType.rect, {
@@ -87,6 +115,36 @@ export async function exportSlidesToPptx(
     }
 
     if (!isTitleSlide) {
+      if (layout === 'comparison' && (visual.leftLabel || visual.rightLabel)) {
+        addComparisonPptx(slide, visual);
+      } else if ((layout === 'timeline' || layout === 'process') && visual.steps?.length) {
+        addStepsPptx(slide, visual.steps);
+      } else if (layout === 'stat' && visual.value) {
+        slide.addText(visual.value, {
+          x: 0.8, y: 2.0, w: 4.2, h: 1.4, fontFace: 'Aptos Display',
+          fontSize: 42, bold: true, color: 'A594FD', margin: 0, fit: 'shrink',
+        });
+        slide.addText(visual.context || slideData.keyTakeaway || '', {
+          x: 5.2, y: 2.25, w: 7.2, h: 1.1, fontFace: 'Aptos',
+          fontSize: 20, color: 'F1F5F9', margin: 0, valign: 'mid', fit: 'shrink',
+        });
+      } else if (layout === 'quote' && visual.quote) {
+        slide.addText(`“${visual.quote}”`, {
+          x: 1.1, y: 2.0, w: 11.1, h: 1.5, fontFace: 'Aptos Display',
+          fontSize: 28, italic: true, color: 'F1F5F9', align: 'center',
+          valign: 'mid', margin: 0, fit: 'shrink',
+        });
+        if (visual.author) {
+          slide.addText(`— ${visual.author}`, {
+            x: 1.1, y: 3.75, w: 11.1, h: 0.3, fontFace: 'Aptos',
+            fontSize: 13, color: 'A594FD', align: 'center', margin: 0,
+          });
+        }
+      } else if (layout === 'cards' && visual.cards?.length) {
+        addCardsPptx(slide, visual.cards);
+      } else if (layout === 'quadrant' && visual.quadrants?.length) {
+        addCardsPptx(slide, visual.quadrants);
+      } else {
       const bulletText = (slideData.bullets || []).map(text => ({
         text: text.replace(/\*\*/g, ''),
         options: { bullet: { indent: 18 }, hanging: 4 },
@@ -108,6 +166,7 @@ export async function exportSlidesToPptx(
           fit: 'shrink',
         });
       }
+      }
 
       if (slideData.keyTakeaway) {
         slide.addText([
@@ -124,6 +183,92 @@ export async function exportSlidesToPptx(
           fit: 'shrink',
         });
       }
+    }
+
+    function addComparisonPptx(slide: PptxGenJS.Slide, visual: SlideVisualData): void {
+      const columns = [
+        { label: visual.leftLabel || 'A', points: visual.leftPoints || [] },
+        { label: visual.rightLabel || 'B', points: visual.rightPoints || [] },
+      ];
+      columns.forEach((column, index) => {
+        const x = index === 0 ? 0.8 : 6.85;
+        slide.addShape(PptxGenJS.ShapeType.roundRect, {
+          x, y: 2.0, w: 5.65, h: 3.45,
+          rectRadius: 0.08,
+          line: { color: index === 0 ? '7C6DF2' : '38BDF8', transparency: 35 },
+          fill: { color: index === 0 ? '241B43' : '102B3D', transparency: 8 },
+        });
+        slide.addText(column.label, {
+          x: x + 0.3, y: 2.3, w: 5.05, h: 0.35,
+          fontFace: 'Aptos Display', fontSize: 20, bold: true,
+          color: index === 0 ? 'A594FD' : '7DD3FC', margin: 0,
+        });
+        slide.addText(column.points.map(text => ({
+          text: text.replace(/\*\*/g, ''),
+          options: { bullet: { indent: 16 }, hanging: 4 },
+        })), {
+          x: x + 0.3, y: 2.85, w: 5.0, h: 2.2, fontFace: 'Aptos',
+          fontSize: 15, color: 'F1F5F9', breakLine: true, paraSpaceAfter: 10,
+          margin: 0, fit: 'shrink',
+        });
+      });
+    }
+
+    function addStepsPptx(
+      slide: PptxGenJS.Slide,
+      steps: Array<{ label: string; description?: string }>
+    ): void {
+      const width = Math.min(3.55, 11.8 / Math.max(steps.length, 1));
+      steps.slice(0, 4).forEach((step, index) => {
+        const x = 0.7 + index * (width + 0.18);
+        slide.addShape(PptxGenJS.ShapeType.ellipse, {
+          x: x + width / 2 - 0.22, y: 2.0, w: 0.44, h: 0.44,
+          line: { color: 'A594FD', transparency: 100 }, fill: { color: '7C6DF2' },
+        });
+        slide.addText(`${index + 1}`, {
+          x: x + width / 2 - 0.22, y: 2.08, w: 0.44, h: 0.15,
+          fontFace: 'Aptos', fontSize: 10, bold: true, color: 'FFFFFF',
+          align: 'center', margin: 0,
+        });
+        slide.addText(step.label, {
+          x, y: 2.65, w, h: 0.45, fontFace: 'Aptos Display',
+          fontSize: 16, bold: true, color: 'FFFFFF', align: 'center', margin: 0,
+          fit: 'shrink',
+        });
+        slide.addText(step.description || '', {
+          x, y: 3.2, w, h: 1.1, fontFace: 'Aptos', fontSize: 12,
+          color: 'CBD5E1', align: 'center', valign: 'top', margin: 0, fit: 'shrink',
+        });
+      });
+    }
+
+    function addCardsPptx(
+      slide: PptxGenJS.Slide,
+      cards: Array<{ title: string; description?: string }>
+    ): void {
+      const visibleCards = cards.slice(0, 4);
+      const columns = visibleCards.length <= 2 ? visibleCards.length : 2;
+      const cardWidth = columns === 1 ? 7.5 : 5.65;
+      visibleCards.forEach((card, index) => {
+        const row = Math.floor(index / columns);
+        const column = index % columns;
+        const x = columns === 1 ? 2.9 : 0.8 + column * 6.05;
+        const y = 1.9 + row * 2.15;
+        slide.addShape(PptxGenJS.ShapeType.roundRect, {
+          x, y, w: cardWidth, h: 1.7,
+          line: { color: 'A594FD', transparency: 45 },
+          fill: { color: '241B43', transparency: 5 },
+        });
+        slide.addText(card.title, {
+          x: x + 0.25, y: y + 0.25, w: cardWidth - 0.5, h: 0.3,
+          fontFace: 'Aptos Display', fontSize: 16, bold: true, color: 'A594FD',
+          margin: 0, fit: 'shrink',
+        });
+        slide.addText(card.description || '', {
+          x: x + 0.25, y: y + 0.7, w: cardWidth - 0.5, h: 0.7,
+          fontFace: 'Aptos', fontSize: 12, color: 'E2E8F0', margin: 0, fit: 'shrink',
+        });
+      });
     }
 
     slide.addText(`${courseTitle} · Trang ${index + 1} / ${slides.length}`, {
@@ -666,6 +811,17 @@ export function exportSlidesToHtml(deck: SlideDeckData, courseTitle: string): vo
     color: #cbd5e1;
     font-style: italic;
   }
+  .slide-visual { flex: 1; display: flex; align-items: center; }
+  .visual-grid { width: 100%; display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .visual-card { background: rgba(124,109,242,0.12); border: 1px solid rgba(165,148,253,0.35); border-radius: 12px; padding: 18px; }
+  .visual-card strong { color: #a594fd; display: block; margin-bottom: 10px; }
+  .visual-card p, .visual-card li { color: #e2e8f0; line-height: 1.45; }
+  .visual-stat { width: 100%; display: grid; grid-template-columns: 42% 1fr; gap: 24px; align-items: center; }
+  .visual-value { color: #a594fd; font-size: 64px; font-weight: 900; }
+  .visual-quote { width: 100%; padding: 28px; text-align: center; color: #f1f5f9; font-size: 28px; font-style: italic; line-height: 1.45; }
+  .visual-steps { width: 100%; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .visual-step { text-align: center; }
+  .visual-step .step-number { margin: 0 auto 10px; width: 28px; height: 28px; border-radius: 50%; background: #7c6df2; display: grid; place-items: center; font-weight: 800; }
   .slide-footer {
     display: flex;
     justify-content: space-between;
@@ -747,6 +903,7 @@ export function exportSlidesToHtml(deck: SlideDeckData, courseTitle: string): vo
       <h1 class="slide-title" id="slideTitle"></h1>
       <div class="slide-subtitle" id="slideSubtitle"></div>
     </div>
+    <div class="slide-visual" id="slideVisual"></div>
     <ul class="slide-bullets" id="slideBullets"></ul>
     <div class="slide-takeaway" id="slideTakeaway" style="display:none;"></div>
     <div class="slide-footer">
@@ -802,6 +959,37 @@ export function exportSlidesToHtml(deck: SlideDeckData, courseTitle: string): vo
 
     const bulletsList = document.getElementById('slideBullets');
     bulletsList.innerHTML = '';
+    const visualEl = document.getElementById('slideVisual');
+    visualEl.innerHTML = '';
+    const visual = slide.visual || {};
+    if (slide.layout === 'comparison' && (visual.leftLabel || visual.rightLabel)) {
+      visualEl.innerHTML = '<div class="visual-grid">' +
+        [['leftLabel', 'leftPoints'], ['rightLabel', 'rightPoints']].map(function(pair) {
+          var label = visual[pair[0]] || '';
+          var points = visual[pair[1]] || [];
+          return '<div class="visual-card"><strong>' + formatInlineMarkdown(label) + '</strong><ul>' +
+            points.map(function(point) { return '<li>' + formatInlineMarkdown(point) + '</li>'; }).join('') +
+            '</ul></div>';
+        }).join('') + '</div>';
+    } else if ((slide.layout === 'timeline' || slide.layout === 'process') && visual.steps && visual.steps.length) {
+      visualEl.innerHTML = '<div class="visual-steps">' + visual.steps.slice(0, 4).map(function(step, index) {
+        return '<div class="visual-step"><div class="step-number">' + (index + 1) + '</div><strong>' +
+          formatInlineMarkdown(step.label) + '</strong><p>' + formatInlineMarkdown(step.description || '') + '</p></div>';
+      }).join('') + '</div>';
+    } else if (slide.layout === 'stat' && visual.value) {
+      visualEl.innerHTML = '<div class="visual-stat"><div class="visual-value">' + formatInlineMarkdown(visual.value) +
+        '</div><div class="visual-card"><p>' + formatInlineMarkdown(visual.context || slide.keyTakeaway || '') + '</p></div></div>';
+    } else if (slide.layout === 'quote' && visual.quote) {
+      visualEl.innerHTML = '<div class="visual-quote">“' + formatInlineMarkdown(visual.quote) +
+        (visual.author ? '<br><small>— ' + formatInlineMarkdown(visual.author) + '</small>' : '') + '</div>';
+    } else if ((slide.layout === 'cards' || slide.layout === 'quadrant') && (visual.cards || visual.quadrants)) {
+      var cards = visual.cards || visual.quadrants;
+      visualEl.innerHTML = '<div class="visual-grid">' + cards.slice(0, 4).map(function(card) {
+        return '<div class="visual-card"><strong>' + formatInlineMarkdown(card.title) + '</strong><p>' +
+          formatInlineMarkdown(card.description || '') + '</p></div>';
+      }).join('') + '</div>';
+    }
+    if (visualEl.innerHTML) bulletsList.style.display = 'none'; else bulletsList.style.display = 'flex';
     (slide.bullets || []).forEach(bullet => {
       const li = document.createElement('li');
       li.innerHTML = formatInlineMarkdown(bullet);
@@ -914,4 +1102,3 @@ export function formatSlideDeckText(deck: SlideDeckData, courseTitle: string): s
 
   return out;
 }
-

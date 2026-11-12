@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
+import { parseApiResponse } from '@/lib/api-response';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -2373,8 +2374,7 @@ function CourseDetailContent() {
           model: selectedModel,
         }),
       });
-      const data = (await res.json()) as StudyToolResponse;
-      if (!res.ok) throw new Error(data.error);
+      const data = await parseApiResponse<StudyToolResponse>(res);
       if (artifactRequestIdRef.current !== requestId) return;
 
       const newArtifact: GeneratedArtifact = {

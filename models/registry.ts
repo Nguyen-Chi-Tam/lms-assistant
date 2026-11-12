@@ -743,14 +743,14 @@ export function getCascadeLineup(
   let systemProviders: AIProvider[];
   if (taskCategory === 'basic') {
     if (mode === 'strict') {
-      systemProviders = ['cloudflare', 'apmix', 'orcarouter', 'airforce', 'groq', 'cohere', 'openrouter', 'gemini'];
+      systemProviders = ['cloudflare', 'groq', 'orcarouter', 'airforce', 'cohere', 'openrouter', 'gemini', 'apmix'];
     } else {
-      systemProviders = ['apmix', 'cloudflare', 'airforce', 'orcarouter', 'groq', 'openrouter', 'gemini', 'cohere'];
+      systemProviders = ['cloudflare', 'groq', 'airforce', 'orcarouter', 'cohere', 'openrouter', 'gemini', 'apmix'];
     }
   } else if (isLunaUnlocked) {
-    systemProviders = ['apmix', 'cloudflare', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'groq'];
+    systemProviders = ['cloudflare', 'groq', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'apmix'];
   } else {
-    systemProviders = ['apmix', 'cloudflare', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'groq'];
+    systemProviders = ['cloudflare', 'groq', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'apmix'];
   }
 
   const systemRoutes: CascadeRoute[] = systemProviders.map(provider => ({
@@ -1266,6 +1266,10 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
       config.stopSequences = stopSequences;
     }
 
+    const timeoutSignal = opts.signal
+      ? AbortSignal.any([opts.signal, AbortSignal.timeout(8000)])
+      : AbortSignal.timeout(8000);
+
     return await executeWithGeminiPool(async (client) => {
       let response;
       try {
@@ -1273,17 +1277,17 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
           model: modelId,
           contents: formattedContents,
           config,
-          ...(opts.signal ? { signal: opts.signal } : {}),
+          ...(timeoutSignal ? { signal: timeoutSignal } : {}),
         });
       } catch (firstErr: any) {
         if (firstErr?.status === 503 || String(firstErr).includes('503')) {
           await new Promise(r => setTimeout(r, 1200));
-          opts.signal?.throwIfAborted();
+          timeoutSignal?.throwIfAborted();
           response = await client.models.generateContent({
             model: modelId,
             contents: formattedContents,
             config,
-            ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(timeoutSignal ? { signal: timeoutSignal } : {}),
           });
         } else {
           throw firstErr;
@@ -1303,7 +1307,7 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const groundingMetadata = candidate?.groundingMetadata || null;
       return { text, groundingMetadata, finishReason };
-    }, { signal: opts.signal, userKeys: opts.userApiKeys?.gemini, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
+    }, { signal: timeoutSignal, userKeys: opts.userApiKeys?.gemini, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
   } catch (err) {
     if (opts.signal?.aborted) throw err;
     if (isQuotaExhaustedError(err)) {
@@ -1575,12 +1579,16 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
       config.stopSequences = stopSequences;
     }
 
+    const timeoutSignal = opts.signal
+      ? AbortSignal.any([opts.signal, AbortSignal.timeout(10000)])
+      : AbortSignal.timeout(10000);
+
     return await executeWithGeminiPool(async (client) => {
       const responseStream = await client.models.generateContentStream({
         model: modelId,
         contents: formattedContents,
         config,
-        ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(timeoutSignal ? { signal: timeoutSignal } : {}),
       });
 
       let fullText = '';
@@ -1611,7 +1619,7 @@ async function callGeminiStream(modelId: string, opts: GenerateTextStreamOptions
       const trimmed = fullText.trim();
       if (!trimmed) return null;
       return { text: trimmed, groundingMetadata, finishReason };
-    }, { signal: opts.signal, userKeys: opts.userApiKeys?.gemini, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
+    }, { signal: timeoutSignal, userKeys: opts.userApiKeys?.gemini, allowSystemFallback: opts.keyMode !== 'byok', onKeySource: opts.onKeySource });
   } catch (err) {
     if (opts.signal?.aborted) throw err;
     if (isQuotaExhaustedError(err)) {

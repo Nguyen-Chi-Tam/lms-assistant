@@ -12,6 +12,7 @@ import type { RagMode } from '@/app/types';
 
 // AI study-tool generation can be slow; give the serverless function room to finish.
 export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
 
 interface SourceItem {
   name: string;
@@ -207,13 +208,13 @@ export async function POST(request: Request) {
     }
 
     if (compiledDocs.length > 0) {
-      const documentCharBudget = level === 'complex' ? 36000 : level === 'simple' ? 12000 : 25000;
+      const documentCharBudget = level === 'complex' ? 3500 : level === 'simple' ? 2500 : 3500;
       try {
         const retrievalBudget = level === 'complex'
-          ? { topK: 12, maxTotalChars: 30000 }
+        ? { topK: 8, maxTotalChars: 3500 }
           : level === 'simple'
-            ? { topK: 4, maxTotalChars: 9000 }
-            : { topK: 8, maxTotalChars: 18000 };
+          ? { topK: 4, maxTotalChars: 2500 }
+          : { topK: 6, maxTotalChars: 3500 };
         const relevantChunks = await retrieveRelevantChunks(topic, compiledDocs, {
           ...retrievalBudget,
           minSimilarity: 0.15,
@@ -222,14 +223,14 @@ export async function POST(request: Request) {
         if (relevantChunks.length > 0) {
           documentContext = formatChunksForPrompt(relevantChunks);
         } else {
-          const maxPerDoc = Math.max(2500, Math.floor(documentCharBudget / compiledDocs.length));
+          const maxPerDoc = Math.max(800, Math.floor(documentCharBudget / compiledDocs.length));
           documentContext = compiledDocs
             .map(doc => `=== NỘI DUNG TÀI LIỆU: "${doc.title}" ===\n${doc.text.slice(0, maxPerDoc)}`)
             .join('\n\n');
         }
       } catch (ragErr) {
         console.warn('RAG retrieval warning in study-tools:', ragErr);
-        const maxPerDoc = Math.max(2500, Math.floor(documentCharBudget / compiledDocs.length));
+        const maxPerDoc = Math.max(800, Math.floor(documentCharBudget / compiledDocs.length));
         documentContext = compiledDocs
           .map(doc => `=== NỘI DUNG TÀI LIỆU: "${doc.title}" ===\n${doc.text.slice(0, maxPerDoc)}`)
           .join('\n\n');
@@ -284,7 +285,9 @@ Tạo bộ slide tóm tắt nhanh gồm 4-5 trang slide trọng tâm. Mỗi slid
       "subtitle": "Phụ đề ngắn",
       "bullets": ["Ý chính 1", "Ý chính 2", "Ý chính 3"],
       "keyTakeaway": "Điểm cốt lõi cần nhớ",
-      "notes": "Lời dẫn ngắn gọn..."
+      "notes": "Lời dẫn ngắn gọn...",
+      "layout": "comparison",
+      "visual": { "leftLabel": "Khía cạnh A", "leftPoints": ["Ý A1", "Ý A2"], "rightLabel": "Khía cạnh B", "rightPoints": ["Ý B1", "Ý B2"] }
     }
   ]
 }`;
@@ -319,7 +322,9 @@ Tạo chính xác bộ slide bài giảng chuẩn mực (7-9 trang slide). Cấu
       "subtitle": "Phụ đề / Ngữ cảnh",
       "bullets": ["Ý chính 1", "Ý chính 2", "Ý chính 3"],
       "keyTakeaway": "Điểm cốt lõi cần nhớ",
-      "notes": "Lời giảng chuẩn mực cho giảng viên khi thuyết trình trang này..."
+      "notes": "Lời giảng chuẩn mực cho giảng viên khi thuyết trình trang này...",
+      "layout": "timeline",
+      "visual": { "steps": [{ "label": "Bước 1", "description": "Mô tả" }, { "label": "Bước 2", "description": "Mô tả" }, { "label": "Bước 3", "description": "Mô tả" }] }
     }
   ]
 }`;
@@ -370,7 +375,9 @@ Tạo một bộ slide bài giảng chuyên sâu (10-14 trang slide).
       "subtitle": "Ngữ cảnh chuyên sâu",
       "bullets": ["Luận điểm then chốt", "Cơ chế bản chất", "Đánh đổi thực tiễn"],
       "keyTakeaway": "Đúc kết kinh nghiệm cốt lõi",
-      "notes": "Lời giảng tâm huyết của giảng viên phân tích sâu cho sinh viên..."
+      "notes": "Lời giảng tâm huyết của giảng viên phân tích sâu cho sinh viên...",
+      "layout": "stat",
+      "visual": { "value": "3x", "context": "Một con số hoặc kết luận nổi bật kèm bối cảnh ngắn" }
     }
   ]
 }`;
@@ -392,6 +399,15 @@ Hãy tạo ${toolType} cho chủ đề: "${topic}".
 NGÔN NGỮ NỘI DUNG (LANGUAGE CONFORMANCE): Toàn bộ tiêu đề, các luận điểm, slide, thẻ ghi nhớ hoặc sơ đồ tư duy BẮT BUỘC dùng CHÍNH XÁC ngôn ngữ của chủ đề/yêu cầu (ví dụ: English nếu chủ đề bằng tiếng Anh, Español nếu bằng tiếng Tây Ban Nha...). Tiếng Việt luôn là ngôn ngữ mặc định nếu chủ đề bằng tiếng Việt hoặc không rõ ngôn ngữ.
 ${levelInstruction}
 ${ragInstruction}
+
+NGUYÊN TẮC ÁNH XẠ NGỮ NGHĨA SANG LAYOUT:
+- Mỗi slide phải chọn đúng một layout trong: bullets, comparison, timeline, process, stat, quote, cards, quadrant.
+- Không dùng cùng một layout cho quá 2 slide liên tiếp.
+- Dùng comparison khi có đối chiếu/đối lập; timeline hoặc process khi có trình tự; stat khi có số liệu/kết luận nổi bật; quote khi có định nghĩa hoặc phát biểu đáng nhớ; cards khi có 2-4 khái niệm song song; quadrant khi có ma trận 2x2.
+- Trường "bullets" vẫn phải có 2-4 luận điểm dự phòng. Trường "visual" phải khớp layout và chỉ dùng dữ liệu được tài liệu hỗ trợ.
+- Slide đầu thường dùng quote hoặc stat; slide cuối thường dùng cards hoặc bullets để tổng kết.
+- Với cards, dùng visual.cards là mảng 2-4 phần tử {title, description}; với quadrant, dùng visual.quadrants cùng cấu trúc.
+- Với comparison dùng leftLabel/leftPoints/rightLabel/rightPoints; với timeline/process dùng steps là mảng {label, description}; với stat dùng value/context; với quote dùng quote/author.
 
 BẮT BUỘC trả về đúng một JSON object duy nhất theo định dạng:
 ${shapeDesc}
@@ -426,13 +442,19 @@ Không bao gồm bất kỳ văn bản ngoài hay markdown.`;
           ? (toolType === 'slides' || toolType === 'slide' || toolType === 'presentation' ? 1200 : 900)
           : (toolType === 'slides' || toolType === 'slide' || toolType === 'presentation' ? 2600 : 2000);
 
+    const generationTimeout = AbortSignal.timeout(50_000);
+    const generationSignal = AbortSignal.any([request.signal, generationTimeout]);
+
     try {
       throwIfRequestAborted(request, requestId);
-      const result = await generateText(body.model, {
+      const requestedModel = body.model && body.model !== 'auto'
+        ? body.model
+        : 'gemini:gemini-2.5-flash';
+      const result = await generateText(requestedModel, {
         system: systemInstruction,
         userPrompt: prompt,
         userId: body.userId ? Number(body.userId) : undefined,
-        signal: request.signal,
+        signal: generationSignal,
         temperature: effectiveTemperature,
         topP: effectiveTopP,
         maxTokens: effectiveMaxTokens,
@@ -506,6 +528,12 @@ Không bao gồm bất kỳ văn bản ngoài hay markdown.`;
     } catch (err) {
       if (err instanceof RequestAbortedError || request.signal.aborted) {
         return new Response(null, { status: 499 });
+      }
+      if (generationTimeout.aborted) {
+        return NextResponse.json(
+          { error: 'Máy chủ xử lý quá thời gian cho phép. Hãy thử thu hẹp chủ đề hoặc chọn mức Cơ bản.' },
+          { status: 504 }
+        );
       }
       console.warn('AI study-tools generation failed:', err);
     }

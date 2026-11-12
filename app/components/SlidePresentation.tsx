@@ -355,6 +355,122 @@ export function SlidePresentation({
     border: '1px solid rgba(255, 255, 255, 0.12)',
   } : themeMap[theme];
 
+  const renderSlideBody = () => {
+    const layout = currentSlide?.layout || 'bullets';
+    const visual = currentSlide?.visual || {};
+    const panelStyle: React.CSSProperties = {
+      background: 'rgba(0,0,0,0.2)',
+      border: `1px solid ${themeStyles.accent}55`,
+      borderRadius: '12px',
+      padding: isFullscreen ? '18px' : '14px',
+    };
+
+    if (layout === 'comparison' && (visual.leftLabel || visual.rightLabel)) {
+      return (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          {[
+            { label: visual.leftLabel || 'A', points: visual.leftPoints || [] },
+            { label: visual.rightLabel || 'B', points: visual.rightPoints || [] },
+          ].map((column, index) => (
+            <div key={column.label} style={{ ...panelStyle, minHeight: '150px' }}>
+              <strong style={{ color: index === 0 ? themeStyles.accent : '#7dd3fc', fontSize: '1.05rem' }}>
+                {column.label}
+              </strong>
+              <ul style={{ margin: '12px 0 0', paddingLeft: '18px', color: themeStyles.textColor, lineHeight: 1.55 }}>
+                {column.points.map(point => <li key={point}>{renderMarkdownSemibold(point)}</li>)}
+              </ul>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if ((layout === 'timeline' || layout === 'process') && visual.steps?.length) {
+      return (
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(visual.steps.length, 4)}, 1fr)`, gap: '10px' }}>
+          {visual.steps.slice(0, 4).map((step, index) => (
+            <div key={`${step.label}-${index}`} style={{ ...panelStyle, textAlign: 'center', position: 'relative' }}>
+              <div style={{
+                width: '28px', height: '28px', borderRadius: '50%', margin: '0 auto 10px',
+                display: 'grid', placeItems: 'center', background: themeStyles.accent, color: '#fff', fontWeight: 800,
+              }}>{index + 1}</div>
+              <strong style={{ color: '#fff', display: 'block' }}>{step.label}</strong>
+              {step.description && <p style={{ color: themeStyles.textColor, fontSize: '0.85rem', lineHeight: 1.4, margin: '8px 0 0' }}>{step.description}</p>}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (layout === 'stat' && visual.value) {
+      return (
+        <div style={{ display: 'grid', gridTemplateColumns: '42% 1fr', gap: '20px', alignItems: 'center', minHeight: '150px' }}>
+          <div style={{ fontSize: isFullscreen ? '4.5rem' : '3.2rem', fontWeight: 900, color: themeStyles.accent, lineHeight: 1 }}>
+            {visual.value}
+          </div>
+          <p style={{ ...panelStyle, color: themeStyles.textColor, fontSize: isFullscreen ? '1.2rem' : '1rem', lineHeight: 1.5, margin: 0 }}>
+            {visual.context || currentSlide?.keyTakeaway}
+          </p>
+        </div>
+      );
+    }
+
+    if (layout === 'quote' && visual.quote) {
+      return (
+        <div style={{ ...panelStyle, textAlign: 'center', padding: isFullscreen ? '34px' : '26px' }}>
+          <div style={{ fontSize: isFullscreen ? '2rem' : '1.45rem', color: '#f1f5f9', fontStyle: 'italic', lineHeight: 1.45 }}>
+            “{renderMarkdownSemibold(visual.quote)}”
+          </div>
+          {visual.author && <div style={{ color: themeStyles.accent, marginTop: '14px', fontWeight: 700 }}>— {visual.author}</div>}
+        </div>
+      );
+    }
+
+    const cardItems = layout === 'quadrant' ? visual.quadrants : visual.cards;
+    if ((layout === 'cards' || layout === 'quadrant') && cardItems?.length) {
+      return (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px' }}>
+          {cardItems.slice(0, 4).map(card => (
+            <div key={card.title} style={panelStyle}>
+              <strong style={{ color: themeStyles.accent }}>{card.title}</strong>
+              {card.description && <p style={{ margin: '8px 0 0', color: themeStyles.textColor, lineHeight: 1.45 }}>{card.description}</p>}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    return (
+      <ul
+        style={{
+          listStyle: 'none',
+          padding: 0,
+          margin: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: isFullscreen ? '14px' : '9px',
+        }}
+      >
+        {(currentSlide?.bullets || []).map((bullet, bIdx) => (
+          <li
+            key={bIdx}
+            style={{
+              fontSize: isFullscreen ? '1.25rem' : '0.98rem',
+              lineHeight: 1.45,
+              color: themeStyles.textColor,
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '10px',
+            }}
+          >
+            <span style={{ color: themeStyles.accent, fontSize: '1.2rem', lineHeight: '1', marginTop: '1px' }}>•</span>
+            <span>{renderMarkdownSemibold(bullet)}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
   return (
     <div
       ref={containerRef}
@@ -751,43 +867,7 @@ export function SlidePresentation({
               )}
             </div>
 
-            {/* Bullet Points */}
-            <ul
-              style={{
-                listStyle: 'none',
-                padding: 0,
-                margin: 0,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: isFullscreen ? '14px' : '9px',
-              }}
-            >
-              {(currentSlide?.bullets || []).map((bullet, bIdx) => (
-                <li
-                  key={bIdx}
-                  style={{
-                    fontSize: isFullscreen ? '1.25rem' : '0.98rem',
-                    lineHeight: 1.45,
-                    color: themeStyles.textColor,
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '10px',
-                  }}
-                >
-                  <span
-                    style={{
-                      color: themeStyles.accent,
-                      fontSize: '1.2rem',
-                      lineHeight: '1',
-                      marginTop: '1px',
-                    }}
-                  >
-                    •
-                  </span>
-                  <span>{renderMarkdownSemibold(bullet)}</span>
-                </li>
-              ))}
-            </ul>
+            {renderSlideBody()}
 
             {/* Key Takeaway Callout */}
             {currentSlide?.keyTakeaway && (
@@ -1089,4 +1169,3 @@ export function SlidePresentation({
     </div>
   );
 }
-

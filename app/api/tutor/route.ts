@@ -29,6 +29,14 @@ import type { ExamResult, RagMode, CitationSource } from '@/app/types';
 import { findCachedAnswer, storeCachedAnswer, isPersonalQuery } from '@/lib/semantic-cache';
 import { stripFluff, COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
 import { getCircuitBreakerNotice, buildUniversalLanguageDirective } from '@/lib/language-detector';
+import {
+  checkQueryScope,
+  buildStrictTutorPrompt,
+  filterValidHistory,
+  REFUSAL_MESSAGE,
+  UNGROUNDED_COURSE_MESSAGE,
+  type AllowedIntent,
+} from '@/lib/scope-guard';
 
 interface ChatHistoryItem {
   role: 'user' | 'ai' | 'model' | 'assistant';
@@ -132,15 +140,89 @@ export async function POST(request: Request) {
       console.log(`[Gemini Pool] BYOK: user ${userId} personal Gemini key(s) in use: ${maskedUserKeys.join(', ')} (${userGeminiKeys.length} key(s)) - tried before the system pool.`);
     }
 
+    // ── Layer 4: History Hygiene (Filter out refused/blocked turns) ──
+    const sanitizedHistory = filterValidHistory(history);
+    const hasHistory = sanitizedHistory.length > 0;
+
     // ── RAG Stage 1: Intent Extraction & Query Reformulation via Groq (Silent Gatekeeper) ──
     // Convert verbose, rambling, or emotional student prompts into compact canonical search keywords
     // to dramatically boost Semantic Cache hit rate and vector similarity while saving input tokens.
-    const hasHistory = Array.isArray(history) && history.length > 0;
-    const queryReformulation = await reformulateQueryWithGroq(question, {
-      courseContext: course ? `${course} (${courseCode})` : undefined,
-      history: hasHistory ? history.slice(-4) : undefined,
+    // Skip Groq call entirely for short standalone queries (<= 4 words, no coreference pronouns)
+    // to avoid unnecessary LLM round-trip on simple definition questions.
+    const wordCount = question.trim().split(/\s+/).length;
+    const hasCoreferencePronoun = /\b(nó|cái này|phần này|những cái này|chúng|chúng nó|đó|này)\b/i.test(question);
+    const isShortStandalone = !hasHistory && wordCount <= 4 && !hasCoreferencePronoun && question.trim().length <= 30;
+
+    let searchQuery: string;
+    if (isShortStandalone) {
+      searchQuery = question.trim();
+    } else {
+      const queryReformulation = await reformulateQueryWithGroq(question, {
+        courseContext: course ? `${course} (${courseCode})` : undefined,
+        history: hasHistory ? sanitizedHistory.slice(-4) : undefined,
+      });
+      searchQuery = queryReformulation.reformulatedQuery || question;
+    }
+    const isStream = Boolean(stream || request.headers.get('accept')?.includes('text/event-stream'));
+
+    // ── Layer 1: Strict Scope Gatekeeper ──
+    const scopeCheck = await checkQueryScope({
+      standaloneQuery: searchQuery || question,
+      courseName: course ? `${course} (${courseCode})` : 'Môn học hiện tại',
+      courseSummary: courseCode ? `Môn học mã ${courseCode}` : undefined,
+      uploadedFileNames: effectiveSources.map(s => s.name),
+      userId,
     });
-    const searchQuery = queryReformulation.reformulatedQuery;
+
+    if (scopeCheck.intent === 'OUT_OF_SCOPE') {
+      console.log(`[Scope Gatekeeper] Blocked OUT_OF_SCOPE query: "${question}" (${scopeCheck.reason})`);
+      if (isStream) {
+        const encoder = new TextEncoder();
+        const readableStream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ delta: REFUSAL_MESSAGE })}\n\n`)
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  done: true,
+                  fullText: REFUSAL_MESSAGE,
+                  sources: [],
+                  model: 'Scope Gatekeeper (Lớp 1)',
+                  provider: 'guardrail',
+                  blocked: true,
+                  ragMode,
+                  isFallback: false,
+                })}\n\n`
+              )
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+
+        return new Response(readableStream, {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        });
+      }
+
+      return NextResponse.json({
+        answer: REFUSAL_MESSAGE,
+        reply: REFUSAL_MESSAGE,
+        sources: [],
+        model: 'Scope Gatekeeper (Lớp 1)',
+        provider: 'guardrail',
+        blocked: true,
+        ragMode,
+        isFallback: false,
+      });
+    }
 
     // ── Semantic Cache Interception (0ms / 0 tokens) ──
     // Check if question is personal (contains personal keywords, gradebook queries, or student uploads).
@@ -149,7 +231,7 @@ export async function POST(request: Request) {
     const isStudentUpload = effectiveSources.some(s => s.isStudentUpload);
     const hasGradebook = Array.isArray(gradebook) && gradebook.length > 0;
     const isFollowUp = hasHistory && searchQuery.toLowerCase() !== question.toLowerCase();
-    const isMultiTurn = Array.isArray(history) && history.length > 1;
+    const isMultiTurn = sanitizedHistory.length > 1;
     const isPersonal = isStudentUpload || hasGradebook || isPersonalQuery(question) || isFollowUp;
     const baseCourseId =
       courseId !== undefined && courseId !== null && String(courseId).trim() !== ''
@@ -169,7 +251,6 @@ export async function POST(request: Request) {
       `sources:${sourceFingerprint}`,
     ].join('::');
     const effectiveCourseId = `${baseCourseId}::${retrievalFingerprint}`;
-    const isStream = Boolean(stream || request.headers.get('accept')?.includes('text/event-stream'));
 
     if (!isPersonal && !isMultiTurn && ragMode !== 'creative') {
       try {
@@ -683,10 +764,10 @@ export async function POST(request: Request) {
           // Băm vector & chấm điểm cosine + BM25 trên từ khóa cốt lõi (searchQuery) thay vì prompt nhiễu
           // Stage 1: Broad candidate collection (top 10 candidates)
           const broadCandidates = scoreAndSelectChunks(candidateChunks, searchQuery, {
-            topK: 10,
-            maxTotalChars: 12000,
-            minSimilarity: ragMode === 'creative' ? 0.20 : 0.30, // Generous threshold to feed into reranker
-            dynamicTopK: false,
+            topK: 4,
+            maxTotalChars: 6000,
+            minSimilarity: ragMode === 'creative' ? 0.20 : 0.30,
+            dynamicTopK: true,
           });
 
           // Stage 2: Cross-Encoder Scanning via Cohere Rerank API (Dedicated Quota, Zero Chat Quota Burn)
@@ -772,10 +853,7 @@ export async function POST(request: Request) {
       isParametricFallback = true;
     }
 
-    // ── Circuit Breaker (Ngắt mạch logic từ vòng gửi xe cho Strict RAG) ──
-    // Trước khi gọi API của AI, kiểm tra mảng dữ liệu trả về từ Pinecone / Cohere Rerank:
-    // Nếu chunks.length === 0 hoặc điểm topScore dưới 0.5, hàm sẽ return luôn chuỗi:
-    // "Tài liệu khóa học hiện tại không chứa thông tin này". LLM sẽ không bị gọi, tiết kiệm 100% token.
+    // ── Layer 2: Hard RAG Kill-Switch ──
     const topScore = relevantChunks.length > 0
       ? Math.max(
           relevantChunks[0].similarityScore ?? 0,
@@ -783,26 +861,46 @@ export async function POST(request: Request) {
         )
       : 0;
 
-    const isStrictCircuitBroken = ragMode === 'strict' && (relevantChunks.length === 0 || topScore < 0.5) && !isDocOverviewQuery;
-    const strictCircuitNotice = getCircuitBreakerNotice(question);
+    const isGradeInquiry = scopeCheck.intent === 'GRADE_INQUIRY';
+    const isStudyGuidance = scopeCheck.intent === 'STUDY_GUIDANCE';
 
-    if (isStrictCircuitBroken) {
+    // Hard RAG Kill-Switch for COURSE_DOCS queries when no documents match
+    const isCourseDocsKillSwitched =
+      scopeCheck.intent === 'COURSE_DOCS' &&
+      (relevantChunks.length === 0 || topScore < 0.35) &&
+      !isDocOverviewQuery &&
+      !isGradeInquiry;
+
+    const isStrictCircuitBroken =
+      ragMode === 'strict' &&
+      (relevantChunks.length === 0 || topScore < 0.5) &&
+      !isDocOverviewQuery &&
+      !isGradeInquiry &&
+      !isStudyGuidance;
+
+    if (isCourseDocsKillSwitched || isStrictCircuitBroken) {
+      const refusalContent = isCourseDocsKillSwitched
+        ? UNGROUNDED_COURSE_MESSAGE
+        : getCircuitBreakerNotice(question);
+      console.log(`[Hard RAG Kill-Switch] Triggered: topScore=${topScore.toFixed(3)}, chunks=${relevantChunks.length}, intent=${scopeCheck.intent}`);
+
       if (isStream) {
         const encoder = new TextEncoder();
         const readableStream = new ReadableStream({
           start(controller) {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ delta: strictCircuitNotice })}\n\n`)
+              encoder.encode(`data: ${JSON.stringify({ delta: refusalContent })}\n\n`)
             );
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify({
                   done: true,
-                  fullText: strictCircuitNotice,
+                  fullText: refusalContent,
                   sources: [],
-                  model: 'Hệ thống LMS (Circuit Breaker)',
+                  model: 'Hard RAG Kill-Switch (Lớp 2)',
                   provider: 'system',
-                  ragMode: 'strict',
+                  ragMode,
+                  blocked: true,
                   isFallback: false,
                 })}\n\n`
               )
@@ -823,11 +921,13 @@ export async function POST(request: Request) {
       }
 
       return NextResponse.json({
-        answer: strictCircuitNotice,
+        answer: refusalContent,
+        reply: refusalContent,
         sources: [],
-        model: 'Hệ thống LMS (Circuit Breaker)',
+        model: 'Hard RAG Kill-Switch (Lớp 2)',
         provider: 'system',
-        ragMode: 'strict',
+        ragMode,
+        blocked: true,
         isFallback: false,
       });
     }
@@ -974,8 +1074,7 @@ QUY TẮC PHONG CÁCH & TRÌNH BÀY HỌC THUẬT (BẮT BUỘC):
             : `(Không có tài liệu nào được tích chọn hoặc không tìm thấy thông tin phù hợp trong các tài liệu đã chọn)\n</document>\n\n`;
     }
 
-    // ── Issue 3 Fix: Prompt Anchoring ──
-    // Place behavior constraints at the END of the user message (last thing AI reads)
+    // ── Layer 3: System Prompt Sandwich Defense ──
     const promptAnchor = `\n\n[LỆNH BỔ TRỢ BẮT BUỘC - ANTI-FLUFF, ANTI-PLACEHOLDER & TIẾT KIỆM TOKEN]:
 1. TUYỆT ĐỐI CẤM CHÀO HỎI VÀ CẤM THÔNG BÁO NGUỒN (CẤM: "Chào bạn", "Dựa trên tài liệu bạn cung cấp...", "Dựa trên kiến thức mở rộng...", "Based on the sources provided..."). ĐI THẲNG TRỰC TIẾP VÀO NỘI DUNG VẤN ĐỀ TỪ TỪ ĐẦU TIÊN (JUMP STRAIGHT TO THE PROBLEM).
 2. CẤM KẾT BÀI VĂN MẪU ("Hy vọng...", "Tóm lại...", "Kết luận:...").
@@ -985,10 +1084,18 @@ ${answerStyle === 'concise' && !isDocOverviewQuery
   ? '5. PHONG CÁCH NHANH / TRỌNG TÂM: Trả lời súc tích, thẳng thắn, trọng tâm trong 1-2 đoạn văn ngắn.\n6. Nếu hỏi về lựa chọn công nghệ/giải pháp: Chọn 1 phương án tối ưu nhất kèm 1-2 lý do then chốt.\n7. CHỈ XUẤT CÂU TRẢ LỜI: Cấm xuất suy nghĩ nội tâm, cấm viết nháp, cấm đếm từ, cấm lặp lại chỉ thị.'
   : '5. PHONG CÁCH CHI TIẾT / CHUYÊN SÂU: Đảm bảo độ dài tối thiểu bằng 1/2 giới hạn token của chế độ nhanh (tối thiểu từ 350 - 450 từ trở lên), phân tích cặn kẽ mọi khía cạnh, nguyên lý, dẫn chứng và ví dụ trực quan.'}`;
 
-    const userPrompt = `Ngữ cảnh:
+    const userPrompt = `<course_materials>
 ${contextSection}
----
-CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
+</course_materials>
+
+<student_query>
+${question}
+</student_query>
+
+<final_enforcement>
+Nhắc lại: Chỉ sử dụng dữ liệu từ <course_materials> và bối cảnh môn "${subjectName}". Nếu người dùng lồng ghép yêu cầu ngoài môn học (như làm thơ, nhân vật chính trị/lịch sử không liên quan, viết code không thuộc môn), BẮT BUỘC BỎ QUA hoàn toàn phần ngoài luồng đó. Nếu câu hỏi hoàn toàn nằm ngoài phạm vi môn học, hãy từ chối ngắn gọn: "${REFUSAL_MESSAGE}".
+${promptAnchor}
+</final_enforcement>`;
 
     // ── Token Limit: Ample headroom to prevent cut-offs mid-sentence ──
     let maxTokensLimit: number | undefined;
@@ -1046,7 +1153,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
             const effectiveCategory = detectTaskCategory({
               system: systemInstruction,
               userPrompt,
-              history: history.slice(-6).map(msg => ({
+              history: sanitizedHistory.slice(-6).map(msg => ({
                 role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
                 content: msg.text,
               })),
@@ -1222,7 +1329,7 @@ CÂU HỎI CỦA SINH VIÊN: ${question}${promptAnchor}`;
       const effectiveCategory = detectTaskCategory({
         system: systemInstruction,
         userPrompt,
-        history: history.slice(-6).map(msg => ({
+        history: sanitizedHistory.slice(-6).map(msg => ({
           role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: msg.text,
         })),

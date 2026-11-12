@@ -23,6 +23,14 @@ import { findCachedAnswer, storeCachedAnswer, isPersonalQuery } from '@/lib/sema
 import { reformulateQueryWithGroq } from '@/lib/query-reformulation';
 import { getUserApiKeys } from '@/lib/key-manager';
 import type { RagMode, CitationSource } from '@/app/types';
+import {
+  checkQueryScope,
+  buildStrictTutorPrompt,
+  filterValidHistory,
+  REFUSAL_MESSAGE,
+  UNGROUNDED_COURSE_MESSAGE,
+  type AllowedIntent,
+} from '@/lib/scope-guard';
 
 interface ChatHistoryItem {
   role: 'user' | 'ai' | 'model' | 'assistant';
@@ -129,15 +137,41 @@ export async function POST(request: Request) {
     const allowExternalSource = ragMode === 'creative';
     const moodleCourseId = Number(courseId) || undefined;
     const isManualModel = Boolean(model && model !== 'auto');
-    const hasHistory = Array.isArray(history) && history.length > 0;
+    // ── Layer 4: History Hygiene (Filter out refused/blocked turns) ──
+    const sanitizedHistory = filterValidHistory(history);
+    const hasHistory = sanitizedHistory.length > 0;
 
     // 0a. Intent Extraction & Contextual Query Reformulation for Multi-turn Conversation
     const queryReformulation = await reformulateQueryWithGroq(question, {
       courseContext: course ? `${course} (${courseCode})` : undefined,
-      history: hasHistory ? history.slice(-4) : undefined,
+      history: hasHistory ? sanitizedHistory.slice(-4) : undefined,
     });
     const searchQuery = queryReformulation.reformulatedQuery || question;
     const isFollowUp = hasHistory && searchQuery.toLowerCase() !== question.toLowerCase();
+
+    // ── Layer 1: Strict Scope Gatekeeper ──
+    const effectiveSources = Array.isArray(sources) ? sources : [];
+    const scopeCheck = await checkQueryScope({
+      standaloneQuery: searchQuery || question,
+      courseName: course ? `${course} (${courseCode})` : 'Môn học hiện tại',
+      courseSummary: courseCode ? `Môn học mã ${courseCode}` : undefined,
+      uploadedFileNames: effectiveSources.map(s => s.name),
+      userId,
+    });
+
+    if (scopeCheck.intent === 'OUT_OF_SCOPE') {
+      console.log(`[Teacher Assistant Scope Gatekeeper] Blocked OUT_OF_SCOPE query: "${question}" (${scopeCheck.reason})`);
+      return NextResponse.json({
+        answer: REFUSAL_MESSAGE,
+        reply: REFUSAL_MESSAGE,
+        sources: [],
+        cached: false,
+        ragMode,
+        blocked: true,
+        model: 'Scope Gatekeeper (Lớp 1)',
+        provider: 'guardrail',
+      });
+    }
 
     // 0b. Semantic Caching (Check duplicate queries for standalone questions; bypass for conversational follow-ups & creative mode)
     if (!isManualModel && !isPersonalQuery(question) && !isFollowUp && ragMode !== 'creative') {
@@ -166,7 +200,6 @@ export async function POST(request: Request) {
       }
     }
 
-    const effectiveSources = Array.isArray(sources) ? sources : [];
     const effectiveSourceNames = Array.isArray(sourceNames) && sourceNames.length > 0
       ? sourceNames
       : effectiveSources.map(s => s.name);
@@ -476,7 +509,7 @@ export async function POST(request: Request) {
         let relevantChunks = scoreAndSelectChunks(filteredCandidateChunks, searchQuery, {
           topK: 8,
           maxTotalChars: 20000,
-          minSimilarity: 0.10,
+          minSimilarity: ragMode === 'creative' ? 0.20 : 0.35,
         });
 
         const topScore = relevantChunks.length > 0
@@ -487,16 +520,34 @@ export async function POST(request: Request) {
             )
           : 0;
 
+        const isGradeInquiry = scopeCheck.intent === 'GRADE_INQUIRY';
+        const isStudyGuidance = scopeCheck.intent === 'STUDY_GUIDANCE';
+
+        // ── Layer 2: Hard RAG Kill-Switch for Teacher Assistant ──
+        const isCourseDocsKillSwitched =
+          scopeCheck.intent === 'COURSE_DOCS' &&
+          (relevantChunks.length === 0 || topScore < 0.35) &&
+          !isOverviewQuery &&
+          !hasInternalCourseData;
+
         // Strict Mode Circuit Breaker (Scored 0 relevant chunks or topScore < 0.5)
-        if (ragMode === 'strict' && (relevantChunks.length === 0 || topScore < 0.5) && !isOverviewQuery && !hasInternalCourseData) {
-          console.log(`[Teacher Assistant Circuit Breaker] topScore ${topScore} < 0.5 or 0 relevant chunks: "${question.slice(0, 50)}"`);
+        if (
+          isCourseDocsKillSwitched ||
+          (ragMode === 'strict' && (relevantChunks.length === 0 || topScore < 0.5) && !isOverviewQuery && !hasInternalCourseData && !isStudyGuidance)
+        ) {
+          const refusalContent = isCourseDocsKillSwitched
+            ? UNGROUNDED_COURSE_MESSAGE
+            : getCircuitBreakerNotice(question);
+          console.log(`[Teacher Assistant Hard Kill-Switch] topScore ${topScore} < threshold or 0 relevant chunks: "${question.slice(0, 50)}"`);
           return NextResponse.json({
-            answer: getCircuitBreakerNotice(question),
+            answer: refusalContent,
+            reply: refusalContent,
             sources: [],
             cached: false,
-            ragMode: 'strict',
+            ragMode,
+            blocked: true,
             isFallback: false,
-            model: 'Circuit Breaker (0 tokens)',
+            model: 'Hard RAG Kill-Switch (Lớp 2)',
             provider: 'guardrail',
           });
         }
@@ -505,9 +556,8 @@ export async function POST(request: Request) {
           isFallback = true;
         }
 
-        // If the question is pedagogical, overview, chapter-specific, or yielded few chunks:
-        // Guarantee lead and beginning chunks of each checked document are included!
-        if (isOverviewQuery || relevantChunks.length < 3) {
+        // Only pull beginning lead chunks when the user explicitly asked for overview/outline of the course
+        if (isOverviewQuery) {
           const leadChunks: DocumentChunk[] = [];
           const seenChunkIds = new Set(relevantChunks.map(c => c.id));
           for (const title of allowedTitles) {
@@ -646,6 +696,7 @@ ${answerStyle === 'detailed'
       contextSection += `=== LỊCH TRÌNH & SỰ KIỆN SẮP TỚI CỦA KHÓA HỌC (CHỈ DÙNG KHI HỎI VỀ DEADLINE / SỰ KIỆN) ===\n${eventsContext}\n\n`;
     }
 
+    // ── Layer 3: System Prompt Sandwich Defense ──
     const promptAnchor = `\n\n[LỆNH BỔ TRỢ BẮT BUỘC - ANTI-FLUFF, ANTI-PLACEHOLDER & TIẾT KIỆM TOKEN]:
 1. TUYỆT ĐỐI CẤM CHÀO HỎI VÀ CẤM THÔNG BÁO NGUỒN (CẤM: "Chào anh/chị", "Dựa trên tài liệu bạn cung cấp...", "Dựa trên kiến thức mở rộng...", "Based on the sources provided..."). ĐI THẲNG TRỰC TIẾP VÀO NỘI DUNG VẤN ĐỀ TỪ TỪ ĐẦU TIÊN (JUMP STRAIGHT TO THE PROBLEM).
 2. CẤM KẾT BÀI VĂN MẪU ("Hy vọng...", "Tóm lại...", "Kết luận:...").
@@ -655,7 +706,19 @@ ${answerStyle === 'concise' && !isOverviewQuery
   ? '5. PHONG CÁCH NHANH / TRỌNG TÂM: Trả lời súc tích trong 1-2 đoạn văn ngắn, đi thẳng vào bản chất và giải pháp then chốt.\n6. Nếu hỏi về lựa chọn công nghệ/giải pháp: Chọn đúng 1 phương án tối ưu nhất kèm 1-2 lý do then chốt.\n7. CHỈ XUẤT CÂU TRẢ LỜI: Cấm xuất suy nghĩ nội tâm, cấm viết nháp, cấm đếm từ, cấm lặp lại chỉ thị.'
   : '5. PHONG CÁCH CHI TIẾT / CHUYÊN SÂU: Đảm bảo độ dài tối thiểu bằng 1/2 giới hạn token của chế độ nhanh (tối thiểu từ 350 - 450 từ trở lên), phân tích cặn kẽ mọi khía cạnh, nguyên lý, dẫn chứng và ví dụ trực quan.'}`;
 
-    const userPrompt = `${contextSection}---\nYÊU CẦU CỦA GIẢNG VIÊN${isFollowUp ? ' (tiếp nối cuộc trò chuyện)' : ''}: ${question}${isFollowUp ? `\n(Ngữ cảnh câu hỏi tiếp nối: ${searchQuery})` : ''}${promptAnchor}`;
+    const userPrompt = `<course_materials>
+${contextSection}
+</course_materials>
+
+<teacher_query>
+${question}
+${isFollowUp ? `\n(Ngữ cảnh câu hỏi tiếp nối: ${searchQuery})` : ''}
+</teacher_query>
+
+<final_enforcement>
+Nhắc lại: Chỉ hỗ trợ các tác vụ liên quan đến môn học "${course}", tài liệu giảng dạy, soạn bài/câu hỏi/giáo án hoặc sổ điểm lớp học. Nếu câu hỏi hoặc yêu cầu hoàn toàn ngoài môn học (như nhân vật chính trị/lịch sử không liên quan, làm thơ ngoài luồng, thời tiết, tán gẫu đời sống), BẮT BUỘC từ chối ngắn gọn: "${REFUSAL_MESSAGE}".
+${promptAnchor}
+</final_enforcement>`;
 
     // 6. Generate AI response
     let aiText = '';
@@ -712,7 +775,7 @@ ${answerStyle === 'concise' && !isOverviewQuery
       const effectiveCategory = detectTaskCategory({
         system: systemInstruction,
         userPrompt,
-        history: history.slice(-8).map(msg => ({
+        history: sanitizedHistory.slice(-8).map(msg => ({
           role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: msg.text,
         })),
@@ -724,7 +787,7 @@ ${answerStyle === 'concise' && !isOverviewQuery
         system: systemInstruction,
         userPrompt,
         userId: typeof userId === 'number' ? userId : undefined,
-        history: history.slice(-8).map(msg => ({
+        history: sanitizedHistory.slice(-8).map(msg => ({
           role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: msg.text,
         })),

@@ -274,11 +274,8 @@ export async function executeWithGeminiPool<T>(
     }
   }
 
-  if (!(optionsOrSignal instanceof AbortSignal) && optionsOrSignal?.allowSystemFallback === false) {
-    if (userKeys && userKeys.length > 0) {
-      console.warn(`[Gemini Pool] All ${userKeys.length} BYOK key(s) failed; switching to system pool...`);
-    }
-    throw new Error('All BYOK Gemini keys failed or are temporarily unavailable.');
+  if (userKeys && userKeys.length > 0) {
+    console.warn(`[Gemini Pool] All ${userKeys.length} BYOK key(s) failed; switching to system pool...`);
   }
 
   // 2. FALLBACK TO SYSTEM KEY POOL

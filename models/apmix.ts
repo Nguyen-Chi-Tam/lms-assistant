@@ -271,6 +271,12 @@ export async function callApmixStream(
     }
     console.warn(`callApmixStream (${modelId}) failed:`, err);
 
+    // Don't retry non-stream for fatal config/model errors (404/401/403)
+    const status = (err as { status?: number })?.status;
+    if (status === 404 || status === 401 || status === 403) {
+      return null;
+    }
+
     // Fallback to non-streaming if stream crashed
     try {
       const fallback = await callApmix(modelId, opts);

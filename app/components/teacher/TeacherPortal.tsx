@@ -56,6 +56,7 @@ import { convertQuestionsToMoodleXml, type QuizQuestionItem } from '@/app/lib/mo
 import { MarkdownRenderer } from '@/app/components/MarkdownRenderer';
 import { InteractiveMindmap } from '@/app/components/InteractiveMindmap';
 import { SlidePresentation } from '@/app/components/SlidePresentation';
+import { parseApiResponse } from '@/lib/api-response';
 import type { SlideDeckData } from '@/lib/pptx-export';
 import { exportSummaryToDocx, copyRichHtmlForWord } from '@/lib/export-utils';
 import { cleanSummaryData } from '@/lib/summary-cleaner';
@@ -1094,8 +1095,7 @@ export function TeacherPortal({
           model: assistantModel,
         }),
       });
-      const data = (await res.json()) as StudyToolResponse;
-      if (!res.ok) throw new Error(data.error);
+      const data = await parseApiResponse<StudyToolResponse>(res);
 
       const newArtifact: GeneratedArtifact = {
         id: data.artifactId || `local-${Date.now()}`,
