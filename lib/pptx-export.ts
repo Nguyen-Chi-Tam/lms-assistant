@@ -126,13 +126,13 @@ export async function exportSlidesToPptx(
         });
         slide.addText(visual.context || slideData.keyTakeaway || '', {
           x: 5.2, y: 2.25, w: 7.2, h: 1.1, fontFace: 'Aptos',
-          fontSize: 20, color: 'F1F5F9', margin: 0, valign: 'mid', fit: 'shrink',
+          fontSize: 20, color: 'F1F5F9', margin: 0, valign: 'middle', fit: 'shrink',
         });
       } else if (layout === 'quote' && visual.quote) {
         slide.addText(`“${visual.quote}”`, {
           x: 1.1, y: 2.0, w: 11.1, h: 1.5, fontFace: 'Aptos Display',
           fontSize: 28, italic: true, color: 'F1F5F9', align: 'center',
-          valign: 'mid', margin: 0, fit: 'shrink',
+          valign: 'middle', margin: 0, fit: 'shrink',
         });
         if (visual.author) {
           slide.addText(`— ${visual.author}`, {
@@ -231,12 +231,12 @@ export async function exportSlidesToPptx(
           align: 'center', margin: 0,
         });
         slide.addText(step.label, {
-          x, y: 2.65, w, h: 0.45, fontFace: 'Aptos Display',
+          x, y: 2.65, w: width, h: 0.45, fontFace: 'Aptos Display',
           fontSize: 16, bold: true, color: 'FFFFFF', align: 'center', margin: 0,
           fit: 'shrink',
         });
         slide.addText(step.description || '', {
-          x, y: 3.2, w, h: 1.1, fontFace: 'Aptos', fontSize: 12,
+          x, y: 3.2, w: width, h: 1.1, fontFace: 'Aptos', fontSize: 12,
           color: 'CBD5E1', align: 'center', valign: 'top', margin: 0, fit: 'shrink',
         });
       });
