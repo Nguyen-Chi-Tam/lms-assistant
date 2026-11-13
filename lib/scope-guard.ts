@@ -20,6 +20,40 @@ export const UNGROUNDED_COURSE_MESSAGE =
   'Tài liệu và giáo trình của khóa học hiện tại không chứa thông tin liên quan đến câu hỏi này. Bạn vui lòng kiểm tra lại từ khóa hoặc tải thêm tài liệu liên quan nhé.';
 
 /**
+ * Extracts the first JSON object from a raw LLM response.
+ * Handles markdown code fences, surrounding prose, and trailing text.
+ */
+function parseScopeJson(raw: string): ScopeCheckResult | null {
+  if (!raw) return null;
+  const text = raw.trim();
+
+  // 1. Try direct parse
+  try {
+    return JSON.parse(text) as ScopeCheckResult;
+  } catch {
+    // fall through
+  }
+
+  // 2. Strip markdown fences (```json ... ``` or ``` ... ```)
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenceMatch ? fenceMatch[1].trim() : text;
+
+  // 3. Locate the first '{' and last '}' and parse the substring
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    const slice = candidate.slice(start, end + 1);
+    try {
+      return JSON.parse(slice) as ScopeCheckResult;
+    } catch {
+      // fall through
+    }
+  }
+
+  return null;
+}
+
+/**
  * Regex for fast zero-latency pre-classification using Unicode boundaries
  */
 const GRADE_INQUIRY_REGEX =
@@ -133,7 +167,7 @@ Trả về DUY NHẤT định dạng JSON:
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
 
-        const completion = await executeWithGroqPool(async (client) => {
+const completion = await executeWithGroqPool(async (client) => {
           return client.chat.completions.create({
             model: modelId,
             messages: [
@@ -143,16 +177,15 @@ Trả về DUY NHẤT định dạng JSON:
               },
               { role: 'user', content: classifierPrompt },
             ],
-            response_format: { type: 'json_object' },
             temperature: 0,
-            max_tokens: 120,
+            max_tokens: 200,
           });
         }, controller.signal);
 
         clearTimeout(timeoutId);
         const rawText = completion.choices[0]?.message?.content || '{}';
-        const parsed = JSON.parse(rawText) as ScopeCheckResult;
-        if (parsed.intent && typeof parsed.confidence === 'number') {
+        const parsed = parseScopeJson(rawText);
+        if (parsed && parsed.intent && typeof parsed.confidence === 'number') {
           result = parsed;
           break;
         }
@@ -173,8 +206,8 @@ Trả về DUY NHẤT định dạng JSON:
         maxTokens: 120,
         userId: params.userId,
       });
-      const parsed = JSON.parse(fallbackRes.text || '{}') as ScopeCheckResult;
-      if (parsed.intent && typeof parsed.confidence === 'number') {
+      const parsed = parseScopeJson(fallbackRes.text || '{}');
+      if (parsed && parsed.intent && typeof parsed.confidence === 'number') {
         result = parsed;
       }
     } catch (fallbackErr) {

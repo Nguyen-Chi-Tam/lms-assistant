@@ -125,12 +125,43 @@ function encodeValue(value: unknown): FirestoreValue {
 async function firestoreRequest(url: string, init?: RequestInit) {
   const token = await getAccessToken();
   if (!token) return null;
-  const response = await fetch(url, {
-    ...init,
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...init?.headers },
-  });
-  if (!response.ok) throw new Error(`Firestore request failed (${response.status})`);
-  return response.status === 204 ? null : response.json();
+
+  const isTransient = (err: unknown) => {
+    const str = String(err).toLowerCase();
+    return (
+      str.includes('UND_ERR_CONNECT_TIMEOUT') ||
+      str.includes('connect timeout') ||
+      str.includes('fetch failed') ||
+      str.includes('ECONNRESET') ||
+      str.includes('ENOTFOUND') ||
+      str.includes('EAI_AGAIN')
+    );
+  };
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20_000);
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...init?.headers },
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) throw new Error(`Firestore request failed (${response.status})`);
+      return response.status === 204 ? null : response.json();
+    } catch (err) {
+      lastError = err;
+      if (attempt < 2 && isTransient(err)) {
+        const delay = 1000 * Math.pow(2, attempt); // 1s, 2s
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
 }
 
 export async function getFirebaseRows(

@@ -1,5 +1,6 @@
 import { NextResponse, after } from 'next/server';
 import { generateText } from '@/models/registry';
+import { GEMINI_MODEL } from '@/models/gemini';
 import { saveLearningArtifact } from '@/lib/learning-artifacts';
 import { sendArtifactReadyNotification } from '@/lib/artifact-notifications';
 import { parseDocumentFromUrl } from '@/lib/document-parser';
@@ -22,6 +23,7 @@ interface SourceItem {
 
 const cancelledRequests = new Map<string, number>();
 const CANCEL_EXPIRY_MS = 10 * 60 * 1000;
+const DOCUMENT_PARSE_CONCURRENCY = 3;
 
 class RequestAbortedError extends Error {
   constructor() {
@@ -34,6 +36,25 @@ function throwIfRequestAborted(request: Request, requestId?: string) {
   const now = Date.now();
   for (const [id, cancelledAt] of cancelledRequests) {
     if (now - cancelledAt > CANCEL_EXPIRY_MS) cancelledRequests.delete(id);
+  }
+
+  async function mapWithConcurrency<T, R>(
+    items: T[],
+    mapper: (item: T) => Promise<R>,
+    concurrency = DOCUMENT_PARSE_CONCURRENCY
+  ): Promise<R[]> {
+    const results: R[] = [];
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++;
+        results[index] = await mapper(items[index]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+    );
+    return results;
   }
   if (request.signal.aborted || (requestId && cancelledRequests.has(requestId))) {
     throw new RequestAbortedError();
@@ -148,16 +169,30 @@ export async function POST(request: Request) {
       try {
         const mats = await getPersonalMaterials({ moodleCourseId, limit: 10 });
         if (mats) {
-          for (const mat of mats) {
-            if (mat.storage_url && mat.title && !docMap.has(String(mat.title).toLowerCase())) {
-              try {
-                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), { userKeys: studyToolsGeminiKeys });
-                if (text && text.length > 50) docMap.set(String(mat.title).toLowerCase(), text);
-              } catch {
-                // ignore unavailable material
+          const selectedNames = new Set(effectiveSourceNames.map(name => name.toLowerCase()));
+          const materialsToParse = mats.filter(mat =>
+            mat.storage_url &&
+            mat.title &&
+            (selectedNames.size === 0 || selectedNames.has(String(mat.title).toLowerCase()))
+          );
+          await mapWithConcurrency(materialsToParse, async mat => {
+            try {
+              const text = await parseDocumentFromUrl(
+                String(mat.storage_url),
+                String(mat.title),
+                { userKeys: studyToolsGeminiKeys }
+              );
+              return { key: String(mat.title).toLowerCase(), text };
+            } catch {
+              return { key: String(mat.title).toLowerCase(), text: '' };
+            }
+          }).then(parsedMaterials => {
+            for (const material of parsedMaterials) {
+              if (material.text && material.text.length > 50) {
+                docMap.set(material.key, material.text);
               }
             }
-          }
+          });
         }
       } catch (firebaseError) {
         console.warn('Firebase personal_materials query in study-tools:', firebaseError);
@@ -165,20 +200,24 @@ export async function POST(request: Request) {
     }
 
     // Parse URL documents if needed
-    for (const src of effectiveSources) {
+    const urlSources = effectiveSources.filter(src => src.url && !docMap.has(src.name.toLowerCase()));
+    await mapWithConcurrency(urlSources, async src => {
       throwIfRequestAborted(request, requestId);
-      const lowerName = src.name.toLowerCase();
-      if (!docMap.has(lowerName) && src.url) {
-        try {
-          const extractedText = await parseDocumentFromUrl(src.url, src.name, { userKeys: studyToolsGeminiKeys });
-          if (extractedText && extractedText.trim()) {
-            docMap.set(lowerName, extractedText);
-          }
-        } catch {
-          // ignore
-        }
+      try {
+        const extractedText = await parseDocumentFromUrl(
+          src.url!,
+          src.name,
+          { userKeys: studyToolsGeminiKeys }
+        );
+        return { key: src.name.toLowerCase(), text: extractedText || '' };
+      } catch {
+        return { key: src.name.toLowerCase(), text: '' };
       }
-    }
+    }).then(parsedSources => {
+      for (const source of parsedSources) {
+        if (source.text.trim()) docMap.set(source.key, source.text);
+      }
+    });
 
     const compiledDocs: Array<{ title: string; text: string }> = [];
     for (const src of effectiveSources) {
@@ -449,7 +488,7 @@ Không bao gồm bất kỳ văn bản ngoài hay markdown.`;
       throwIfRequestAborted(request, requestId);
       const requestedModel = body.model && body.model !== 'auto'
         ? body.model
-        : 'gemini:gemini-2.5-flash';
+        : `gemini:${GEMINI_MODEL}`;
       const result = await generateText(requestedModel, {
         system: systemInstruction,
         userPrompt: prompt,
