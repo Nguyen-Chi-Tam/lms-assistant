@@ -37,28 +37,28 @@ function throwIfRequestAborted(request: Request, requestId?: string) {
   for (const [id, cancelledAt] of cancelledRequests) {
     if (now - cancelledAt > CANCEL_EXPIRY_MS) cancelledRequests.delete(id);
   }
-
-  async function mapWithConcurrency<T, R>(
-    items: T[],
-    mapper: (item: T) => Promise<R>,
-    concurrency = DOCUMENT_PARSE_CONCURRENCY
-  ): Promise<R[]> {
-    const results: R[] = [];
-    let nextIndex = 0;
-    const worker = async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex++;
-        results[index] = await mapper(items[index]);
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-    );
-    return results;
-  }
   if (request.signal.aborted || (requestId && cancelledRequests.has(requestId))) {
     throw new RequestAbortedError();
   }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  mapper: (item: T) => Promise<R>,
+  concurrency = DOCUMENT_PARSE_CONCURRENCY
+): Promise<R[]> {
+  const results: R[] = [];
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await mapper(items[index]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  );
+  return results;
 }
 
 function extractJsonObject(text: string) {
