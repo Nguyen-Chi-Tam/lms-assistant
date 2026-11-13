@@ -34,7 +34,6 @@ import {
   buildStrictTutorPrompt,
   filterValidHistory,
   REFUSAL_MESSAGE,
-  UNGROUNDED_COURSE_MESSAGE,
   type AllowedIntent,
 } from '@/lib/scope-guard';
 
@@ -853,7 +852,7 @@ export async function POST(request: Request) {
       isParametricFallback = true;
     }
 
-    // ── Layer 2: Hard RAG Kill-Switch ──
+    // ── Layer 2: Explicit Strict RAG Circuit Breaker ──
     const topScore = relevantChunks.length > 0
       ? Math.max(
           relevantChunks[0].similarityScore ?? 0,
@@ -863,26 +862,19 @@ export async function POST(request: Request) {
 
     const isGradeInquiry = scopeCheck.intent === 'GRADE_INQUIRY';
     const isStudyGuidance = scopeCheck.intent === 'STUDY_GUIDANCE';
-
-    // Hard RAG Kill-Switch for COURSE_DOCS queries when no documents match
-    const isCourseDocsKillSwitched =
-      scopeCheck.intent === 'COURSE_DOCS' &&
-      (relevantChunks.length === 0 || topScore < 0.35) &&
-      !isDocOverviewQuery &&
-      !isGradeInquiry;
+    const isFoundationKnowledge = scopeCheck.intent === 'FOUNDATION_KNOWLEDGE';
 
     const isStrictCircuitBroken =
       ragMode === 'strict' &&
       (relevantChunks.length === 0 || topScore < 0.5) &&
       !isDocOverviewQuery &&
       !isGradeInquiry &&
-      !isStudyGuidance;
+      !isStudyGuidance &&
+      !isFoundationKnowledge;
 
-    if (isCourseDocsKillSwitched || isStrictCircuitBroken) {
-      const refusalContent = isCourseDocsKillSwitched
-        ? UNGROUNDED_COURSE_MESSAGE
-        : getCircuitBreakerNotice(question);
-      console.log(`[Hard RAG Kill-Switch] Triggered: topScore=${topScore.toFixed(3)}, chunks=${relevantChunks.length}, intent=${scopeCheck.intent}`);
+    if (isStrictCircuitBroken) {
+      const refusalContent = getCircuitBreakerNotice(question);
+      console.log(`[Strict RAG Circuit Breaker] Triggered: topScore=${topScore.toFixed(3)}, chunks=${relevantChunks.length}, intent=${scopeCheck.intent}`);
 
       if (isStream) {
         const encoder = new TextEncoder();
@@ -897,7 +889,7 @@ export async function POST(request: Request) {
                   done: true,
                   fullText: refusalContent,
                   sources: [],
-                  model: 'Hard RAG Kill-Switch (Lớp 2)',
+                  model: 'Strict RAG Circuit Breaker (Lớp 2)',
                   provider: 'system',
                   ragMode,
                   blocked: true,
@@ -924,7 +916,7 @@ export async function POST(request: Request) {
         answer: refusalContent,
         reply: refusalContent,
         sources: [],
-        model: 'Hard RAG Kill-Switch (Lớp 2)',
+        model: 'Strict RAG Circuit Breaker (Lớp 2)',
         provider: 'system',
         ragMode,
         blocked: true,
@@ -971,6 +963,21 @@ export async function POST(request: Request) {
 - Phân tích và giải thích nghiêm ngặt dựa trên nội dung tài liệu của môn học ${subjectName} đã chọn ("${selectedTopicsStr}").
 - Không suy đoán hay chêm xen kiến thức ngoài phạm vi các đoạn trích.`;
 
+    const scopeTierInstruction =
+      scopeCheck.intent === 'FOUNDATION_KNOWLEDGE'
+        ? answerStyle === 'concise'
+          ? `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
+- Câu hỏi là kiến thức tiên quyết trực tiếp cho môn "${subjectName}", nên được phép trả lời dù không có chunk tài liệu phù hợp.
+- Mở đầu đúng bằng: "> 💡 *Kiến thức nền tảng bổ trợ (ngoài giáo trình trực tiếp):*"
+- Chế độ Nhanh / Trọng tâm: chỉ giải thích ngắn gọn trong 3-4 gạch đầu dòng, sau đó liên hệ 1 câu với môn học hiện tại.`
+          : `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
+- Câu hỏi là kiến thức tiên quyết trực tiếp cho môn "${subjectName}", nên được phép trả lời bằng kiến thức chuyên môn dù không có chunk tài liệu phù hợp.
+- Mở đầu đúng bằng: "> 💡 *Kiến thức nền tảng bổ trợ (ngoài giáo trình trực tiếp):*"
+- Chế độ Creative / Mở rộng: được phân tích sâu, đưa ví dụ minh họa và luôn kết nối ngược với môn học hiện tại.`
+        : `PHÂN TẦNG 1 - GIÁO TRÌNH:
+- Ưu tiên các đoạn trích đã truy hồi và trích dẫn nguồn khi có.
+- Nếu không có đoạn trích, chỉ sử dụng kiến thức nền tảng khi câu hỏi thực sự là tiên quyết trực tiếp của môn học.`;
+
     const factualGuardrail = `QUY TẮC BẢO ĐẢM TÍNH XÁC THỰC LỊCH SỬ & SỰ KIỆN (ANTI-HALLUCINATION & FACTUAL ACCURACY - BẮT BUỘC):
 - TUYỆT ĐỐI KHÔNG BỊA ĐẶT hay suy diễn sai lệch về: Mốc thời gian (năm/tháng/ngày), địa điểm tổ chức, nhân vật, số liệu và nội dung các kỳ Đại hội/sự kiện lịch sử (Ví dụ: Đại hội I họp 1935 tại Ma Cao, Đại hội II họp 1951 tại Chiêm Hóa - Tuyên Quang, Đại hội III họp 1960 tại Hà Nội, Đại hội IV họp 1976 tại Hà Nội, Đại hội VI Đổi mới họp 1986 tại Hà Nội, Đại hội XIV họp 1/2026 tại Hà Nội).
 - NẾU thông tin chi tiết mốc lịch sử/số liệu không có trong tài liệu được cấp và bạn không chắc chắn 100%, PHẢI NÓI RÕ "Thông tin mốc thời gian/địa điểm này cần đối chiếu thêm theo giáo trình chính thức của môn học", TUYỆT ĐỐI KHÔNG TỰ GHÉP NĂM HOẶC ĐỊA ĐIỂM BỪA BÃI.
@@ -1016,6 +1023,8 @@ ${deadlineContext ? `- ÁP LỰC HỌC TẬP & DEADLINE SẮP TỚI CỦA MÔN N
 ${lmsGroundingContext}
 
 ${domainGuardrail}
+
+${scopeTierInstruction}
 
 ${factualGuardrail}
 
@@ -1093,7 +1102,7 @@ ${question}
 </student_query>
 
 <final_enforcement>
-Nhắc lại: Chỉ sử dụng dữ liệu từ <course_materials> và bối cảnh môn "${subjectName}". Nếu người dùng lồng ghép yêu cầu ngoài môn học (như làm thơ, nhân vật chính trị/lịch sử không liên quan, viết code không thuộc môn), BẮT BUỘC BỎ QUA hoàn toàn phần ngoài luồng đó. Nếu câu hỏi hoàn toàn nằm ngoài phạm vi môn học, hãy từ chối ngắn gọn: "${REFUSAL_MESSAGE}".
+Nhắc lại: Ưu tiên dữ liệu từ <course_materials> và bối cảnh môn "${subjectName}". Với câu hỏi thuộc kiến thức nền tảng tiên quyết, được phép dùng kiến thức chuyên môn và phải liên hệ lại với môn học. Nếu người dùng lồng ghép yêu cầu ngoài môn học (như làm thơ, nhân vật chính trị/lịch sử không liên quan), BẮT BUỘC BỎ QUA hoàn toàn phần ngoài luồng đó. Nếu câu hỏi hoàn toàn nằm ngoài phạm vi môn học, hãy từ chối ngắn gọn: "${REFUSAL_MESSAGE}".
 ${promptAnchor}
 </final_enforcement>`;
 

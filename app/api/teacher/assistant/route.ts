@@ -28,7 +28,6 @@ import {
   buildStrictTutorPrompt,
   filterValidHistory,
   REFUSAL_MESSAGE,
-  UNGROUNDED_COURSE_MESSAGE,
   type AllowedIntent,
 } from '@/lib/scope-guard';
 
@@ -488,19 +487,7 @@ export async function POST(request: Request) {
 
     let isFallback = false;
 
-    // Strict Mode Circuit Breaker (When no candidates exist and not an internal data inquiry)
-    if (ragMode === 'strict' && filteredCandidateChunks.length === 0 && !hasInternalCourseData) {
-      console.log(`[Teacher Assistant Circuit Breaker] 0 candidate chunks in strict mode: "${question.slice(0, 50)}"`);
-      return NextResponse.json({
-        answer: getCircuitBreakerNotice(question),
-        sources: [],
-        cached: false,
-        ragMode: 'strict',
-        isFallback: false,
-        model: 'Circuit Breaker (0 tokens)',
-        provider: 'guardrail',
-      });
-    } else if (ragMode === 'hybrid' && filteredCandidateChunks.length === 0 && !hasInternalCourseData) {
+    if (ragMode === 'hybrid' && filteredCandidateChunks.length === 0 && !hasInternalCourseData) {
       isFallback = true;
     }
 
@@ -522,22 +509,19 @@ export async function POST(request: Request) {
 
         const isGradeInquiry = scopeCheck.intent === 'GRADE_INQUIRY';
         const isStudyGuidance = scopeCheck.intent === 'STUDY_GUIDANCE';
+        const isFoundationKnowledge = scopeCheck.intent === 'FOUNDATION_KNOWLEDGE';
 
-        // ── Layer 2: Hard RAG Kill-Switch for Teacher Assistant ──
-        const isCourseDocsKillSwitched =
-          scopeCheck.intent === 'COURSE_DOCS' &&
-          (relevantChunks.length === 0 || topScore < 0.35) &&
-          !isOverviewQuery &&
-          !hasInternalCourseData;
-
+        // ── Layer 2: Explicit Strict RAG Circuit Breaker ──
         // Strict Mode Circuit Breaker (Scored 0 relevant chunks or topScore < 0.5)
         if (
-          isCourseDocsKillSwitched ||
-          (ragMode === 'strict' && (relevantChunks.length === 0 || topScore < 0.5) && !isOverviewQuery && !hasInternalCourseData && !isStudyGuidance)
+          ragMode === 'strict' &&
+          (relevantChunks.length === 0 || topScore < 0.5) &&
+          !isOverviewQuery &&
+          !hasInternalCourseData &&
+          !isStudyGuidance &&
+          !isFoundationKnowledge
         ) {
-          const refusalContent = isCourseDocsKillSwitched
-            ? UNGROUNDED_COURSE_MESSAGE
-            : getCircuitBreakerNotice(question);
+          const refusalContent = getCircuitBreakerNotice(question);
           console.log(`[Teacher Assistant Hard Kill-Switch] topScore ${topScore} < threshold or 0 relevant chunks: "${question.slice(0, 50)}"`);
           return NextResponse.json({
             answer: refusalContent,
@@ -547,7 +531,7 @@ export async function POST(request: Request) {
             ragMode,
             blocked: true,
             isFallback: false,
-            model: 'Hard RAG Kill-Switch (Lớp 2)',
+            model: 'Strict RAG Circuit Breaker (Lớp 2)',
             provider: 'guardrail',
           });
         }
@@ -618,6 +602,20 @@ export async function POST(request: Request) {
 - Triệt tiêu văn mẫu và tiết kiệm token: không chào hỏi, không kết bài thừa thãi.`;
     }
 
+    const scopeTierInstruction =
+      scopeCheck.intent === 'FOUNDATION_KNOWLEDGE'
+        ? answerStyle === 'concise'
+          ? `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
+- Câu hỏi thuộc kiến thức tiên quyết trực tiếp của môn "${subjectName}", được phép trả lời bằng kiến thức chuyên môn dù không có trong <document>.
+- Mở đầu đúng bằng: "> 💡 *Kiến thức nền tảng bổ trợ (ngoài giáo trình trực tiếp):*"
+- Chế độ Nhanh / Trọng tâm: trả lời trong 3-4 gạch đầu dòng và liên hệ ngắn với môn học.`
+          : `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
+- Câu hỏi thuộc kiến thức tiên quyết trực tiếp của môn "${subjectName}", được phép trả lời bằng kiến thức chuyên môn dù không có trong <document>.
+- Mở đầu đúng bằng: "> 💡 *Kiến thức nền tảng bổ trợ (ngoài giáo trình trực tiếp):*"
+- Chế độ Creative / Mở rộng: được phân tích sâu, có ví dụ và liên hệ ngược với môn học.`
+        : `PHÂN TẦNG 1 - GIÁO TRÌNH:
+- Ưu tiên nội dung trong <document>; chỉ mở rộng khi câu hỏi là kiến thức nền tảng trực tiếp của môn học.`;
+
     const systemInstruction = `Bạn là TRỢ LÝ AI CHUYÊN BIỆT CHO GIẢNG VIÊN (Teacher AI Assistant) môn "${subjectName}".
 
 VAI TRÒ & NĂNG LỰC:
@@ -630,6 +628,8 @@ Bạn hỗ trợ Giảng viên với TẤT CẢ các công việc giảng dạy,
 6. SOẠN NHẬN XÉT SINH VIÊN: Viết feedback chuyên nghiệp, mang tính xây dựng cho từng sinh viên hoặc nhóm dựa trên kết quả học tập.
 
 ${modeInstruction}
+
+${scopeTierInstruction}
 
 QUY TẮC PHÂN ĐỊNH NGUỒN DỮ LIỆU TUYỆT ĐỐI (CỰC KỲ QUAN TRỌNG - KHÔNG ĐƯỢC NHẦM LẪN):
 1. MỤC "CÁC TÀI LIỆU BÀI GIẢNG / HỌC TẬP ĐƯỢC CHỌN TỪ CỘT TRÁI":
