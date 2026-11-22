@@ -114,6 +114,8 @@ export async function POST(request: Request) {
       userId?: number;
       userName?: string;
       model?: string;
+      /** When true the manually selected model must analyze alone, no fallback summary. */
+      strictModel?: boolean;
       forceReanalyze?: boolean;
       feedback?: string | null;
       has_details?: boolean;
@@ -305,6 +307,7 @@ Không kèm markdown hay văn bản ngoài JSON.`;
           'Bạn là Cố vấn Học tập Thích ứng chuyên sâu về CNTT và sư phạm đại học. Luôn phân tích chính xác nguyên nhân sai sót và đề xuất giải pháp trọng tâm bằng CHÍNH XÁC ngôn ngữ của bài thi/câu hỏi (Tiếng Việt luôn là ngôn ngữ mặc định nếu bài thi bằng tiếng Việt). Trả về đúng JSON schema.',
         userPrompt: prompt,
         userId: body.userId ? Number(body.userId) : attemptInfo?.userid ? Number(attemptInfo.userid) : undefined,
+        strictModel: Boolean(body.strictModel) && Boolean(body.model && body.model !== 'auto'),
         temperature: 0.2,
         jsonMode: true,
         taskCategory: 'complex',
@@ -327,6 +330,12 @@ Không kèm markdown hay văn bản ngoài JSON.`;
         }
       }
     } catch (aiErr) {
+      if (body.strictModel && body.model && body.model !== 'auto') {
+        return NextResponse.json(
+          { error: aiErr instanceof Error ? aiErr.message : `Model ${body.model} không thể chẩn đoán bài thi.` },
+          { status: 502 }
+        );
+      }
       console.warn('AI Quiz Diagnosis error:', aiErr);
     }
 

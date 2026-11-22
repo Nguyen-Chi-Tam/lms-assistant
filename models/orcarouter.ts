@@ -43,6 +43,7 @@ function getClient(): OpenAI | null {
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
       timeout: ORCAROUTER_TIMEOUT_MS,
+      maxRetries: 0,
     });
     cachedKey = config.apiKey;
     cachedBaseUrl = config.baseUrl;
@@ -87,9 +88,10 @@ export async function callOrcaRouter(
     return text ? { text: stripFluff(text) } : null;
   } catch (err) {
     if (opts.signal?.aborted) throw err;
-    setLastProviderError('orcarouter', String(err));
-    if (isQuotaExhaustedError(err)) blockProviderUntilTomorrow('orcarouter', String(err));
-    console.warn(`[OrcaRouter] Request failed (${modelId}); moving to the next system provider:`, err);
+    const message = err instanceof Error ? err.message : String(err);
+    setLastProviderError('orcarouter', message);
+    if (isQuotaExhaustedError(err)) blockProviderUntilTomorrow('orcarouter', message);
+    console.warn(`[OrcaRouter] Request failed (${modelId}); moving on: ${message}`);
     return null;
   }
 }

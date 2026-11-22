@@ -301,25 +301,23 @@ export async function GET(request: Request) {
       }
     }
 
-    // Lọc sự kiện tương lai của học viên (bỏ qua sự kiện chấm điểm của giáo viên)
+    // Lọc sự kiện tương lai (bỏ qua sự kiện chấm điểm)
     const futureEvents = rawEvents.filter((ev) => {
       const time = ev.timesort || ev.timestart;
       const isWithinWindow = time > nowTimestamp && time <= maxFutureTimestamp;
-      const isTeacherGrading =
+      const isGradingDueEvent =
         ev.eventtype === 'gradingdue' ||
         ev.action?.name === 'Grade' ||
         ev.name.toLowerCase().includes('due to be graded');
-      return isWithinWindow && !isTeacherGrading;
+      return isWithinWindow && !isGradingDueEvent;
     });
 
-    // 2. Lấy danh sách SINH VIÊN từ bảng users.
-    // Giáo viên không được đưa vào user_courses để cron nhắc nhở chỉ phục vụ sinh viên.
+    // 2. Lấy danh sách tài khoản trong bảng users.
     let targetUserIds: number[] = [];
     if (supabaseAdmin) {
       const { data: userRows } = await supabaseAdmin
         .from('users')
-        .select('moodle_user_id')
-        .eq('role', 'student');
+        .select('moodle_user_id');
       if (userRows && userRows.length > 0) {
         targetUserIds = userRows.map((u) => u.moodle_user_id).filter(Boolean);
       }
@@ -667,8 +665,8 @@ export async function GET(request: Request) {
       }
     }
 
-    // Mốc thời gian nhắc nhở mặc định cho bài tập (assignment): 60, 30, 15, 10, 5 phút trước hạn chót
-    const defaultReminders = [60, 30, 15, 10, 5];
+    // Mốc thời gian nhắc nhở mặc định cho bài tập (assignment): 1 tiếng trước hạn chót (chỉ 1 lần duy nhất)
+    const defaultReminders = [60];
     // Bài tập SẮP MỞ: nhắc trước giờ mở 15 và 5 phút
     const assignOpenReminders = [15, 5];
 
@@ -854,15 +852,9 @@ export async function GET(request: Request) {
 
         const diffMinutes = Math.floor((deliverTime.getTime() - Date.now()) / 60000);
 
-        // Tính toán cấu hình mốc điểm danh chuẩn theo kế hoạch:
-        // - Lần 1: Báo ngay khi mở (mốc 0)
-        // - Lần 2: 3 phút trước khi đóng (mốc âm = -(durationMinutes - 3), bỏ qua nếu duration <= 3 phút)
-        const durationMinutes = Math.floor((ev.timeduration || 600) / 60);
+        // Điểm danh: chỉ nhắc 1 lần duy nhất ngay khi mở (mốc 0)
         const attendanceReminders = [0];
-        if (durationMinutes > 3) {
-          const reminderBeforeEnd = -(durationMinutes - 3);
-          attendanceReminders.push(reminderBeforeEnd);
-        }
+        const durationMinutes = Math.floor((ev.timeduration || 600) / 60);
 
         if (existingRows && existingRows.length > 0) {
           let currentReminders: number[] = [];
@@ -909,14 +901,20 @@ export async function GET(request: Request) {
                 ? [5]
                 : defaultReminders;
 
-          currentReminders = adjustRemindersForNewDeliverTime(
-            currentReminders,
-            configuredReminders,
-            deliverTime.getTime(),
-            Date.now(),
-            60_000,
-            deliverTimeChanged
-          );
+          // "ONE AT A TIME": nếu notify đã gửi hết tất cả mốc nhắc (sent_reminders rỗng),
+          // KHÔNG được phép sync-moodle thêm lại, tránh thông báo lặp đi lặp lại mỗi chu kỳ cron.
+          if (currentReminders.length === 0) {
+            currentReminders = [];
+          } else {
+            currentReminders = adjustRemindersForNewDeliverTime(
+              currentReminders,
+              configuredReminders,
+              deliverTime.getTime(),
+              Date.now(),
+              60_000,
+              deliverTimeChanged
+            );
+          }
 
           const nextEventDetails = isAttendance
             ? JSON.stringify({

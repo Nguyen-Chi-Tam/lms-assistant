@@ -191,8 +191,8 @@ function toBuffer(buffer: ArrayBuffer | Uint8Array | Buffer): Buffer | null {
 }
 
 /**
- * Last-resort OCR for images when Gemini is unavailable: OpenAI Vision then APMIX
- * (both expose an OpenAI-compatible `image_url` content part).
+ * Last-resort OCR for images when Gemini is unavailable: OpenAI Vision
+ * (exposes an OpenAI-compatible `image_url` content part).
  * The image never leaves the request as anything other than extracted text.
  */
 async function ocrImageWithThirdParty(base64: string, mimeType: string): Promise<{ text: string; unsupported: boolean }> {
@@ -229,36 +229,6 @@ async function ocrImageWithThirdParty(base64: string, mimeType: string): Promise
       console.warn('OpenAI Vision OCR skipped: model does not support image input.');
     } else {
       console.warn('OpenAI Vision OCR unavailable:', err instanceof Error ? err.message : err);
-    }
-  }
-
-  try {
-    const { getApmixClient } = await import('@/models/apmix');
-    const apmix = getApmixClient();
-    if (apmix) {
-      const completion = await apmix.chat.completions.create(
-        {
-          model: 'hy4-free',
-          temperature: 0,
-          max_tokens: 4096,
-          messages: [{ role: 'user', content }],
-        },
-        { signal: AbortSignal.timeout(45_000) }
-      );
-      const text = completion.choices[0]?.message?.content?.trim();
-      if (text) {
-        lastVisionOcrStatus = null;
-        console.log(`[Vision OCR] APMIX transcribed ${text.length} chars`);
-        return { text, unsupported: false };
-      }
-    }
-  } catch (err) {
-    if (isVisionUnsupportedError(err)) {
-      unsupported = true;
-      lastVisionOcrStatus = { unsupported: true, detail: err instanceof Error ? err.message : String(err) };
-      console.warn('APMIX Vision OCR skipped: model does not support image input.');
-    } else {
-      console.warn('APMIX Vision OCR unavailable:', err instanceof Error ? err.message : err);
     }
   }
 
@@ -505,8 +475,16 @@ function markUrlFailed(url: string) {
 export async function parseDocumentFromUrl(
   url: string,
   fileName: string,
-  options?: { authToken?: string; userKeys?: string[] }
+  options?: {
+    authToken?: string;
+    userKeys?: string[];
+    /** Deadline chung cho cả giai đoạn parse (tránh 10 nguồn × 45s = several minutes). */
+    signal?: AbortSignal;
+    /** Bỏ qua Gemini Vision OCR PDF — dùng cho tác vụ nhanh (summary/flashcard). */
+    skipVisionOcr?: boolean;
+  }
 ): Promise<string> {
+  options?.signal?.throwIfAborted();
   lastVisionOcrStatus = null;
   const cacheKey = `${fileName}::${url}`;
   if (documentTextCache.has(cacheKey)) {
@@ -550,7 +528,9 @@ export async function parseDocumentFromUrl(
             'X-With-Generated-Alt': 'true',
             Accept: 'text/markdown, text/plain',
           },
-          signal: AbortSignal.timeout(3500),
+          signal: options?.signal
+            ? AbortSignal.any([options.signal, AbortSignal.timeout(3500)])
+            : AbortSignal.timeout(3500),
         });
 
         if (jinaRes.ok) {
@@ -565,9 +545,45 @@ export async function parseDocumentFromUrl(
       }
     }
 
-    const response = await fetch(fetchUrl, { headers, signal: AbortSignal.timeout(45000) });
+    // 45s/URL × 10 nguồn là nguyên nhân request 5-6 phút. Giảm còn 15s và
+    // chia sẻ deadline với caller để toàn bộ giai đoạn parse có trần cố định.
+    const response = await fetch(fetchUrl, {
+      headers,
+      signal: options?.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(15_000)])
+        : AbortSignal.timeout(15_000),
+    });
     if (!response.ok) {
       console.warn(`Failed to fetch document from ${fetchUrl}: status ${response.status}`);
+      // Try Jina Reader once for blocked HTML pages (e.g. 403) before falling back to URL slug
+      const isLocalBlocked =
+        fetchUrl.includes('localhost') ||
+        fetchUrl.includes('127.0.0.1') ||
+        fetchUrl.includes('192.168.') ||
+        fetchUrl.includes('.local');
+      if (response.status === 403 && fetchUrl.startsWith('http') && !isLocalBlocked) {
+        try {
+          const jinaSignal = options?.signal
+            ? AbortSignal.any([options.signal, AbortSignal.timeout(4000)])
+            : AbortSignal.timeout(4000);
+          const jinaRes = await fetch(`https://r.jina.ai/${fetchUrl}`, {
+            headers: {
+              'X-Return-Format': 'markdown',
+              Accept: 'text/markdown, text/plain',
+            },
+            signal: jinaSignal,
+          });
+          if (jinaRes.ok) {
+            const md = await jinaRes.text();
+            if (md && md.trim().length > 150 && !md.includes('403 Forbidden')) {
+              setDocumentCache(cacheKey, md.trim());
+              return md.trim();
+            }
+          }
+        } catch {
+          // Fall through to semantic slug fallback
+        }
+      }
       // When external websites block scrapers (403/468/500), extract topic from URL slug so RAG still retains context
       try {
         const urlObj = new URL(fetchUrl);
@@ -584,6 +600,7 @@ export async function parseDocumentFromUrl(
       }
     }
 
+    options?.signal?.throwIfAborted();
     const contentType = response.headers.get('content-type') || '';
     const fileBuffer = Buffer.from(await response.arrayBuffer());
 
@@ -618,16 +635,21 @@ export async function parseDocumentFromUrl(
       }
 
       // Fallback: If unpdf yielded zero/empty text (e.g. scanned PDF, slide export, or canvas PDF):
-      // Trigger Gemini Multimodal Vision OCR directly on the PDF file!
-      console.log(`[PDF Parser] unpdf yielded no meaningful text for "${fileName}". Triggering Gemini Vision PDF OCR...`);
-      try {
-        const ocrResult = await extractTextFromPdfVision(fileBuffer, fileName, options?.userKeys);
-        if (ocrResult.text && ocrResult.text.trim().length >= 30) {
-          setDocumentCache(cacheKey, ocrResult.text.trim());
-          return ocrResult.text.trim();
+      // Trigger Gemini Multimodal Vision OCR directly on the PDF file.
+      // OCR có thể tốn tới 150s/file — chỉ chạy khi caller không yêu cầu fast-path.
+      if (!options?.skipVisionOcr && !options?.signal?.aborted) {
+        console.log(`[PDF Parser] unpdf yielded no meaningful text for "${fileName}". Triggering Gemini Vision PDF OCR...`);
+        try {
+          const ocrResult = await extractTextFromPdfVision(fileBuffer, fileName, options?.userKeys);
+          if (ocrResult.text && ocrResult.text.trim().length >= 30) {
+            setDocumentCache(cacheKey, ocrResult.text.trim());
+            return ocrResult.text.trim();
+          }
+        } catch (ocrErr) {
+          console.warn(`[PDF Parser] Gemini Vision PDF OCR error for ${fileName}:`, ocrErr);
         }
-      } catch (ocrErr) {
-        console.warn(`[PDF Parser] Gemini Vision PDF OCR error for ${fileName}:`, ocrErr);
+      } else if (options?.skipVisionOcr) {
+        console.warn(`[PDF Parser] Skipped Vision OCR for "${fileName}" (fast path).`);
       }
     }
 
@@ -687,7 +709,14 @@ export async function parseDocumentFromUrl(
       }
     }
 
-    // TIER 1: Jina Reader API for parsed targetUrl
+    // If direct HTML already has substantial readable content, return immediately without waiting for Jina Reader.
+    const directHtmlText = targetUrl === fetchUrl ? extractTextFromHtml(rawHtml) : '';
+    if (directHtmlText.trim().length >= 400) {
+      setDocumentCache(cacheKey, directHtmlText);
+      return directHtmlText;
+    }
+
+    // TIER 1: Jina Reader API for SPA / JS-rendered pages or Moodle URL wrappers
     const isLocalHost =
       targetUrl.includes('localhost') ||
       targetUrl.includes('127.0.0.1') ||
@@ -697,13 +726,16 @@ export async function parseDocumentFromUrl(
     if (targetUrl.startsWith('http') && !isLocalHost) {
       try {
         const jinaUrl = `https://r.jina.ai/${targetUrl}`;
+        const jinaSignal = options?.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(4500)])
+          : AbortSignal.timeout(4500);
         const jinaRes = await fetch(jinaUrl, {
           headers: {
             'X-Return-Format': 'markdown',
             'X-With-Generated-Alt': 'true',
             Accept: 'text/markdown, text/plain',
           },
-          signal: AbortSignal.timeout(7000),
+          signal: jinaSignal,
         });
 
         if (jinaRes.ok) {
@@ -714,7 +746,10 @@ export async function parseDocumentFromUrl(
           }
         }
       } catch (jinaErr) {
-        console.warn(`Jina Reader attempt for ${targetUrl} skipped/failed:`, jinaErr);
+        console.warn(
+          `Jina Reader attempt for ${targetUrl} skipped/failed:`,
+          jinaErr instanceof Error ? jinaErr.message : String(jinaErr)
+        );
       }
     }
 
@@ -722,23 +757,26 @@ export async function parseDocumentFromUrl(
     let htmlToClean = rawHtml;
     if (targetUrl !== fetchUrl) {
       try {
+        const extSignal = options?.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(4500)])
+          : AbortSignal.timeout(4500);
         const extRes = await fetch(targetUrl, {
           headers: {
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           },
-          signal: AbortSignal.timeout(6000),
+          signal: extSignal,
         });
         if (extRes.ok) {
           htmlToClean = await extRes.text();
         }
       } catch (fetchErr) {
-        console.warn(`Direct fetch for ${targetUrl} failed:`, fetchErr);
+        console.warn(`Direct fetch for ${targetUrl} failed:`, fetchErr instanceof Error ? fetchErr.message : String(fetchErr));
       }
     }
 
-    const extractedText = extractTextFromHtml(htmlToClean);
+    const extractedText = directHtmlText || extractTextFromHtml(htmlToClean);
     if (extractedText.trim()) {
       setDocumentCache(cacheKey, extractedText);
       return extractedText;

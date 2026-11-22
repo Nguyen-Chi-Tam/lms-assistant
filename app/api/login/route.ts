@@ -4,7 +4,7 @@ import { supabaseAdmin } from '../../../lib/supabase';
 import { getDb } from '../../../db';
 import { users } from '../../../db/schema';
 import { eq } from 'drizzle-orm';
-import { resolveUserMoodleRole } from '@/lib/moodle-role';
+import { isBlockedAccount } from '../../../app/lib/blocked-accounts';
 
 type MoodleTokenResponse = {
   token?: string;
@@ -19,6 +19,8 @@ type MoodleProfileResponse = {
   exception?: string;
   userissiteadmin?: boolean | number;
 };
+
+const STUDENT_ROLE = 'student';
 
 type LoginBody = {
   username?: unknown;
@@ -43,6 +45,11 @@ export async function POST(request: Request) {
     !body.password
   ) {
     return NextResponse.json({ error: 'Vui lòng nhập tên đăng nhập và mật khẩu.' }, { status: 400 });
+  }
+
+  // Tài khoản bị cấm không được đăng nhập vào LMS Assistant.
+  if (isBlockedAccount(identifier)) {
+    return NextResponse.json({ error: 'Tài khoản này không được phép sử dụng LMS Assistant.' }, { status: 403 });
   }
 
   const { MOODLE_URL } = runtimeEnv();
@@ -91,15 +98,8 @@ export async function POST(request: Request) {
     const fullname = profileData.fullname ?? '';
     const username = profileData.username ?? identifier.trim();
 
-    // Determine user role by combining system role with Cohorts (Course 1 / site roles)
-    const { MOODLE_TOKEN } = runtimeEnv();
-    const userRole = await resolveUserMoodleRole({
-      moodleBaseUrl,
-      token: tokenData.token,
-      userId,
-      isSiteAdmin: profileData.userissiteadmin,
-      fallbackToken: MOODLE_TOKEN,
-    });
+    // LMS Assistant is student-only: every Moodle account signs in as a student.
+    const userRole = STUDENT_ROLE;
 
     // Sync user to users table
     if (supabaseAdmin) {
@@ -142,7 +142,6 @@ export async function POST(request: Request) {
         id: userId,
         fullname,
         username,
-        role: userRole,
         avatarUrl: `/api/moodle/avatar?token=${encodeURIComponent(tokenData.token)}&id=${userId}`,
       },
     });

@@ -88,33 +88,7 @@ function getAttendanceEndTime(event: RawEvent, fallbackMinutes = 60): number {
 }
 
 /**
- * Cron/reminder notifications are student-only. Teachers now own FCM tokens
- * (for artifact-ready pushes), so make sure they never enter the scheduled
- * reminder audience even if `user_courses` contains their enrollments.
- */
-async function filterToStudentUserIds(userIds: number[]): Promise<number[]> {
-  if (!supabaseAdmin || userIds.length === 0) return [];
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .select('moodle_user_id, role');
-    if (error || !data) return [];
-
-    // Chỉ giữ lại những tài khoản được xác nhận rõ ràng role === 'student'
-    const studentIds = new Set(
-      data
-        .filter(u => u.role && u.role.trim().toLowerCase() === 'student')
-        .map(u => Number(u.moodle_user_id))
-    );
-    // Loại bỏ hoàn toàn giáo viên (teacher), admin, hoặc các tài khoản không phải student
-    return userIds.filter(id => studentIds.has(id));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Lấy danh sách user_id của sinh viên ghi danh trong khóa học.
+ * Lấy danh sách user_id của học viên ghi danh trong khóa học.
  * 1. Ưu tiên tra cứu bảng trung gian `user_courses` trên Supabase
  * 2. Fallback sang Moodle API core_enrol_get_users_courses cho danh sách users hiện có
  */
@@ -123,15 +97,15 @@ async function getEnrolledUserIdsForCourse(
   userCoursesCache: Map<number, number[]>
 ): Promise<number[]> {
   if (!courseId) {
-    // Nếu sự kiện không gắn môn học cụ thể, chỉ gửi cho sinh viên (role = 'student'), loại bỏ giáo viên
+    // Nếu sự kiện không gắn môn học cụ thể, gửi cho toàn bộ tài khoản.
     if (supabaseAdmin) {
-      const { data } = await supabaseAdmin.from('users').select('moodle_user_id').eq('role', 'student');
+      const { data } = await supabaseAdmin.from('users').select('moodle_user_id');
       return (data || []).map(u => Number(u.moodle_user_id)).filter(Boolean);
     }
     return [];
   }
 
-  // 1. Thử lấy từ bảng user_courses trên Supabase (lọc loại bỏ giáo viên)
+  // 1. Thử lấy từ bảng user_courses trên Supabase
   if (supabaseAdmin) {
     try {
       const { data, error } = await supabaseAdmin
@@ -140,27 +114,27 @@ async function getEnrolledUserIdsForCourse(
         .eq('moodle_course_id', courseId);
       if (!error && data && data.length > 0) {
         const rawIds = Array.from(new Set(data.map(r => Number(r.user_id)))).filter(Boolean);
-        return await filterToStudentUserIds(rawIds);
+        return rawIds;
       }
     } catch {
       // bảng chưa tạo hoặc có lỗi, fallback sang MySQL Moodle
     }
   }
 
-  // 2. Tra cứu trực tiếp danh sách ghi danh từ MySQL Moodle (LỌC CHỈ SINH VIÊN, không lấy giáo viên)
+  // 2. Tra cứu trực tiếp danh sách ghi danh từ MySQL Moodle
   try {
     const dbEnrolled = await getEnrolledUserIdsFromMoodleDb(courseId);
     if (dbEnrolled && dbEnrolled.length > 0) {
-      return await filterToStudentUserIds(dbEnrolled);
+      return dbEnrolled;
     }
   } catch {
     // tiếp tục fallback nếu MySQL bận
   }
 
-  // 3. Fallback: Lấy danh sách users từ Supabase có role = 'student' rồi kiểm tra khóa học đã ghi danh
+  // 3. Fallback: Lấy danh sách users từ Supabase rồi kiểm tra khóa học đã ghi danh
   let knownUserIds: number[] = [];
   if (supabaseAdmin) {
-    const { data: userRows } = await supabaseAdmin.from('users').select('moodle_user_id').eq('role', 'student');
+    const { data: userRows } = await supabaseAdmin.from('users').select('moodle_user_id');
     if (userRows && userRows.length > 0) {
       knownUserIds = userRows.map(u => Number(u.moodle_user_id)).filter(Boolean);
     }
@@ -427,9 +401,10 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
           .eq('id', event.id);
       }
 
-      // Xác định sinh viên thuộc lớp học này (loại bỏ giáo viên/admin)
-      const targetUserIds = await filterToStudentUserIds(
-        await getEnrolledUserIdsForCourse(event.moodleCourseId || null, userCoursesCache)
+      // Xác định các tài khoản thuộc lớp học này
+      const targetUserIds = await getEnrolledUserIdsForCourse(
+        event.moodleCourseId || null,
+        userCoursesCache
       );
 
       if (targetUserIds.length === 0) {
@@ -543,8 +518,8 @@ export async function processNotificationEvents(): Promise<ProcessEventsResult> 
         }
       }
 
-      // Kéo danh sách FCM token của các sinh viên cần gửi (bảo đảm 100% không bao giờ gửi cho giáo viên)
-      const confirmedStudentIds = await filterToStudentUserIds(pendingUserIds);
+      // Kéo danh sách FCM token của các tài khoản cần gửi
+      const confirmedStudentIds = pendingUserIds;
       let tokens: string[] = [];
       if (supabaseAdmin && confirmedStudentIds.length > 0) {
         const { data: tokenRows } = await supabaseAdmin

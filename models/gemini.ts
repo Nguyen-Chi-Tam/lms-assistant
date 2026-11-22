@@ -81,6 +81,16 @@ function collectConfiguredKeys(): string[] {
 }
 
 /**
+ * Returns whether any Gemini system API keys are configured, without
+ * initializing or syncing the key pool (no clients created, no terminal log).
+ * Used to avoid pre-initializing Gemini's system keys just to populate the
+ * model list before a user has picked a model.
+ */
+export function hasGeminiConfiguredKeys(): boolean {
+  return collectConfiguredKeys().length > 0;
+}
+
+/**
  * Initializes or syncs the key pool with current environment configuration.
  */
 function syncPool(): GeminiKeySlot[] {
@@ -118,7 +128,7 @@ function syncPool(): GeminiKeySlot[] {
   lastKeyFingerprint = fingerprint;
 
   if (keySlots.length > 0) {
-    console.log(`[Gemini Pool] Initialized with ${keySlots.length} API key(s): ${keySlots.map(s => s.maskedKey).join(', ')}`);
+    console.log(`[Gemini Pool] Initialized with ${keySlots.length} API key(s)`);
   }
 
   return keySlots;

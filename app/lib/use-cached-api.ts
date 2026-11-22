@@ -55,19 +55,6 @@ export function useMoodleData(enabled = true) {
 }
 
 /**
- * SWR Hook for teacher students and grade items with client-side caching
- */
-export function useTeacherStudents(courseId: number | string | undefined | null, token?: string) {
-  const key = courseId ? `/api/teacher/students?courseId=${encodeURIComponent(String(courseId))}` : null;
-
-  return useSWR(
-    key,
-    () => defaultFetcher(key!),
-    defaultSWRConfig
-  );
-}
-
-/**
  * SWR Hook for course personal materials
  */
 export function useCourseMaterials(courseId: number | string | undefined | null, userId: number | string | undefined | null) {

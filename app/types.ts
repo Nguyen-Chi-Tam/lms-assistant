@@ -6,8 +6,6 @@ export type Course = {
   color: string;
   icon: string;
   next: string;
-  role?: string;
-  isTeacher?: boolean;
   startdate?: number;
   lastaccess?: number;
 };
@@ -147,6 +145,28 @@ export type QuizAnalysisData = {
 };
 
 
+export type MoodleActivityItem = {
+  id: string;
+  moodleId: number;
+  courseId: number;
+  courseCode: string;
+  courseName: string;
+  name: string;
+  type: 'homework' | 'attendance' | 'quiz';
+  timestamp: number;
+  openTimestamp?: number;
+  closeTimestamp?: number;
+  durationSeconds?: number;
+  status: 'completed' | 'pending' | 'missed' | 'open_now';
+  submittedAt?: number | null;
+  score?: number | null;
+  maxScore?: number | null;
+  url: string;
+  cmid?: number;
+  instanceId?: number;
+  description?: string;
+};
+
 export type MoodleData = {
   mode: 'demo' | 'live';
   courses: Array<{
@@ -154,8 +174,6 @@ export type MoodleData = {
     shortname: string;
     fullname: string;
     progress?: number;
-    role?: string;
-    isTeacher?: boolean;
     startdate?: number;
     lastaccess?: number;
   }>;
@@ -163,12 +181,14 @@ export type MoodleData = {
     id: number;
     name: string;
     courseName: string;
+    courseId?: number;
     timestamp: number;
     url?: string;
     description?: string;
     modulename?: string;
     eventtype?: string;
   }>;
+  activities?: MoodleActivityItem[];
   resources: MoodleResource[];
   examResults?: ExamResult[];
   latestResult?: ExamResult | null;
@@ -234,5 +254,50 @@ export type ManualEventItem = {
   sentReminders: number[];
   eventDetails?: string | null;
   createdAt?: string;
+};
+
+export type GradeItemAnalytics = {
+  name: string;
+  rawScore?: number;
+  maxScore?: number;
+  pct: number;
+  updated_at?: string;
+};
+
+export type CourseGradeSummary = {
+  average_pct: number | null;
+  previous_average_pct: number | null;
+  delta: number | null;
+  trend: 'improving' | 'declining' | 'stable' | 'insufficient_data';
+  strengths: string[];
+  weaknesses: string[];
+  items: GradeItemAnalytics[];
+};
+
+export type ActivityFeedbackItem = {
+  id: string;
+  activity_type: 'quick_test' | 'speed_matching' | 'spot_the_bug' | 'rapid_swipe' | 'roadmap' | string;
+  score_label?: string;
+  ai_feedback: string;
+  improvement_plan?: string;
+  created_at: string;
+};
+
+export type CourseAnalyticsItem = {
+  id?: string;
+  courseId: number;
+  courseName: string;
+  courseCode?: string;
+  grade_summary: CourseGradeSummary;
+  feedback_history: ActivityFeedbackItem[];
+  updated_at?: string;
+};
+
+export type DashboardGradesResponse = ErrorResponse & {
+  overall_average_pct?: number | null;
+  overall_gpa_10?: number | null;
+  courses?: CourseAnalyticsItem[];
+  syncedAt?: string;
+  mode?: 'live' | 'demo';
 };
 

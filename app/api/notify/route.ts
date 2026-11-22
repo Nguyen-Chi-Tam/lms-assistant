@@ -123,19 +123,11 @@ export async function GET(request: Request) {
         enrolledUserIds = await getEnrolledUserIdsFromMoodleDb(Number(ev.moodle_course_id));
       }
 
-      // Fallback cuối cùng: danh sách sinh viên trong bảng users (chỉ lấy role = 'student')
+      // Fallback cuối cùng: toàn bộ tài khoản trong bảng users
       if (enrolledUserIds.length === 0) {
-        const { data: allUsers } = await supabaseAdmin.from('users').select('moodle_user_id').eq('role', 'student');
+        const { data: allUsers } = await supabaseAdmin.from('users').select('moodle_user_id');
         enrolledUserIds = (allUsers || []).map(u => Number(u.moodle_user_id)).filter(Boolean);
       }
-
-      // LOẠI BỎ TRIỆT ĐỂ GIÁO VIÊN: Bắt buộc chỉ giữ lại tài khoản có role = 'student'
-      const { data: studentUsers } = await supabaseAdmin
-        .from('users')
-        .select('moodle_user_id')
-        .eq('role', 'student');
-      const studentIdSet = new Set((studentUsers || []).map(u => Number(u.moodle_user_id)));
-      enrolledUserIds = enrolledUserIds.filter(id => studentIdSet.has(id));
 
       if (enrolledUserIds.length === 0) {
         details.push({

@@ -190,3 +190,4 @@ export const semanticQueryCache = pgTable('semantic_query_cache', {
 export type SemanticQueryCache = typeof semanticQueryCache.$inferSelect;
 export type NewSemanticQueryCache = typeof semanticQueryCache.$inferInsert;
 
+

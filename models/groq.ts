@@ -113,9 +113,7 @@ function syncPool(): GroqKeySlot[] {
   lastKeyFingerprint = fingerprint;
 
   if (keySlots.length > 0) {
-    console.log(
-      `[Groq Pool] Initialized with ${keySlots.length} API key(s): ${keySlots.map(s => s.maskedKey).join(', ')}`
-    );
+    console.log(`[Groq Pool] Initialized with ${keySlots.length} API key(s)`);
   }
 
   return keySlots;

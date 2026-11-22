@@ -6,11 +6,14 @@ import type {
 } from './registry';
 import { isQuotaExhaustedError, blockProviderUntilTomorrow } from './registry';
 
-export const CLOUDFLARE_DEFAULT_MODEL = '@cf/meta/llama-3.1-8b-instruct';
+// Cập nhật theo Workers AI catalog (tháng 11/2026):
+// llama-3-8b-instruct, llama-3.1-8b-instruct-fp8 và qwen1.5-14b-chat-awq
+// đã bị deprecated → HTTP 410. Chỉ giữ model còn active.
+export const CLOUDFLARE_DEFAULT_MODEL = '@cf/zai-org/glm-4.7-flash';
 export const CLOUDFLARE_BACKUP_MODELS = [
-  '@cf/meta/llama-3-8b-instruct',
-  '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  '@cf/qwen/qwen1.5-14b-chat-awq',
+  '@cf/aisingapore/gemma-sea-lion-v4-27b-it', // tối ưu ngôn ngữ Đông Nam Á (tiếng Việt)
+  '@cf/meta/llama-3.3-70b-instruct-fp8-fast', // chất lượng cao nhất, 24K context
+  '@cf/qwen/qwen3.8-27b', // 256K context, đa ngôn ngữ
 ];
 
 export const CLOUDFLARE_EMBEDDING_MODEL = '@cf/baai/bge-m3';
@@ -73,6 +76,64 @@ function prepareMessages(
 }
 
 /**
+ * Cloudflare đôi khi trả `response` dạng object/mảng (vd. { text: "..." }) thay vì
+ * string thuần. Dùng String(obj) ở đây sẽ tạo ra literal "[object Object]" và
+ * đầu độc toàn bộ cascade (provider tưởng mình đã trả lời thành công).
+ */
+function extractCloudflareText(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim();
+  if (Array.isArray(raw)) {
+    return raw.map(extractCloudflareText).filter(Boolean).join('\n').trim();
+  }
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    for (const key of ['text', 'content', 'response', 'output_text', 'value']) {
+      const found = extractCloudflareText(obj[key]);
+      if (found) return found;
+    }
+  }
+  return '';
+}
+
+type CloudflareChoice = {
+  message?: { content?: unknown };
+  delta?: { content?: unknown };
+  text?: unknown;
+};
+type CloudflareEnvelope = {
+  response?: unknown;
+  result?: { response?: unknown; choices?: CloudflareChoice[] };
+  choices?: CloudflareChoice[];
+};
+
+/**
+ * Model mới (GLM-4.7-Flash, Qwen 3.8, SEA-LION) trả OpenAI-style `choices`,
+ * model cũ (Llama) trả `response` string. Hỗ trợ cả hai.
+ */
+function extractCloudflareCompletion(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const envelope = data as CloudflareEnvelope;
+  const choices = envelope.choices ?? envelope.result?.choices;
+  if (choices && choices.length > 0) {
+    const first = choices[0] || {};
+    const text = extractCloudflareText(first.message?.content ?? first.delta?.content ?? first.text);
+    if (text) return text;
+  }
+  return extractCloudflareText(envelope.result?.response ?? envelope.response);
+}
+
+function extractCloudflareStreamChunk(parsed: unknown): string {
+  if (!parsed || typeof parsed !== 'object') return '';
+  const envelope = parsed as CloudflareEnvelope & { response?: unknown };
+  const choices = envelope.choices;
+  if (choices && choices.length > 0) {
+    const first = choices[0] || {};
+    return extractCloudflareText(first.delta?.content ?? first.message?.content ?? first.text);
+  }
+  return extractCloudflareText(envelope.response);
+}
+
+/**
  * Call Cloudflare Workers AI (Non-streaming).
  * Tries Native Edge Binding (`env.AI`) first for ultra-low latency,
  * falls back to Cloudflare REST API when running outside Workers edge.
@@ -108,7 +169,7 @@ export async function callCloudflareAI(
       }
 
       const res = await aiBinding.run(cleanModel, bindingParams);
-      const text = res?.response || res?.result?.response || (typeof res === 'string' ? res : '');
+      const text = extractCloudflareCompletion(res);
       if (text && text.trim()) {
         return { text: text.trim() };
       }
@@ -156,8 +217,8 @@ export async function callCloudflareAI(
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const data = (await res.json()) as any;
-      const text = data?.result?.response || data?.response || '';
-      if (text && text.trim()) {
+      const text = extractCloudflareCompletion(data);
+      if (text.trim()) {
         return { text: text.trim() };
       }
     } catch (restErr) {
@@ -229,7 +290,7 @@ export async function callCloudflareAIStream(
             if (dataStr === '[DONE]') break;
             try {
               const parsed = JSON.parse(dataStr);
-              const chunk = parsed.response || '';
+              const chunk = extractCloudflareStreamChunk(parsed);
               if (chunk) {
                 fullText += chunk;
                 opts.onDelta(chunk);
@@ -313,7 +374,7 @@ export async function callCloudflareAIStream(
           if (dataStr === '[DONE]') break;
           try {
             const parsed = JSON.parse(dataStr);
-            const chunk = parsed.response || '';
+            const chunk = extractCloudflareStreamChunk(parsed);
             if (chunk) {
               fullText += chunk;
               opts.onDelta(chunk);

@@ -135,8 +135,8 @@ export async function POST(request: Request) {
         await supabaseAdmin.from('users').upsert(
           {
             moodle_user_id: userId,
-            role: userId === 2 ? 'teacher' : 'student',
-            name: userName || (userId === 2 ? 'Admin User' : 'Sinh viên'),
+            role: 'student',
+            name: userName || 'Sinh viên',
           },
           { onConflict: 'moodle_user_id', ignoreDuplicates: true }
         );

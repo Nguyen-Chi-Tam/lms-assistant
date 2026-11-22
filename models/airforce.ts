@@ -39,6 +39,7 @@ function getClient(): OpenAI | null {
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
       timeout: AIRFORCE_TIMEOUT_MS,
+      maxRetries: 0,
     });
     cachedKey = config.apiKey;
     cachedBaseUrl = config.baseUrl;

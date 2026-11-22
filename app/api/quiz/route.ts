@@ -1,33 +1,27 @@
 import { NextResponse } from 'next/server';
 import { generateText } from '@/models/registry';
 import { parseDocumentFromUrl } from '@/lib/document-parser';
-import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag';
+import { retrieveRelevantChunks, formatChunksForPrompt, scoreAndSelectChunks, type DocumentChunk } from '@/lib/rag';
+import { getStoredCourseEmbeddings, getExistingCourseFileIds, hydrateChunksWithParentText, vectorizeAndStoreLmsSource, isPineconeEgressBlocked } from '@/lib/pinecone-vector';
 import { getLatestQuizAnalysis } from '@/lib/learning-artifacts';
 import { getPersonalMaterials } from '@/lib/firebase-data';
 import { stripFluff } from '@/lib/anti-fluff';
 import { getUserApiKeys } from '@/lib/key-manager';
+import { parseQuizJson, normalizeQuizQuestions, type MatchingPair, type QuizQuestion } from '@/app/lib/quiz-parser';
 
 interface SourceItem {
   name: string;
   url?: string;
   type?: string;
+  fileId?: number;
+  moduleId?: number;
+  sectionId?: number;
+  sectionName?: string;
+  chapter?: string | number;
+  isStudentUpload?: boolean;
 }
 
-export interface MatchingPair {
-  left: string;
-  right: string;
-}
-
-export interface QuizQuestion {
-  id?: string;
-  q: string;
-  type?: 'multiple_choice' | 'true_false' | 'multiple_select' | 'matching' | 'short_answer';
-  choices?: string[];
-  answer?: number | string; // 0-based index for single / true_false, or string for short answer
-  answers?: number[] | string[]; // array of 0-based indices for multiple_select, or acceptable string variants for short_answer
-  pairs?: MatchingPair[]; // array of { left, right } pairs for matching
-  explanation: string;
-}
+export type { MatchingPair, QuizQuestion };
 
 export async function POST(request: Request) {
   try {
@@ -43,17 +37,22 @@ export async function POST(request: Request) {
       difficulty?: 'easy' | 'normal' | 'hard';
       questionType?: 'multiple_choice' | 'true_false' | 'multiple_select' | 'matching' | 'short_answer' | 'mixed';
       questionTypes?: Array<'multiple_choice' | 'true_false' | 'multiple_select' | 'matching' | 'short_answer'>;
+      quickTest?: boolean;
       generatorMode?: 'comprehensive' | 'targeted';
       focusWeakAreas?: boolean;
       weakTopics?: string[];
       allowExternalSource?: boolean;
       ragMode?: 'strict' | 'hybrid' | 'creative';
       model?: string;
+      /** When true the manually selected model must generate alone, no cascade fallback. */
+      strictModel?: boolean;
+      /** When true or when model starts with puter:, delegate actual generation to Puter.js in browser. */
+      preferPuter?: boolean;
     };
 
-    // Validate count: minimum 10, maximum 50
+    // Validate count: quick check-ins use 3 questions; full quizzes can use more.
     const rawCount = typeof body.count === 'number' ? body.count : 10;
-    const count = Math.min(50, Math.max(10, rawCount));
+    const count = Math.min(50, Math.max(3, rawCount));
 
     const allKnownTypes: Array<'multiple_choice' | 'true_false' | 'multiple_select' | 'matching' | 'short_answer'> = [
       'multiple_choice',
@@ -62,6 +61,7 @@ export async function POST(request: Request) {
       'matching',
       'short_answer',
     ];
+    type KnownQuestionType = (typeof allKnownTypes)[number];
 
     let selectedTypes: Array<'multiple_choice' | 'true_false' | 'multiple_select' | 'matching' | 'short_answer'> = [];
     if (Array.isArray(body.questionTypes) && body.questionTypes.length > 0) {
@@ -71,8 +71,8 @@ export async function POST(request: Request) {
     if (selectedTypes.length === 0) {
       if (body.questionType === 'mixed') {
         selectedTypes = [...allKnownTypes];
-      } else if (body.questionType && allKnownTypes.includes(body.questionType as any)) {
-        selectedTypes = [body.questionType as any];
+      } else if (body.questionType && allKnownTypes.includes(body.questionType as KnownQuestionType)) {
+        selectedTypes = [body.questionType as KnownQuestionType];
       } else {
         selectedTypes = ['multiple_choice'];
       }
@@ -83,7 +83,6 @@ export async function POST(request: Request) {
     const topic = body.topic || 'Kiểm tra kiến thức môn học';
     const ragMode: 'strict' | 'hybrid' | 'creative' =
       body.ragMode || (body.allowExternalSource ? 'creative' : 'hybrid');
-    const allowExternalSource = ragMode === 'creative';
     const quizGeminiKeys = body.userId ? await getUserApiKeys(Number(body.userId), 'gemini').catch(() => []) : [];
 
     const effectiveSources: SourceItem[] =
@@ -97,6 +96,9 @@ export async function POST(request: Request) {
     let documentContext = '';
     const docMap = new Map<string, string>();
     const moodleCourseId = Number(body.courseId) || undefined;
+    // Giới hạn 20s cho toàn bộ khâu parse tài liệu để không ăn hết thời gian request.
+    const quizDocSignal = AbortSignal.timeout(20_000);
+    const quizParseOptions = { userKeys: quizGeminiKeys, signal: quizDocSignal, skipVisionOcr: true };
 
     if (moodleCourseId) {
       try {
@@ -105,7 +107,7 @@ export async function POST(request: Request) {
           for (const mat of mats) {
             if (mat.storage_url && mat.title && !docMap.has(String(mat.title).toLowerCase())) {
               try {
-                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), { userKeys: quizGeminiKeys });
+                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), quizParseOptions);
                 if (text && text.length > 50) docMap.set(String(mat.title).toLowerCase(), text);
               } catch {
                 // ignore unavailable material
@@ -118,12 +120,111 @@ export async function POST(request: Request) {
       }
     }
 
+    // 1b. LMS course corpus (Pinecone) - the same indexed course files the tutor reads.
+    // Quick check-ins carry no preselected sources, so the whole course corpus is used.
+    const selectedLmsSources = effectiveSources.filter(src => (src.fileId || src.moduleId) && !src.isStudentUpload);
+    let lmsChunks: DocumentChunk[] = [];
+
+    if (moodleCourseId) {
+      try {
+        const storedChunks = await getStoredCourseEmbeddings(
+          moodleCourseId,
+          selectedLmsSources.length > 0 ? { docTitles: selectedLmsSources.map(src => src.name) } : {}
+        );
+
+        if (storedChunks.length > 0) {
+          const picked = scoreAndSelectChunks(storedChunks, topic, {
+            topK: body.quickTest ? 10 : 6,
+            maxTotalChars: body.quickTest ? 14000 : 9000,
+            minSimilarity: 0.15,
+            dynamicTopK: true,
+          });
+          if (picked.length > 0) {
+            lmsChunks = await hydrateChunksWithParentText(picked);
+          } else if (body.quickTest) {
+            // Fallback: nothing matched the course title, so spread the check-in across
+            // the opening sections of every indexed course document instead of failing.
+            const leadChunks: DocumentChunk[] = [];
+            const chunksByTitle = new Map<string, DocumentChunk[]>();
+            for (const chunk of storedChunks) {
+              const list = chunksByTitle.get(chunk.docTitle) || [];
+              list.push(chunk);
+              chunksByTitle.set(chunk.docTitle, list);
+            }
+            for (const list of chunksByTitle.values()) {
+              leadChunks.push(...list.sort((a, b) => a.chunkIndex - b.chunkIndex).slice(0, 2));
+            }
+            if (leadChunks.length > 0) {
+              lmsChunks = await hydrateChunksWithParentText(leadChunks.slice(0, 12));
+            }
+          }
+        }
+
+        // Ingest LMS files that are not indexed yet (same on-demand path as the tutor).
+        // Quick check-ins ingest a small batch per run so the first prompt stays fast;
+        // the next check-in picks up the remaining files.
+        if (selectedLmsSources.length > 0) {
+          const pineconeBlocked = isPineconeEgressBlocked();
+          const existingFileIds = pineconeBlocked ? new Set<number>() : await getExistingCourseFileIds(moodleCourseId);
+          const pendingIngest = selectedLmsSources
+            .filter(src => {
+              const fileId = Number(src.fileId || src.moduleId);
+              return Boolean(fileId) && Boolean(src.url) && !existingFileIds.has(fileId);
+            })
+            .slice(0, body.quickTest ? 3 : 8);
+
+          if (pendingIngest.length > 0) {
+            await Promise.allSettled(
+              pendingIngest.map(async src => {
+                try {
+                  const text = await parseDocumentFromUrl(src.url!, src.name, quizParseOptions);
+                  if (!text || text.trim().length < 20) return;
+                  if (!pineconeBlocked) {
+                    await vectorizeAndStoreLmsSource({
+                      moodleCourseId,
+                      moodleFileId: Number(src.fileId || src.moduleId) || 1,
+                      documentTitle: src.name,
+                      text,
+                      metadata: {
+                        sectionId: src.sectionId,
+                        sectionName: src.sectionName,
+                        chapter: src.chapter,
+                        courseId: moodleCourseId,
+                      },
+                    });
+                  }
+                  docMap.set(src.name.toLowerCase(), text);
+                } catch (ingestErr) {
+                  console.warn(`[Quiz] Could not parse LMS source "${src.name}":`, ingestErr);
+                }
+              })
+            );
+          }
+        }
+      } catch (lmsErr) {
+        console.warn('[Quiz] LMS course retrieval warning:', lmsErr);
+      }
+    }
+
+    // Direct content from LMS sources sent from frontend
+    for (const src of effectiveSources) {
+      const lowerName = src.name.toLowerCase();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const content = (src as any).content;
+      if (content && typeof content === 'string' && content.trim() && !docMap.has(lowerName)) {
+        docMap.set(lowerName, content.trim());
+      }
+    }
+
     // Parse URL documents if needed
     for (const src of effectiveSources) {
       const lowerName = src.name.toLowerCase();
-      if (!docMap.has(lowerName) && src.url) {
+      // If Pinecone provided chunks, quickTest doesn't need to re-parse. But if Pinecone was empty/blocked,
+      // allow reading up to 2 LMS files directly so we have real course text.
+      if (body.quickTest && lmsChunks.length > 0 && (src.fileId || src.moduleId) && !docMap.has(lowerName)) continue;
+      if (!docMap.has(lowerName) && src.url && docMap.size < (body.quickTest ? 2 : 5)) {
         try {
-          const extractedText = await parseDocumentFromUrl(src.url, src.name, { userKeys: quizGeminiKeys });
+          const extractedText = await parseDocumentFromUrl(src.url, src.name, quizParseOptions);
           if (extractedText && extractedText.trim()) {
             docMap.set(lowerName, extractedText);
           }
@@ -131,6 +232,14 @@ export async function POST(request: Request) {
           // ignore
         }
       }
+    }
+
+    // Synthesize outline from LMS syllabus if no full documents were parsed
+    if (docMap.size === 0 && effectiveSources.length > 0) {
+      const outline = effectiveSources.slice(0, 15).map((s, i) =>
+        `- Học liệu LMS ${i + 1}: "${s.name}"${s.sectionName ? ` (Mục: ${s.sectionName})` : ''}${s.chapter ? ` [Chương: ${s.chapter}]` : ''}`
+      ).join('\n');
+      docMap.set('lms_course_outline', `TÀI LIỆU VÀ CÁC CHỦ ĐỀ HỌC PHẦN TRÊN LMS:\n${outline}`);
     }
 
     const compiledDocs: Array<{ title: string; text: string }> = [];
@@ -149,8 +258,18 @@ export async function POST(request: Request) {
         compiledDocs.push({ title: src.name, text });
       }
     }
+    // Quick check-ins may not have a preselected source (or the selected LMS files may
+    // not be parseable yet). In that case, keep every material loaded for the course
+    // instead of silently dropping them.
+    if (effectiveSources.length === 0 || body.quickTest) {
+      for (const [title, text] of docMap.entries()) {
+        if (text.trim() && !compiledDocs.some(d => d.title.toLowerCase() === title)) {
+          compiledDocs.push({ title, text });
+        }
+      }
+    }
 
-    if (ragMode === 'strict' && compiledDocs.length === 0) {
+    if (ragMode === 'strict' && compiledDocs.length === 0 && lmsChunks.length === 0 && !body.quickTest) {
       return NextResponse.json(
         {
           error:
@@ -159,10 +278,22 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+    if (body.quickTest && compiledDocs.length === 0 && lmsChunks.length === 0) {
+      // Build a fallback document representing the course structure instead of rejecting with 422
+      compiledDocs.push({
+        title: `Đề cương môn học ${body.course || topic}`,
+        text: `Môn học: ${body.course || topic}\nChủ đề: ${topic}\nTài liệu khóa học: ${effectiveSourceNames.join(', ') || 'Giáo trình môn học'}`,
+      });
+    }
 
-    if (compiledDocs.length > 0) {
+    // LMS chunks already carry the retrieved course text, so skip the same documents
+    // in the in-memory pipeline to keep the prompt free of duplicates.
+    const lmsChunkTitles = new Set(lmsChunks.map(chunk => chunk.docTitle.toLowerCase().trim()));
+    const compiledForPrompt = compiledDocs.filter(doc => !lmsChunkTitles.has(doc.title.toLowerCase().trim()));
+
+    if (compiledForPrompt.length > 0) {
       try {
-        const relevantChunks = await retrieveRelevantChunks(topic, compiledDocs, {
+        const relevantChunks = await retrieveRelevantChunks(topic, compiledForPrompt, {
           topK: 8,
           maxTotalChars: 18000,
           minSimilarity: 0.15,
@@ -171,18 +302,34 @@ export async function POST(request: Request) {
         if (relevantChunks.length > 0) {
           documentContext = formatChunksForPrompt(relevantChunks);
         } else {
-          const maxPerDoc = Math.max(2500, Math.floor(25000 / compiledDocs.length));
-          documentContext = compiledDocs
+          const maxPerDoc = Math.max(2500, Math.floor(25000 / compiledForPrompt.length));
+          documentContext = compiledForPrompt
             .map((doc, idx) => `[TÀI LIỆU ${idx + 1}: "${doc.title}"]\n${doc.text.slice(0, maxPerDoc)}`)
             .join('\n\n');
         }
       } catch (ragErr) {
         console.warn('RAG retrieval warning in quiz route:', ragErr);
-        const maxPerDoc = Math.max(2500, Math.floor(25000 / compiledDocs.length));
-        documentContext = compiledDocs
+        const maxPerDoc = Math.max(2500, Math.floor(25000 / compiledForPrompt.length));
+        documentContext = compiledForPrompt
           .map((doc, idx) => `[TÀI LIỆU ${idx + 1}: "${doc.title}"]\n${doc.text.slice(0, maxPerDoc)}`)
           .join('\n\n');
       }
+    }
+
+    if (lmsChunks.length > 0) {
+      // Parent-text hydration can expand chunks to full pages, so cap the budget here.
+      const lmsBudget = body.quickTest ? 16000 : 12000;
+      let usedChars = 0;
+      const cappedLmsChunks: DocumentChunk[] = [];
+      for (const chunk of lmsChunks) {
+        const remaining = lmsBudget - usedChars;
+        if (remaining <= 200) break;
+        const text = chunk.text.slice(0, remaining);
+        usedChars += text.length;
+        cappedLmsChunks.push({ ...chunk, text });
+      }
+      const lmsContext = formatChunksForPrompt(cappedLmsChunks);
+      if (lmsContext) documentContext = [lmsContext, documentContext].filter(Boolean).join('\n\n');
     }
 
     // Difficulty Prompting
@@ -198,7 +345,7 @@ export async function POST(request: Request) {
     // Type Prompting
     const typeDescriptions: Record<string, string> = {
       multiple_choice: '1. TRẮC NGHIỆM 4 LỰA CHỌN (Single Choice): "type": "multiple_choice", "choices": đúng 4 lựa chọn, "answer": số nguyên 0..3 (1 đáp án đúng duy nhất).',
-      true_false: '2. ĐÚNG / SAI (True/False): "type": "true_false", "choices": ["Đúng", "Sai"], "answer": 0 nếu Đúng, 1 nếu Sai.',
+      true_false: '2. ĐÚNG / SAI (True/False): "type": "true_false", "q" PHẢI là một mệnh đề khẳng định hoàn chỉnh, KHÔNG kết thúc bằng dấu "?" (KHÔNG dùng dạng "Câu nào/Điều nào..."), "choices": ["Đúng", "Sai"], "answer": 0 nếu Đúng, 1 nếu Sai.',
       multiple_select: '3. CHỌN NHIỀU ĐÁP ÁN (Multiple Select): "type": "multiple_select", "choices": 4-5 lựa chọn, "answers": mảng chứa từ 2 ĐẾN 3 chỉ số đúng (ví dụ [0, 2] hoặc [1, 2, 3]). BẮT BUỘC chỉ có 2 hoặc 3 đáp án đúng, TUYỆT ĐỐI KHÔNG chọn tất cả và KHÔNG chọn chỉ 1.',
       matching: '4. NỐI CẶP TƯƠNG ỨNG (Matching): "type": "matching", "q": "Yêu cầu nối thuật ngữ với định nghĩa phù hợp...", "pairs": mảng 3 đến 5 cặp [{"left": "Khái niệm A", "right": "Định nghĩa chính xác của A"}, ...]. Vế phải phải tương ứng chuẩn xác với vế trái.',
       short_answer: '5. TRẢ LỜI NGẮN (Short Answer): "type": "short_answer", "q": "Nội dung câu hỏi yêu cầu điền thuật ngữ/từ khóa/con số ngắn...", "answers": mảng 1 đến 3 biến thể đáp án đúng chấp nhận được (ví dụ ["TCP", "Transmission Control Protocol"]).',
@@ -267,6 +414,14 @@ ${difficultyDesc}
 ${typeDesc}
 ${externalRule}
 ${adaptiveSection}
+${body.quickTest ? `
+QUY TẮC RIÊNG CHO CHECK-IN NHANH:
+- Mỗi câu hỏi phải kiểm tra một chi tiết cụ thể trong tài liệu: thuật ngữ, định nghĩa, công nghệ, quy trình, ví dụ, đoạn mã, con số hoặc mối quan hệ giữa các khái niệm.
+- Không tạo câu hỏi về phương pháp học, mục tiêu học tập, ôn bài, xem điểm, "nên làm gì trước", hoặc lời khuyên chung chung.
+- Không dùng các câu hỏi có thể áp dụng nguyên xi cho mọi môn học.
+- Quy tắc dấu câu: mọi câu "multiple_choice" BẮT BUỘC kết thúc bằng dấu "?" và có đúng 4 lựa chọn; mọi câu "true_false" BẮT BUỘC là mệnh đề khẳng định KHÔNG có dấu "?". Không hỏi "Câu nào/Điều nào..." trong câu Đúng/Sai.
+- Nếu không tìm thấy đủ dữ kiện cụ thể trong tài liệu, hãy tạo ít câu hơn thay vì bịa hoặc dùng kiến thức chung.
+` : ''}
 
 QUY TẮC BẮT BUỘC CHO TỪNG LOẠI CÂU HỎI:
 1. "multiple_choice": "choices" có 4 phương án, "answer": số nguyên 0..3 (1 đáp án đúng).
@@ -288,7 +443,7 @@ QUY TẮC BẮT BUỘC CHO TỪNG LOẠI CÂU HỎI:
     },
     {
       "type": "true_false",
-      "q": "Nhận định này đúng hay sai?",
+      "q": "MVC tách Model, View và Controller thành các thành phần độc lập.",
       "choices": ["Đúng", "Sai"],
       "answer": 0,
       "explanation": "Giải thích chi tiết..."
@@ -321,27 +476,60 @@ QUY TẮC BẮT BUỘC CHO TỪNG LOẠI CÂU HỎI:
 Không bao gồm markdown hay văn bản ngoài JSON.`;
 
     // 3. AI Execution via unified model registry (Quiz: Basic Speed Task -> Groq forward in Strict RAG)
-    try {
-      const result = await generateText(body.model, {
-        system: 'Bạn là chuyên gia khảo thí và sư phạm đại học. Luôn đảm bảo tuyệt đối tính chính xác của câu hỏi, đáp án đúng và lời giải thích dựa trên sự thật lịch sử và khoa học, chống ảo giác 100%. Trả về đúng JSON schema.',
-        userPrompt: prompt,
-        userId: body.userId ? Number(body.userId) : undefined,
-        temperature: ragMode === 'strict' ? 0.0 : ragMode === 'hybrid' ? 0.3 : 0.7,
-        topP: ragMode === 'strict' ? 0.001 : ragMode === 'hybrid' ? 0.7 : 0.9,
-        jsonMode: true,
-        googleSearchGrounding: ragMode === 'creative',
-        allowExternalSource: ragMode === 'creative',
-        ragMode,
-        taskCategory: 'basic',
-        signal: request.signal,
-      });
+    const maxTokens = Math.min(8000, 1500 + count * 350);
+    const seenQuestions = new Set<string>();
+    const normalized: QuizQuestion[] = [];
 
-      if (result.text) {
-        const parsed = JSON.parse(result.text);
-        const questionsList = parsed.questions || parsed.quiz || (Array.isArray(parsed) ? parsed : []);
-        if (Array.isArray(questionsList) && questionsList.length > 0) {
+    for (let attempt = 0; attempt < 3 && normalized.length < count; attempt++) {
+      try {
+        // Mỗi lần thử lại phải yêu cầu câu KHÁC — nếu không, dedup ở dưới sẽ loại
+        // toàn bộ câu trùng từ các lần trước và route luôn trả 500 dù model vẫn chạy.
+        const retryHint = attempt > 0 && seenQuestions.size > 0
+          ? `\n\nLƯU Ý LẦN THỬ ${attempt + 1}: Các câu hỏi sau đã có, TUYỆT ĐỐI không lặp lại (hãy tạo câu khác cùng chủ đề):\n${[...seenQuestions].slice(-30).map((q, i) => `${i + 1}. ${q}`).join('\n')}`
+          : '';
+
+        const result = await generateText(body.model, {
+          system: 'Bạn là chuyên gia khảo thí và sư phạm đại học. Luôn đảm bảo tuyệt đối tính chính xác của câu hỏi, đáp án đúng và lời giải thích dựa trên sự thật lịch sử và khoa học, chống ảo giác 100%. Trả về đúng JSON schema.',
+          userPrompt: `${prompt}${retryHint}`,
+          userId: body.userId ? Number(body.userId) : undefined,
+          strictModel: Boolean(body.strictModel) && Boolean(body.model && body.model !== 'auto'),
+          temperature: ragMode === 'strict' ? 0.0 : ragMode === 'hybrid' ? 0.3 : 0.7,
+          topP: ragMode === 'strict' ? 0.001 : ragMode === 'hybrid' ? 0.7 : 0.9,
+          maxTokens,
+          jsonMode: true,
+          googleSearchGrounding: ragMode === 'creative',
+          allowExternalSource: ragMode === 'creative',
+          ragMode,
+          taskCategory: body.quickTest ? 'quick' : 'basic',
+          signal: request.signal,
+        });
+
+        console.log(
+          `[Quiz gen] attempt=${attempt + 1}: provider=${result.provider || 'auto'} model=${result.modelId || '-'} textChars=${result.text.length} preview=${JSON.stringify(result.text.slice(0, 80))}`,
+        );
+        if (!result.text) {
+          console.warn(`[Quiz gen] attempt=${attempt + 1}: cascade trả về rỗng — mọi provider đều fail/bị skip.`);
+        }
+
+        if (result.text) {
+          // Defensive parse: handles markdown fences, trailing commas, truncation.
+          const questionsList = parseQuizJson(result.text);
+          // Deduplicate by question text so retry batches don't repeat questions.
+          // Nhiều model trả "question" thay vì "q" — chấp nhận cả 3 alias, nếu không
+          // toàn bộ câu bị drop ở bước này và route trả 500 dù AI vẫn trả JSON hợp lệ.
+          const fresh = questionsList.filter((item: { q?: string; questionText?: string; question?: string }) => {
+            const key = String(item?.q || item?.questionText || item?.question || '').toLowerCase().trim();
+            if (!key || seenQuestions.has(key)) return false;
+            seenQuestions.add(key);
+            return true;
+          });
+          console.log(
+            `[Quiz gen] attempt=${attempt + 1}: parsed=${questionsList.length} fresh=${fresh.length} total=${normalized.length}/${count}`,
+          );
+          const baseIdx = normalized.length;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const normalized = questionsList.slice(0, count).map((item: any, idx: number) => {
+          const mapped = fresh.map((item: any, i: number) => {
+            const idx = baseIdx + i;
             const rawChoices = item.choices || item.options || [];
 
             // 1. Matching
@@ -359,7 +547,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
                 return {
                   id: `sq-${idx + 1}-${Date.now()}`,
                   type: 'matching' as const,
-                  q: item.q || item.questionText || `Nối các cặp khái niệm tương ứng sau:`,
+                  q: item.q || item.questionText || item.question || `Nối các cặp khái niệm tương ứng sau:`,
                   pairs: validPairs,
                   explanation: item.explanation || '',
                 };
@@ -380,7 +568,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
               return {
                 id: `sq-${idx + 1}-${Date.now()}`,
                 type: 'short_answer' as const,
-                q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
+                q: item.q || item.questionText || item.question || `Câu hỏi ${idx + 1}`,
                 answers: validAnswers.length > 0 ? validAnswers : ['Đáp án đúng'],
                 answer: validAnswers[0] || 'Đáp án đúng',
                 explanation: item.explanation ? stripFluff(item.explanation) : '',
@@ -397,7 +585,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
               return {
                 id: `sq-${idx + 1}-${Date.now()}`,
                 type: 'true_false' as const,
-                q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
+                q: item.q || item.questionText || item.question || `Câu hỏi ${idx + 1}`,
                 choices: ['Đúng', 'Sai'],
                 answer: ans === 1 ? 1 : 0,
                 explanation: item.explanation ? stripFluff(item.explanation) : '',
@@ -434,7 +622,7 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
               return {
                 id: `sq-${idx + 1}-${Date.now()}`,
                 type: 'multiple_select' as const,
-                q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
+                q: item.q || item.questionText || item.question || `Câu hỏi ${idx + 1}`,
                 choices,
                 answers: validAnswers,
                 explanation: item.explanation ? stripFluff(item.explanation) : '',
@@ -447,30 +635,59 @@ Không bao gồm markdown hay văn bản ngoài JSON.`;
             return {
               id: `sq-${idx + 1}-${Date.now()}`,
               type: 'multiple_choice' as const,
-              q: item.q || item.questionText || `Câu hỏi ${idx + 1}`,
+              q: item.q || item.questionText || item.question || `Câu hỏi ${idx + 1}`,
               choices,
               answer: Math.min(choices.length - 1, Math.max(0, ans)),
               explanation: item.explanation ? stripFluff(item.explanation) : '',
             };
           });
 
-          return NextResponse.json({
-            questions: normalized,
-            count: normalized.length,
-            difficulty,
-            questionType,
-            questionTypes: selectedTypes,
-            generatorMode,
-            weakTopics: effectiveWeakTopics,
-            mode: 'ai',
-          });
+          normalized.push(...mapped);
+          if (normalized.length >= count) break;
         }
+      } catch (err) {
+        if (request.signal?.aborted) throw err;
+        // Strict manual selection: report the chosen model's failure instead of cascading.
+        if (body.strictModel) {
+          return NextResponse.json(
+            { error: err instanceof Error ? err.message : `Model ${body.model} không thể tạo đề trắc nghiệm.` },
+            { status: 502 }
+          );
+        }
+        console.warn('AI quiz generation failed:', err);
       }
-    } catch (err) {
-      console.warn('AI quiz generation failed:', err);
     }
 
-    return NextResponse.json({ error: 'Không thể tạo đề trắc nghiệm lúc này.' }, { status: 500 });
+    if (normalized.length < count) {
+      console.warn(`[Quiz gen] giving up: got ${normalized.length}/${count} valid questions after 3 attempts.`);
+      if (body.strictModel && body.model && body.model !== 'auto') {
+        return NextResponse.json(
+          { error: `Model ${body.model} không tạo được câu hỏi hợp lệ. Hãy chọn model khác.` },
+          { status: 502 }
+        );
+      }
+      if (body.quickTest) {
+        // Không trả về câu hỏi chung chung: nếu AI không sinh được câu hỏi cụ thể từ tài liệu,
+        // báo lỗi để client hiển thị thử lại/bỏ qua thay vì câu hỏi meta/generic.
+        return NextResponse.json(
+          { error: 'Không thể tạo câu hỏi check-in cụ thể từ tài liệu lúc này. Vui lòng thử lại.' },
+          { status: 503 }
+        );
+      }
+      return NextResponse.json({ error: 'Không thể tạo đề trắc nghiệm lúc này.' }, { status: 500 });
+    }
+
+    const questions = normalized.slice(0, count);
+    return NextResponse.json({
+      questions,
+      count: questions.length,
+      difficulty,
+      questionType,
+      questionTypes: selectedTypes,
+      generatorMode,
+      weakTopics: effectiveWeakTopics,
+      mode: 'ai',
+    });
   } catch (error) {
     console.error('Quiz route error:', error);
     return NextResponse.json({ error: 'Lỗi khi tạo đề trắc nghiệm.' }, { status: 500 });

@@ -3,7 +3,7 @@ import {
   executeWithGeminiPool,
   isAllGeminiKeysBlocked,
   getGeminiEarliestUnblockTime,
-  getAvailableKeySlots,
+  hasGeminiConfiguredKeys,
   GEMINI_MODEL,
   GEMINI_BACKUP_MODELS,
 } from './gemini';
@@ -38,13 +38,6 @@ import {
   CLOUDFLARE_BACKUP_MODELS,
 } from './cloudflare';
 import {
-  isApmixAvailable,
-  callApmix,
-  callApmixStream,
-  APMIX_DEFAULT_MODEL,
-  APMIX_BACKUP_MODELS,
-} from './apmix';
-import {
   isAirforceAvailable,
   callAirforce,
   callAirforceStream,
@@ -58,14 +51,26 @@ import {
   ORCAROUTER_DEFAULT_MODEL,
   ORCAROUTER_BACKUP_MODELS,
 } from './orcarouter';
+import {
+  isPollinationsAvailable,
+  callPollinations,
+  callPollinationsStream,
+  POLLINATIONS_DEFAULT_MODEL,
+  POLLINATIONS_BACKUP_MODELS,
+} from './pollinations';
+import {
+  isAionlabsAvailable,
+  callAionlabs,
+  callAionlabsStream,
+} from './aionlabs';
 import { buildUniversalLanguageDirective } from '@/lib/language-detector';
-import { getUserApiKeysMap } from '@/lib/key-manager';
+import { getUserApiKeysMap, getUserApiKeys, type ByokProvider } from '@/lib/key-manager';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type AIProvider = 'cohere' | 'gemini' | 'groq' | 'anthropic' | 'datacurso' | 'cache' | 'openrouter' | 'cloudflare' | 'apmix' | 'airforce' | 'orcarouter';
+export type AIProvider = 'cohere' | 'gemini' | 'groq' | 'anthropic' | 'datacurso' | 'cache' | 'openrouter' | 'cloudflare' | 'airforce' | 'orcarouter' | 'pollinations' | 'aionlabs';
 
 export interface ModelOption {
   /** Format: "provider:modelId" */
@@ -107,8 +112,18 @@ export interface GenerateTextOptions {
    * - When false: Maps to 'strict'
    */
   allowExternalSource?: boolean;
-  /** Task complexity category: 'basic' (speed/concise) or 'complex' (reasoning/structure) */
-  taskCategory?: 'basic' | 'complex';
+  /**
+   * Task routing tier:
+   * - 'quick': Cấp 1 — 3 câu check-in, chỉ dùng cổng phản hồi nhanh (Groq Pool → Cloudflare → Airforce).
+   * - 'basic': Cấp 2 — tác vụ < 4.000 tokens (flashcard, quiz, tóm tắt ngắn).
+   * - 'complex': Cấp 3 — tác vụ > 4.000 tokens (URL dài, mindmap, RAG toàn khóa học).
+   * - 'playable': Cấp 4 — minigames, ưu tiên JSON lồng nhau chuẩn xác.
+   */
+  taskCategory?: 'basic' | 'complex' | 'quick' | 'playable';
+  /** Giới hạn provider trong auto-cascade (vd. Slide cấm Cloudflare/Airforce/Cohere). */
+  allowedProviders?: AIProvider[];
+  /** Ép Groq dùng model cụ thể (vd. llama-3.3-70b-versatile cho Slide/Mindmap). */
+  groqModel?: string;
   /** Stop sequences to halt generation early (anti-fluff / prevent rambling summaries) */
   stop?: string[];
   stopSequences?: string[];
@@ -125,6 +140,8 @@ export interface GenerateTextOptions {
     groq?: string[];
     openrouter?: string[];
   };
+  /** Ngôn ngữ do người dùng yêu cầu. Chỉ nên lấy từ câu hỏi thật, KHÔNG lấy từ ngữ cảnh RAG. */
+  languageHint?: string;
   /** Force a provider to use only system keys or only the caller's BYOK keys. */
   keyMode?: 'system' | 'byok';
   /** Internal callback used to expose the key source that actually completed a request. */
@@ -152,6 +169,14 @@ type CascadeRoute = {
   models: string[];
   keyMode?: 'system' | 'byok';
 };
+
+// Providers that support user BYOK keys. When a single model is selected,
+// only that provider's user keys are loaded — other providers' BYOK keys are
+// never fetched or initialized.
+const BYOK_PROVIDERS: AIProvider[] = ['gemini', 'groq', 'openrouter'];
+function isByokProvider(provider: AIProvider): provider is ByokProvider {
+  return BYOK_PROVIDERS.includes(provider as ByokProvider);
+}
 
 // ---------------------------------------------------------------------------
 // Daily Quota Circuit Breaker
@@ -294,9 +319,11 @@ export function getAvailableModels(
   ];
 
   // Gemini - check pool availability or user BYOK keys
-  const activeGeminiSlots = getAvailableKeySlots();
+  // Use a non-initializing presence check so Gemini's system pool (and its
+  // terminal log) is not touched just to populate the model list before a
+  // user picks a model.
   const hasUserGemini = Boolean(userKeys?.gemini && userKeys.gemini.length > 0);
-  const geminiSystemAvailable = activeGeminiSlots.length > 0 && !isProviderBlocked('gemini');
+  const geminiSystemAvailable = hasGeminiConfiguredKeys();
   const geminiModels = [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS];
   const geminiLabels: Record<string, string> = {
     'gemini-3.8-flash': 'Gemini 3.8 Flash',
@@ -377,10 +404,10 @@ export function getAvailableModels(
   const cfAvailable = isCloudflareAvailable() && !isProviderBlocked('cloudflare');
   const cfModels = [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS];
   const cfLabels: Record<string, string> = {
-    '@cf/meta/llama-3.1-8b-instruct': 'Cloudflare Llama 3.1 8B (Free / Edge)',
-    '@cf/meta/llama-3-8b-instruct': 'Cloudflare Llama 3 8B (Free / Edge)',
+    '@cf/zai-org/glm-4.7-flash': 'Cloudflare GLM 4.7 Flash (131K)',
+    '@cf/aisingapore/gemma-sea-lion-v4-27b-it': 'Cloudflare SEA-LION 27B (ĐNÁ)',
     '@cf/meta/llama-3.3-70b-instruct-fp8-fast': 'Cloudflare Llama 3.3 70B Fast (Edge)',
-    '@cf/qwen/qwen1.5-14b-chat-awq': 'Cloudflare Qwen 14B (Edge)',
+    '@cf/qwen/qwen3.8-27b': 'Cloudflare Qwen 3.8 27B (Edge)',
   };
   const cfOptions: ModelOption[] = cfModels.map(m => ({
     id: `cloudflare:${m}`,
@@ -390,19 +417,6 @@ export function getAvailableModels(
     available: cfAvailable,
   }));
 
-  // APMIX
-  const apmixAvailable = isApmixAvailable() && !isProviderBlocked('apmix');
-  const apmixModels = [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS];
-  const apmixLabels: Record<string, string> = {
-    'hy4-free': 'APMIX Hy4 Free',
-  };
-  const apmixOptions: ModelOption[] = apmixModels.map(m => ({
-    id: `apmix:${m}`,
-    provider: 'apmix',
-    modelId: m,
-    label: apmixLabels[m] || `APMIX ${m}`,
-    available: apmixAvailable,
-  }));
   const airforceAvailable = isAirforceAvailable() && !isProviderBlocked('airforce');
   const airforceModels = [AIRFORCE_DEFAULT_MODEL, ...AIRFORCE_BACKUP_MODELS];
   const airforceLabels: Record<string, string> = {
@@ -432,13 +446,39 @@ export function getAvailableModels(
     label: orcaRouterLabels[modelId] || `OrcaRouter ${modelId}`,
     available: orcaRouterAvailable,
   }));
+  const pollinationsAvailable = isPollinationsAvailable() && !isProviderBlocked('pollinations');
+  const pollinationsModels = [POLLINATIONS_DEFAULT_MODEL];
+  const pollinationsLabels: Record<string, string> = {
+    'stealth/glyph-cluster': 'Pollinations Glyph Cluster (Free, Stealth)',
+  };
+  const pollinationsOptions: ModelOption[] = pollinationsModels.map(modelId => ({
+    id: `pollinations:${modelId}`,
+    provider: 'pollinations',
+    modelId,
+    label: pollinationsLabels[modelId] || `Pollinations ${modelId}`,
+    available: pollinationsAvailable,
+  }));
+
+  // Aion Labs
+  const aionlabsAvailable = isAionlabsAvailable() && !isProviderBlocked('aionlabs');
+  const aionlabsModels = ['aion-2.0'];
+  const aionlabsLabels: Record<string, string> = {
+    'aion-2.0': 'Aion Labs 2.0',
+  };
+  const aionlabsOptions: ModelOption[] = aionlabsModels.map(modelId => ({
+    id: `aionlabs:${modelId}`,
+    provider: 'aionlabs',
+    modelId,
+    label: aionlabsLabels[modelId] || `AionLabs ${modelId}`,
+    available: aionlabsAvailable,
+  }));
 
   if (allowExternalSource) {
-    // ⚔️ External ON: Gemini -> OpenRouter -> APMIX -> Groq -> Cloudflare -> Cohere
-    models.push(...geminiOptions, ...openRouterOptions, ...apmixOptions, ...groqOptions, ...cfOptions, ...airforceOptions, ...orcaRouterOptions, ...cohereOptions);
+    // ⚔️ External ON: Gemini -> OpenRouter -> Groq -> Cloudflare -> Airforce -> OrcaRouter -> Pollinations -> Cohere -> Aion Labs
+    models.push(...geminiOptions, ...openRouterOptions, ...groqOptions, ...cfOptions, ...airforceOptions, ...orcaRouterOptions, ...pollinationsOptions, ...cohereOptions, ...aionlabsOptions);
   } else {
-    // 🛡️ External OFF: Cohere -> Groq -> Cloudflare -> APMIX -> Gemini -> OpenRouter
-    models.push(...cohereOptions, ...groqOptions, ...cfOptions, ...airforceOptions, ...orcaRouterOptions, ...apmixOptions, ...geminiOptions, ...openRouterOptions);
+    // 🛡️ External OFF: Cohere -> Groq -> Cloudflare -> Airforce -> OrcaRouter -> Pollinations -> Gemini -> OpenRouter -> Aion Labs
+    models.push(...cohereOptions, ...groqOptions, ...cfOptions, ...airforceOptions, ...orcaRouterOptions, ...pollinationsOptions, ...geminiOptions, ...openRouterOptions, ...aionlabsOptions);
   }
 
   // if (anthropicAvailable) {
@@ -468,7 +508,7 @@ export function parseModelSelector(selector?: string): { provider: AIProvider; m
   const modeMatch = modelId.match(/#(system|byok)$/);
   const keyMode = modeMatch?.[1] as 'system' | 'byok' | undefined;
   if (modeMatch) modelId = modelId.slice(0, -modeMatch[0].length);
-  if (!['cohere', 'gemini', 'groq', 'anthropic', 'datacurso', 'cache', 'openrouter', 'cloudflare', 'apmix', 'airforce', 'orcarouter'].includes(provider) || !modelId) return null;
+  if (!['cohere', 'gemini', 'groq', 'anthropic', 'datacurso', 'cache', 'openrouter', 'cloudflare', 'airforce', 'orcarouter', 'pollinations', 'aionlabs'].includes(provider) || !modelId) return null;
   if (provider === 'openrouter') {
     const normalizedModelId = normalizeOpenRouterModel(modelId);
     if (normalizedModelId !== modelId) {
@@ -494,10 +534,11 @@ export function getModelDisplayName(provider: AIProvider | string, modelId?: str
     return 'Groq LPU';
   }
   if (provider === 'cloudflare') {
+    if (modelId?.includes('glm-4.7-flash')) return 'Cloudflare GLM 4.7 Flash (131K)';
+    if (modelId?.includes('sea-lion')) return 'Cloudflare SEA-LION 27B (ĐNÁ)';
     if (modelId?.includes('70b')) return 'Cloudflare Llama 3.3 70B Fast (Edge)';
-    if (modelId?.includes('llama-3-8b')) return 'Cloudflare Llama 3 8B (Edge)';
-    if (modelId?.includes('qwen')) return 'Cloudflare Qwen 14B (Edge)';
-    return 'Cloudflare Llama 3.1 8B (Free / Edge)';
+    if (modelId?.includes('qwen3.8')) return 'Cloudflare Qwen 3.8 27B (Edge)';
+    return `Cloudflare (${modelId || CLOUDFLARE_DEFAULT_MODEL})`;
   }
   if (provider === 'gemini') {
     if (modelId?.includes('pro')) return 'Gemini 3.1 Pro (Preview)';
@@ -510,14 +551,18 @@ export function getModelDisplayName(provider: AIProvider | string, modelId?: str
     if (modelId?.includes('liquid') || modelId?.includes('lfm')) return 'OpenRouter LFM 2.5 (Free)';
     return `OpenRouter (${modelId?.split('/').pop()?.replace(':free', '') || modelId})`;
   }
-  if (provider === 'apmix') {
-    return 'APMIX Hy4 Free';
-  }
   if (provider === 'airforce') {
     return `API Airforce (${modelId || AIRFORCE_DEFAULT_MODEL})`;
   }
   if (provider === 'orcarouter') {
     return `OrcaRouter (${modelId || ORCAROUTER_DEFAULT_MODEL})`;
+  }
+  if (provider === 'pollinations') {
+    if (modelId?.includes('glyph-cluster')) return 'Pollinations Glyph Cluster (Free, Stealth)';
+    return `Pollinations (${modelId || POLLINATIONS_DEFAULT_MODEL})`;
+  }
+  if (provider === 'aionlabs') {
+    return `AionLabs (${modelId || 'aion-2.0'})`;
   }
   if (provider === 'anthropic') {
     if (modelId?.includes('haiku')) return 'Claude 3.5 Haiku';
@@ -570,14 +615,17 @@ async function callProvider(
     case 'openrouter':
       res = await callOpenRouter(modelId, providerOpts);
       break;
-    case 'apmix':
-      res = await callApmix(modelId, providerOpts);
-      break;
     case 'airforce':
       res = await callAirforce(modelId, providerOpts);
       break;
     case 'orcarouter':
       res = await callOrcaRouter(modelId, providerOpts);
+      break;
+    case 'pollinations':
+      res = await callPollinations(modelId, providerOpts);
+      break;
+    case 'aionlabs':
+      res = await callAionlabs(modelId, providerOpts);
       break;
     case 'anthropic':
       res = await callAnthropic(modelId, providerOpts);
@@ -611,12 +659,12 @@ async function callProvider(
  * Trạm kiểm soát & Phân loại mục tiêu (Auto Task Classifier):
  * 1. Mục tiêu Thí chốt & Tầm trung ('basic'):
  *    - Định nghĩa nhanh, câu hỏi đóng, Flashcard, trắc nghiệm, tóm tắt cơ bản (< 4.000 tokens).
- *    - Đẩy cho Groq, Cloudflare AI (Edge), APMIX xử lý chớp nhoáng với chi phí gần bằng 0.
+ *    - Đẩy cho Cloudflare (Edge), Groq Pool, Airforce xử lý chớp nhoáng với chi phí gần bằng 0.
  * 2. Mục tiêu Chỉ huy ('complex'):
  *    - Đọc URL phức tạp, vẽ Mindmap, tổng hợp chuyên sâu toàn giáo trình (>= 4.000 tokens).
  *    - Rút pháo hạng nặng Gemini, OpenRouter nhờ context window khổng lồ và tư duy logic sâu.
  */
-export function detectTaskCategory(opts: GenerateTextOptions): 'basic' | 'complex' {
+export function detectTaskCategory(opts: GenerateTextOptions): NonNullable<GenerateTextOptions['taskCategory']> {
   if (opts.taskCategory) {
     return opts.taskCategory;
   }
@@ -700,8 +748,10 @@ HÃY TIẾP TỤC viết phần còn lại từ đúng điểm bị gián đoạ
  */
 export function getCascadeLineup(
   modeOrExternal?: 'strict' | 'hybrid' | 'creative' | boolean,
-  taskCategory: 'basic' | 'complex' = 'complex',
-  userApiKeys?: GenerateTextOptions['userApiKeys']
+  taskCategory: GenerateTextOptions['taskCategory'] = 'complex',
+  userApiKeys?: GenerateTextOptions['userApiKeys'],
+  allowedProviders?: AIProvider[],
+  groqModel?: string
 ): CascadeRoute[] {
   let mode: 'strict' | 'hybrid' | 'creative' = 'hybrid';
   if (typeof modeOrExternal === 'string') {
@@ -710,25 +760,36 @@ export function getCascadeLineup(
     mode = modeOrExternal ? 'creative' : 'hybrid';
   }
 
-  const isLunaUnlocked = Date.now() >= new Date('2026-10-09T17:00:00+07:00').getTime();
-
   const providerModels: Record<AIProvider, string[]> = {
     cohere: [COHERE_MODEL, ...COHERE_BACKUP_MODELS],
     gemini: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS],
-    groq: [GROQ_MODEL, ...GROQ_BACKUP_MODELS],
+    // Cấp 4 / Slide / Mindmap: ưu tiên Llama 3.3 70B để xuất cấu trúc chuẩn xác.
+    groq: groqModel
+      ? [groqModel]
+      : taskCategory === 'playable'
+        ? ['llama-3.3-70b-versatile']
+        : [GROQ_MODEL, ...GROQ_BACKUP_MODELS],
     anthropic: ANTHROPIC_MODELS.map(model => model.id),
     datacurso: [GROQ_MODEL, ...GROQ_BACKUP_MODELS],
     cache: [],
     openrouter: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS],
     cloudflare: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS],
-    apmix: [APMIX_DEFAULT_MODEL, ...APMIX_BACKUP_MODELS],
     airforce: [AIRFORCE_DEFAULT_MODEL, ...AIRFORCE_BACKUP_MODELS],
-    orcarouter: [ORCAROUTER_DEFAULT_MODEL, ...ORCAROUTER_BACKUP_MODELS],
+    orcarouter:
+      taskCategory === 'playable'
+        ? [ORCAROUTER_DEFAULT_MODEL]
+        : [ORCAROUTER_DEFAULT_MODEL, ...ORCAROUTER_BACKUP_MODELS],
+    pollinations: [POLLINATIONS_DEFAULT_MODEL, ...POLLINATIONS_BACKUP_MODELS],
+    aionlabs: ['aion-2.0'],
   };
 
-  const byokProviders: AIProvider[] = taskCategory === 'basic'
-    ? ['groq', 'gemini', 'openrouter']
-    : ['gemini', 'openrouter', 'groq'];
+  const byokProviders: AIProvider[] = taskCategory === 'quick'
+    ? ['groq', 'gemini']
+    : taskCategory === 'playable'
+      ? ['gemini', 'openrouter', 'groq']
+      : taskCategory === 'basic'
+        ? ['groq', 'gemini', 'openrouter']
+        : ['gemini', 'openrouter', 'groq'];
   const hasByok = (provider: AIProvider): boolean => {
     if (provider === 'gemini') return Boolean(userApiKeys?.gemini?.length);
     if (provider === 'groq') return Boolean(userApiKeys?.groq?.length);
@@ -740,17 +801,28 @@ export function getCascadeLineup(
     .filter(hasByok)
     .map(provider => ({ provider, models: providerModels[provider], keyMode: 'byok' }));
 
+  // Đội hình AI sau khi thanh lọc APMIX & GonkaBroker (đều toàn model trả phí):
+  // Cấp 1: Puter.js (client silent) → BYOK (Groq → Gemini) → Groq Pool (2 keys) → Cloudflare → Airforce.
+  // Không dùng OrcaRouter / Gemini Pool ở cấp này để giữ quỹ ngữ cảnh lớn.
+  const quickChain: AIProvider[] = ['groq', 'cloudflare', 'airforce'];
+  // Cấp 2 Hybrid/Creative: Cloudflare → Groq Pool → Airforce → Aion Labs → Pollinations → OrcaRouter → OpenRouter (:free) → Gemini Pool → Cohere
+  const basicHybrid: AIProvider[] = ['cloudflare', 'groq', 'airforce', 'aionlabs', 'pollinations', 'orcarouter', 'openrouter', 'gemini', 'cohere'];
+  // Cấp 2 Strict RAG: Cloudflare → OrcaRouter → Groq Pool → Gemini Pool → OpenRouter (:free) → Aion Labs → Airforce → Cohere
+  const basicStrict: AIProvider[] = ['cloudflare', 'orcarouter', 'groq', 'gemini', 'openrouter', 'aionlabs', 'airforce', 'cohere'];
+  // Cấp 3 Complex: OrcaRouter (1M, #1) → Gemini Pool (1M) → Pollinations (256K) → OpenRouter (:free) → Aion Labs → Cloudflare → Airforce → Groq Pool → Cohere
+  const complexChain: AIProvider[] = ['orcarouter', 'gemini', 'pollinations', 'openrouter', 'aionlabs', 'cloudflare', 'airforce', 'groq', 'cohere'];
+  // Cấp 4 Playable: OrcaRouter → Gemini Pool → Groq Pool (70B) → OpenRouter (:free ≥70B) → Pollinations → Aion Labs
+  const playableChain: AIProvider[] = ['orcarouter', 'gemini', 'groq', 'openrouter', 'pollinations', 'aionlabs'];
+
   let systemProviders: AIProvider[];
-  if (taskCategory === 'basic') {
-    if (mode === 'strict') {
-      systemProviders = ['cloudflare', 'groq', 'orcarouter', 'airforce', 'cohere', 'openrouter', 'gemini', 'apmix'];
-    } else {
-      systemProviders = ['cloudflare', 'groq', 'airforce', 'orcarouter', 'cohere', 'openrouter', 'gemini', 'apmix'];
-    }
-  } else if (isLunaUnlocked) {
-    systemProviders = ['cloudflare', 'groq', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'apmix'];
+  if (taskCategory === 'quick') {
+    systemProviders = quickChain;
+  } else if (taskCategory === 'playable') {
+    systemProviders = playableChain;
+  } else if (taskCategory === 'basic') {
+    systemProviders = mode === 'strict' ? basicStrict : basicHybrid;
   } else {
-    systemProviders = ['cloudflare', 'groq', 'orcarouter', 'airforce', 'openrouter', 'gemini', 'cohere', 'apmix'];
+    systemProviders = complexChain;
   }
 
   const systemRoutes: CascadeRoute[] = systemProviders.map(provider => ({
@@ -759,7 +831,54 @@ export function getCascadeLineup(
     keyMode: 'system',
   }));
 
-  return [...byokRoutes, ...systemRoutes];
+  const routes = [...byokRoutes, ...systemRoutes];
+  return allowedProviders && allowedProviders.length > 0
+    ? routes.filter(route => allowedProviders.includes(route.provider))
+    : routes;
+}
+
+/**
+ * Một số provider trả payload JSON rỗng/vo lẽ (vd. `{"questions":[]}` ~15 ký tự).
+ * Nếu coi đó là thành công, cascade dừng ngay tại provider đầu tiên dù không có
+ * dữ liệu — đoạn này đảm bảo output thực sự dùng được trước khi chấp nhận.
+ */
+function isUsableJsonOutput(text: string): boolean {
+  const raw = text.trim();
+  if (raw.length < 12) return false;
+  // String(obj) từ provider có thể tạo ra literal này — không phải JSON.
+  if (raw.includes('[object Object]')) return false;
+
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) return parsed.length > 0;
+    if (parsed && typeof parsed === 'object') {
+      return Object.values(parsed).some((value) => {
+        if (Array.isArray(value)) return value.length > 0;
+        if (typeof value === 'string') return value.trim().length > 0;
+        return value !== null && value !== undefined;
+      });
+    }
+    return false;
+  } catch {
+    // JSON bị cụt vẫn có thể salvage ở tầng parse của caller; văn bản trần thì không.
+    // "[object Object]" cũng bắt đầu bằng '[' nên phải chặn riêng ở trên.
+    return /^[{[]/.test(cleaned) && !/^\[object\b/i.test(cleaned);
+  }
+}
+
+function isAcceptableResult(
+  result: GenerateTextResult | null,
+  jsonMode: boolean
+): boolean {
+  if (!result?.text) return false;
+  if (result.text.includes('[object Object]')) return false;
+  if (!jsonMode) return true;
+  return isUsableJsonOutput(result.text);
 }
 
 /**
@@ -769,18 +888,31 @@ export async function generateText(
   modelSelector: string | undefined,
   opts: GenerateTextOptions
 ): Promise<GenerateTextResult> {
+  // Puter.js only exists in the browser, so it can never serve a server-side task.
+  // In strict mode surface that instead of silently falling back to another model.
+  if (opts.strictModel && modelSelector?.startsWith('puter:')) {
+    throw new Error('Puter.js chỉ chạy trên trình duyệt nên không thể xử lý tác vụ này. Hãy chọn một model AI khác.');
+  }
+
   const parsed = parseModelSelector(modelSelector);
   const effectiveCategory = opts.taskCategory || detectTaskCategory(opts);
-  const langDirective = buildUniversalLanguageDirective(opts.userPrompt);
+  const langDirective = buildUniversalLanguageDirective(opts.languageHint ?? opts.userPrompt);
   const enrichedSystem = opts.system
     ? `${opts.system}\n\n${langDirective}`
     : langDirective;
 
-  // BYOK: Load personalized user keys if userId provided and keys not already populated
+  // BYOK: Load personalized user keys if userId provided and keys not already populated.
+  // When a specific model is selected, only load that provider's BYOK keys so other
+  // providers' user keys are never fetched or initialized.
   let resolvedUserKeys = opts.userApiKeys;
   if (opts.userId && !resolvedUserKeys) {
     try {
-      resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+      if (parsed && isByokProvider(parsed.provider)) {
+        const keys = await getUserApiKeys(opts.userId, parsed.provider);
+        resolvedUserKeys = { gemini: [], groq: [], openrouter: [], [parsed.provider]: keys };
+      } else {
+        resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+      }
     } catch (e) {
       console.warn('[BYOK Registry] Could not load user keys:', e);
     }
@@ -798,15 +930,17 @@ export async function generateText(
   if (parsed) {
     // Mode kiểm thử thủ công của giảng viên: Bắt 1 mình nó làm việc, báo lỗi công khai không cascade
     if (opts.strictModel) {
-      if (isProviderBlocked(parsed.provider)) {
-        throw new Error(`Provider "${parsed.provider}" hiện đang tạm khóa hoặc đạt giới hạn hạn mức (Circuit Breaker active).`);
+      if (effectiveOpts.keyMode !== 'byok' && isProviderBlocked(parsed.provider)) {
+        throw new Error(`Provider "${parsed.provider}" hiện đang tạm khóa hoặc đạt giới hạn hạn mức (Circuit Breaker active). Chọn model khác hoặc thử lại sau.`);
       }
       const strictRes = await callProvider(parsed.provider, parsed.modelId, effectiveOpts);
-      if (!strictRes || !strictRes.text) {
-        const detail = getLastProviderError(parsed.provider);
+      if (!strictRes || !isAcceptableResult(strictRes, effectiveOpts.jsonMode === true)) {
+        const rawDetail = getLastProviderError(parsed.provider) || '';
+        const safeDetail = rawDetail.replace(/</g, '<').replace(/>/g, '>');
+
         throw new Error(
-          detail
-            ? `Model ${parsed.provider}:${parsed.modelId} không trả về kết quả.\nChi tiết lỗi từ máy chủ API: ${detail}`
+          safeDetail
+            ? `Model ${parsed.provider}:${parsed.modelId} không trả về kết quả.\nChi tiết lỗi từ máy chủ API: ${safeDetail}`
             : `Model ${parsed.provider}:${parsed.modelId} không trả về kết quả.`
         );
       }
@@ -816,7 +950,10 @@ export async function generateText(
     if (!isProviderBlocked(parsed.provider)) {
       try {
         const result = await callProvider(parsed.provider, parsed.modelId, effectiveOpts);
-        if (result?.text) return result;
+        if (result && isAcceptableResult(result, effectiveOpts.jsonMode === true)) return result;
+        if (result?.text) {
+          console.warn(`[Registry] ${parsed.provider}:${parsed.modelId} trả output JSON không dùng được (${result.text.length} chars); thử provider kế tiếp.`);
+        }
       } catch (err) {
         if (opts.signal?.aborted) throw err;
         if (isQuotaExhaustedError(err)) {
@@ -830,7 +967,13 @@ export async function generateText(
   }
 
   const effectiveRagMode = opts.ragMode || (opts.allowExternalSource || opts.googleSearchGrounding ? 'creative' : 'hybrid');
-  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory, resolvedUserKeys);
+  const cascadeProviders = getCascadeLineup(
+    effectiveRagMode,
+    effectiveCategory,
+    resolvedUserKeys,
+    effectiveOpts.allowedProviders,
+    effectiveOpts.groqModel
+  );
 
   for (const route of cascadeProviders) {
     const { provider, models } = route;
@@ -852,13 +995,16 @@ export async function generateText(
     if (provider === 'cloudflare' && !isCloudflareAvailable()) {
       continue;
     }
-    if (provider === 'apmix' && !isApmixAvailable()) {
-      continue;
-    }
     if (provider === 'airforce' && !isAirforceAvailable()) {
       continue;
     }
     if (provider === 'orcarouter' && !isOrcaRouterAvailable()) {
+      continue;
+    }
+    if (provider === 'pollinations' && !isPollinationsAvailable()) {
+      continue;
+    }
+    if (provider === 'aionlabs' && !isAionlabsAvailable()) {
       continue;
     }
     if (route.keyMode !== 'byok' && isProviderBlocked(provider)) {
@@ -868,7 +1014,10 @@ export async function generateText(
       try {
         opts.signal?.throwIfAborted();
         const result = await callProvider(provider, modelId, routeOpts);
-        if (result?.text) return result;
+        if (result && isAcceptableResult(result, routeOpts.jsonMode === true)) return result;
+        if (result?.text) {
+          console.warn(`[Registry] ${provider}:${modelId} trả output JSON không dùng được (${result.text.length} chars); thử provider kế tiếp.`);
+        }
         if (route.keyMode === 'byok') {
           break;
         }
@@ -897,18 +1046,29 @@ export async function generateTextStream(
   modelSelector: string | undefined,
   opts: GenerateTextStreamOptions
 ): Promise<GenerateTextResult> {
+  if (opts.strictModel && modelSelector?.startsWith('puter:')) {
+    throw new Error('Puter.js chỉ chạy trên trình duyệt nên không thể xử lý tác vụ này. Hãy chọn một model AI khác.');
+  }
+
   const parsed = parseModelSelector(modelSelector);
   const effectiveCategory = opts.taskCategory || detectTaskCategory(opts);
-  const langDirective = buildUniversalLanguageDirective(opts.userPrompt);
+  const langDirective = buildUniversalLanguageDirective(opts.languageHint ?? opts.userPrompt);
   const enrichedSystem = opts.system
     ? `${opts.system}\n\n${langDirective}`
     : langDirective;
 
-  // BYOK: Load personalized user keys if userId provided and keys not already populated
+  // BYOK: Load personalized user keys if userId provided and keys not already populated.
+  // When a specific model is selected, only load that provider's BYOK keys so other
+  // providers' user keys are never fetched or initialized.
   let resolvedUserKeys = opts.userApiKeys;
   if (opts.userId && !resolvedUserKeys) {
     try {
-      resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+      if (parsed && isByokProvider(parsed.provider)) {
+        const keys = await getUserApiKeys(opts.userId, parsed.provider);
+        resolvedUserKeys = { gemini: [], groq: [], openrouter: [], [parsed.provider]: keys };
+      } else {
+        resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+      }
     } catch (e) {
       console.warn('[BYOK Registry] Could not load user keys for stream:', e);
     }
@@ -941,8 +1101,8 @@ export async function generateTextStream(
   if (parsed) {
     // Mode kiểm thử thủ công của giảng viên: Bắt 1 mình nó làm việc, báo lỗi công khai không cascade
     if (opts.strictModel) {
-      if (isProviderBlocked(parsed.provider)) {
-        throw new Error(`Provider "${parsed.provider}" hiện đang tạm khóa hoặc đạt giới hạn hạn mức (Circuit Breaker active).`);
+      if (effectiveOpts.keyMode !== 'byok' && isProviderBlocked(parsed.provider)) {
+        throw new Error(`Provider "${parsed.provider}" hiện đang tạm khóa hoặc đạt giới hạn hạn mức (Circuit Breaker active). Chọn model khác hoặc thử lại sau.`);
       }
       const strictRes = await callProviderStream(parsed.provider, parsed.modelId, {
         ...effectiveOpts,
@@ -950,10 +1110,12 @@ export async function generateTextStream(
         onMeta: opts.onMeta,
       });
       if (!strictRes || !strictRes.text) {
-        const detail = getLastProviderError(parsed.provider);
+        const rawDetail = getLastProviderError(parsed.provider) || '';
+        const safeDetail = rawDetail.replace(/</g, '<').replace(/>/g, '>');
+
         throw new Error(
-          detail
-            ? `Model ${parsed.provider}:${parsed.modelId} không trả về dữ liệu stream.\nChi tiết lỗi từ máy chủ API: ${detail}`
+          safeDetail
+            ? `Model ${parsed.provider}:${parsed.modelId} không trả về dữ liệu stream.\nChi tiết lỗi từ máy chủ API: ${safeDetail}`
             : `Model ${parsed.provider}:${parsed.modelId} không trả về dữ liệu stream.`
         );
       }
@@ -997,7 +1159,13 @@ export async function generateTextStream(
   }
 
   const effectiveRagMode = opts.ragMode || (opts.allowExternalSource || opts.googleSearchGrounding ? 'creative' : 'hybrid');
-  const cascadeProviders = getCascadeLineup(effectiveRagMode, effectiveCategory, resolvedUserKeys);
+  const cascadeProviders = getCascadeLineup(
+    effectiveRagMode,
+    effectiveCategory,
+    resolvedUserKeys,
+    effectiveOpts.allowedProviders,
+    effectiveOpts.groqModel
+  );
 
   for (const route of cascadeProviders) {
     const { provider, models } = route;
@@ -1019,13 +1187,16 @@ export async function generateTextStream(
     if (provider === 'cloudflare' && !isCloudflareAvailable()) {
       continue;
     }
-    if (provider === 'apmix' && !isApmixAvailable()) {
-      continue;
-    }
     if (provider === 'airforce' && !isAirforceAvailable()) {
       continue;
     }
     if (provider === 'orcarouter' && !isOrcaRouterAvailable()) {
+      continue;
+    }
+    if (provider === 'pollinations' && !isPollinationsAvailable()) {
+      continue;
+    }
+    if (provider === 'aionlabs' && !isAionlabsAvailable()) {
       continue;
     }
     if (route.keyMode !== 'byok' && isProviderBlocked(provider)) {
@@ -1180,14 +1351,17 @@ async function callProviderStream(
     case 'openrouter':
       res = await callOpenRouterStream(modelId, wrappedOpts);
       break;
-    case 'apmix':
-      res = await callApmixStream(modelId, wrappedOpts);
-      break;
     case 'airforce':
       res = await callAirforceStream(modelId, wrappedOpts);
       break;
     case 'orcarouter':
       res = await callOrcaRouterStream(modelId, wrappedOpts);
+      break;
+    case 'pollinations':
+      res = await callPollinationsStream(modelId, wrappedOpts);
+      break;
+    case 'aionlabs':
+      res = await callAionlabsStream(modelId, wrappedOpts);
       break;
     case 'anthropic':
       res = await callAnthropicStream(modelId, wrappedOpts);

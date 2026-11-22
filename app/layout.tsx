@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
 import { Geist } from 'next/font/google';
 import './globals.css';
-import { NotificationManager } from '@/app/components/NotificationManager';
-import { AuraBackground } from '@/app/components/AuraBackground';
-import { ErrorBoundary } from '@/app/components/ErrorBoundary';
+import { NotificationManager } from '@/app/components/ui/NotificationManager';
+import { AuraBackground } from '@/app/components/ui/AuraBackground';
+import { ErrorBoundary } from '@/app/components/ui/ErrorBoundary';
+import { PuterProvider } from '@/app/components/providers/PuterProvider';
 
 const geist = Geist({ variable: '--font-geist-sans', subsets: ['latin', 'latin-ext'] });
 
@@ -39,7 +40,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <NotificationManager />
         <AuraBackground>
           <ErrorBoundary fallbackTitle="Không thể tải giao diện">
-            {children}
+            <PuterProvider>{children}</PuterProvider>
           </ErrorBoundary>
         </AuraBackground>
       </body>

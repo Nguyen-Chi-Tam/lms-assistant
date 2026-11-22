@@ -144,7 +144,7 @@ export async function POST(request: Request) {
   if (supabaseAdmin) {
     try {
       await supabaseAdmin.from('users').upsert(
-        { moodle_user_id: numericUserId, role: numericUserId === 2 ? 'teacher' : 'student', name: numericUserId === 2 ? 'Admin User' : 'Sinh viên' },
+        { moodle_user_id: numericUserId, role: 'student', name: 'Sinh viên' },
         { onConflict: 'moodle_user_id', ignoreDuplicates: true }
       );
 

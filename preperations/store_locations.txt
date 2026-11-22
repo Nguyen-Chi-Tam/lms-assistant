@@ -1,0 +1,69 @@
+Để tránh phình dữ liệu và không phải bảo trì thủ công sau mỗi học kỳ, bạn chỉ cần giữ lại **kết quả đúc kết cuối cùng (điểm số + nhận xét AI)** và triệt tiêu toàn bộ dữ liệu thô (câu hỏi sinh ra, tài liệu cũ) theo vòng đời tự động.
+
+---
+
+## 1. Phân định nơi lưu trữ: Cái gì lưu ở đâu?
+
+Toàn bộ bộ câu hỏi do Puter.js sinh ra chỉ là **dữ liệu tạm thời để phục vụ tương tác**, không có giá trị lưu trữ lâu dài.
+
+| Loại dữ liệu | Nơi lưu trữ | Cấu trúc & Lý do |
+| --- | --- | --- |
+| **Bộ câu hỏi 3 mini-games**<br>
+
+<br>(`speed_matching`, `spot_the_bug`, `rapid_swipe`) | **Không lưu Database**<br>
+
+<br>(Chỉ nằm trên `React State` / RAM trình duyệt) | Sinh ra lúc bấm **Bắt đầu**, chơi xong 30–45 giây và lấy xong nhận xét AI thì hủy khỏi bộ nhớ. |
+| **Bộ 3 câu hỏi chờ sẵn**<br>
+
+<br>(`quick_test`) | **Firestore** (`learning_artifacts`)
+
+<br>
+
+<br>*(Chỉ 1 document duy nhất / khóa)* | Dùng ID cố định `qt_${userId}_${courseId}` để **ghi đè (upsert)** tại chỗ mỗi lần tạo bộ mới. Mỗi khóa học mãi mãi chỉ chiếm đúng **1 document**. |
+| **Bảng điểm, xu hướng & Nhận xét + Giải pháp AI** | **Supabase** (`user_course_analytics`) | Lưu gọn trong 2 cột `JSONB` (`grade_summary` và `feedback_history`), giới hạn `.slice(-10)` nhận xét gần nhất cho cả `quick_test` lẫn 3 mini-games. |
+| **Tài liệu giáo trình & Lịch sử chat** | **Firestore**<br>
+
+<br>(`moodle_document_parents`, `chat_sessions`)
+
+ | Dữ liệu phục vụ RAG và hội thoại trong học kỳ hiện tại, gắn kèm mốc hết hạn để tự xóa. |
+| **Tài liệu cá nhân tự tải lên** | **Firestore** (`personal_materials`) & **Supabase** (`users`, `user_api_keys`)
+
+ | Dữ liệu thuộc quyền sở hữu của sinh viên, giữ lại xuyên suốt quá trình sử dụng app. |
+
+---
+
+## 2. Chính sách xóa dữ liệu cũ & Giải pháp thay Cron Job cho Firestore
+
+Bạn không cần tự viết cron job cho Firestore vì dịch vụ này hỗ trợ sẵn cơ chế **TTL (Time-to-Live)** tự động quét và xóa document hết hạn ở tầng hạ tầng.
+
+| Bảng / Collection | Chính sách lưu giữ | Cơ chế tự động dọn dẹp (Không tốn công bảo trì) |
+| --- | --- | --- |
+| **Firestore:** `moodle_document_parents`, `chat_sessions`, `learning_artifacts` (tài liệu kỳ cũ)
+
+ | **Xóa sau 1 học kỳ**<br>
+
+<br>(150 ngày) | Thêm trường `expires_at` (kiểu `Timestamp` = thời điểm tạo + 150 ngày) vào document, sau đó bật **TTL Policy** cho trường này trong tab *Indexes / TTL* của Firebase Console. Firestore tự xóa ngầm miễn phí. |
+| **Supabase:** `user_course_analytics`, `events`, `semantic_query_cache`
+
+ | **Xóa khi kết thúc môn** | Dùng cơ chế **Lazy Cleanup ngay trong API đồng bộ Moodle**: khi gọi `core_enrol_get_users_courses`, lấy danh sách `activeCourseIds`. Xóa thẳng các dòng có `moodle_course_id` không còn nằm trong danh sách môn đang học (hoặc `updated_at < NOW() - INTERVAL '150 days'`). |
+| **Supabase:** `fcm_tokens`
+
+ | **Xóa token chết** | Xóa các token có `last_used_at` quá 60 ngày không hoạt động bằng 1 lệnh `pg_cron` chạy mỗi tháng 1 lần.
+
+ |
+| **Firestore:** `personal_materials`
+
+ | **Giữ lại** | Không gắn `expires_at` để sinh viên tự quản lý và xóa thủ công khi không cần dùng nữa. |
+
+---
+
+## 3. Tinh chỉnh luồng hoạt động để Database luôn phẳng
+
+Áp dụng 3 quy tắc này vào code sẽ giữ dung lượng cả Supabase lẫn Firestore gần như không tăng theo thời gian:
+
+1. **Hợp nhất luồng lưu Feedback về 1 chỗ duy nhất (Supabase):**
+Sau khi người dùng hoàn thành `quick_test` hoặc bất kỳ mini-game nào (`speed_matching`, `spot_the_bug`, `rapid_swipe`) và Puter.js trả về `ai_feedback` + `improvement_plan`, client gửi duy nhất gói tóm tắt nhẹ (~300 bytes) về API để nối vào mảng `feedback_history` trong bảng `user_course_analytics` của Supabase (luôn cắt mảng bằng `.slice(-10)`). Không tạo thêm document rác trong Firestore.
+2. **Ghi đè tại chỗ cho `quick_test` trên Firestore:**
+Thay vì `addDoc()` tạo document mới sau mỗi lần làm bài, luôn dùng `setDoc(doc(db, "learning_artifacts", `qt_${userId}_${courseId}`), ...)` để ghi đè bộ 3 câu hỏi mới cho lần truy cập tiếp theo.
+3. **Đồng bộ xóa chéo với Pinecone:**
+Khi cơ chế **Lazy Cleanup** trên Supabase phát hiện một `moodle_course_id` đã qua học kỳ mới (không còn trong danh sách khóa học hiện tại của sinh viên), kích hoạt luôn lệnh xóa các vector có metadata `moodle_course_id` tương ứng trên Pinecone để giải phóng đồng thời cả Vector DB.

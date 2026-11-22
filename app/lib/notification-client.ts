@@ -63,13 +63,9 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 export async function registerFcmToken(
   userId: number,
   promptIfNeeded = false,
-  userRole?: string,
   forceRegister = false
 ): Promise<string | null> {
-  // Both students and teachers register a device token:
-  // - students receive scheduled reminders from cron (student-only audience)
-  // - artifact-ready pushes go directly to whoever generated the artifact,
-  //   including teachers.
+  // Every account is a student: device tokens power scheduled reminders.
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return null;
   }
@@ -129,7 +125,6 @@ export async function registerFcmToken(
             token,
             deviceId: getDeviceId(),
             url: window.location.origin,
-            role: userRole || 'student',
           }),
         });
         if (!response.ok) {
@@ -158,11 +153,10 @@ export async function registerFcmToken(
  */
 export async function ensureFcmTokenRegistered(
   userId: number,
-  userRole?: string,
   promptIfNeeded = true
 ): Promise<string | null> {
   if (!userId) return null;
-  return registerFcmToken(userId, promptIfNeeded, userRole, true);
+  return registerFcmToken(userId, promptIfNeeded, true);
 }
 
 export async function unregisterFcmToken(userId?: number): Promise<boolean> {

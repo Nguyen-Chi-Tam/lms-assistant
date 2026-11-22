@@ -4,54 +4,40 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { createPortal } from 'react-dom';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  Bot,
   BookOpen,
   CheckSquare,
   GraduationCap,
   RotateCcw,
-  Sparkles,
-  Calendar,
   Clock,
-  TrendingUp,
   FileText,
   BarChart3,
   Settings,
   ArrowRight,
   ExternalLink,
-  Search,
+  Sparkles,
   MessageSquare,
   CalendarDays,
   ShieldCheck,
+  LayoutDashboard,
+  CalendarClock,
 } from 'lucide-react';
-import {
-  defaultQuiz,
-  inspirationalQuotes,
-} from '@/app/mock-data';
 import dynamic from 'next/dynamic';
-import { CourseCard } from '@/app/components/CourseCard';
-
-const TeacherPortal = dynamic(
-  () => import('@/app/components/teacher/TeacherPortal').then((mod) => mod.TeacherPortal),
-  {
-    loading: () => (
-      <div className="flex h-96 items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-      </div>
-    ),
-    ssr: false,
-  }
-);
+import { CourseCard } from '@/app/components/course/CourseCard';
 
 const QuizAnalysisModal = dynamic(
-  () => import('@/app/components/QuizAnalysisModal').then((mod) => mod.QuizAnalysisModal),
+  () => import('@/app/components/learning/QuizAnalysisModal').then((mod) => mod.QuizAnalysisModal),
   {
     ssr: false,
   }
 );
-import { ErrorBoundary } from '@/app/components/ErrorBoundary';
+import { ErrorBoundary } from '@/app/components/ui/ErrorBoundary';
 
-import { CourseTopBar, type NotificationItem } from '@/app/components/CourseTopBar';
-import { SiteFooter } from '@/app/components/SiteFooter';
+import { CourseTopBar, type NotificationItem } from '@/app/components/course/CourseTopBar';
+import { SiteFooter } from '@/app/components/ui/SiteFooter';
+import { HomeSidebar } from '@/app/components/dashboard/HomeSidebar';
+import { HomeLearningDashboard } from '@/app/components/dashboard/HomeLearningDashboard';
+import { HomeActivitiesPanel } from '@/app/components/dashboard/HomeActivitiesPanel';
+import { CoursesView } from '@/app/components/course/CoursesView';
 import {
   getStoredAnalysis,
   saveStoredAnalysis,
@@ -68,15 +54,15 @@ import type {
   MoodleData,
   MoodleUser,
   QuizAnalysisData,
-  QuizQuestion,
-  QuizResponse,
   UploadResponse,
 } from '@/app/types';
 import { ensureFcmTokenRegistered, registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
+import { isBlockedAccount } from '@/app/lib/blocked-accounts';
+import { useGlassSlider } from '@/app/lib/use-glass-slider';
 
-export type { Course, LibraryFile, QuizQuestion };
+export type { Course, LibraryFile };
 
-const defaultColors = ['#e056a0', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
+const defaultColors = ['#e11d48', '#f97316', '#eab308', '#10b981', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
 const MOODLE_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 
 /* ── Helpers ─────────────────────────────────────────────── */
@@ -87,7 +73,7 @@ function formatBytes(bytes: number) {
 }
 
 function formatCurrentDateTime(date: Date) {
-  const days = ['CHỦ NHẬT', 'THỨ HAI', 'THỨ BA', 'THỨ TƯ', 'THỨ NĂM', 'THỨ SÁU', 'THỨ BẢY'];
+  const days = ['Chủ nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
   const dayName = days[date.getDay()];
   const day = date.getDate();
   const month = date.getMonth() + 1;
@@ -96,7 +82,7 @@ function formatCurrentDateTime(date: Date) {
   const minutes = date.getMinutes().toString().padStart(2, '0');
   const seconds = date.getSeconds().toString().padStart(2, '0');
 
-  return `${dayName}, ${day} THÁNG ${month}, ${year} · ${hours}:${minutes}:${seconds}`;
+  return `${dayName}, ${day}/${month}/${year} · ${hours}:${minutes}:${seconds}`;
 }
 
 function getGreeting(hour: number) {
@@ -242,36 +228,33 @@ export function mergeMoodleDeadlines(
 /* ── Dashboard ───────────────────────────────────────────── */
 
 function Dashboard({
+  view = 'overview',
   navigate,
   openCalendar,
   openHomework,
   moodle,
   user,
   onSync,
-  isAdminOrTeacher,
-  onOpenTeacherCourse,
 }: {
   navigate: (tab: string, intent?: string) => void;
   openCalendar: () => void;
   openHomework: (item: DeadlineItem) => void;
+  view?: 'overview' | 'grades';
   moodle: MoodleData | null;
   user?: MoodleUser | null;
   onSync: () => void;
-  isAdminOrTeacher?: boolean;
-  onOpenTeacherCourse?: (course: Course) => void;
 }) {
   const router = useRouter();
   const [profileUser, setProfileUser] = useState<MoodleUser | null>(user ?? null);
-  const [quote, setQuote] = useState(inspirationalQuotes[0]);
   const [currentDateTime, setCurrentDateTime] = useState<string>('');
-  const [courseFilter, setCourseFilter] = useState<'all' | 'teaching' | 'learning'>('all');
-  const [courseSearch, setCourseSearch] = useState('');
 
   useEffect(() => {
-    const update = () => setCurrentDateTime(formatCurrentDateTime(new Date()));
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
+    // Làm mới danh sách khóa học đã check-in nhanh mỗi khi mở web hoặc F5 ở Trang chủ
+    try {
+      sessionStorage.setItem('lms_quick_tested_courses', JSON.stringify([]));
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
@@ -286,7 +269,10 @@ function Dashboard({
   }, []);
 
   useEffect(() => {
-    setQuote(inspirationalQuotes[Math.floor(Math.random() * inspirationalQuotes.length)]);
+    const update = () => setCurrentDateTime(formatCurrentDateTime(new Date()));
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const deadlines = useMemo(() => {
@@ -299,15 +285,6 @@ function Dashboard({
   const courses: Course[] =
     moodle?.courses?.length
       ? moodle.courses.map((course, index) => {
-          const isStudentUser = user?.role === 'student';
-          const isTeacher = !isStudentUser && (
-            course.role === 'editingteacher' ||
-            course.role === 'teacher' ||
-            course.role === 'manager' ||
-            course.role === 'coursecreator' ||
-            course.role === 'admin' ||
-            Boolean(course.isTeacher)
-          );
           return {
             id: course.id,
             code: course.shortname,
@@ -315,9 +292,7 @@ function Dashboard({
             progress: course.progress ?? 0,
             color: defaultColors[index % defaultColors.length],
             icon: course.shortname.slice(0, 2).toUpperCase(),
-            next: isTeacher ? 'Quản lý khóa học & Giảng dạy' : 'Xem nội dung khóa học',
-            role: isTeacher ? (course.role || 'editingteacher') : 'student',
-            isTeacher,
+            next: 'Xem nội dung khóa học',
             startdate: course.startdate,
             lastaccess: course.lastaccess,
           };
@@ -331,10 +306,8 @@ function Dashboard({
           }
           return (Number(b.id) || 0) - (Number(a.id) || 0);
         })
+        .map((c, idx) => ({ ...c, color: defaultColors[idx % defaultColors.length] }))
       : [];
-
-  const teachingCourses = useMemo(() => courses.filter(c => c.isTeacher), [courses]);
-  const learningCourses = useMemo(() => courses.filter(c => !c.isTeacher), [courses]);
 
   const lmsHomeUrl = useMemo(() => {
     let baseUrl = moodle?.moodleUrl;
@@ -358,20 +331,6 @@ function Dashboard({
     }
     return `${cleanBase}/user/profile.php`;
   }, [lmsHomeUrl, user?.id]);
-
-  const filteredCourses = useMemo(() => {
-    let list = courses;
-    if (courseFilter === 'teaching') list = teachingCourses;
-    else if (courseFilter === 'learning') list = learningCourses;
-
-    if (courseSearch.trim()) {
-      const q = courseSearch.toLowerCase().trim();
-      list = list.filter(
-        c => c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q)
-      );
-    }
-    return list;
-  }, [courseFilter, courses, teachingCourses, learningCourses, courseSearch]);
 
   const allExamResults = useMemo(() => {
     return (moodle?.examResults || []).filter(r => {
@@ -455,6 +414,17 @@ function Dashboard({
       setAnalysisError('Đã dừng quá trình chẩn đoán bài thi.');
     }
   };
+
+  const latestAnalyzedResult = useMemo(() => {
+    return allExamResults.find(
+      r => !!r.attemptId && analyzedAttemptIds.has(Number(r.attemptId))
+    ) || null;
+  }, [allExamResults, analyzedAttemptIds]);
+
+  const latestAnalysis = useMemo(() => {
+    if (!latestAnalyzedResult?.attemptId) return null;
+    return getStoredAnalysis(latestAnalyzedResult.attemptId);
+  }, [latestAnalyzedResult]);
 
   // Check saved analyses (localStorage first, then sync with database as source of truth)
   useEffect(() => {
@@ -609,184 +579,71 @@ function Dashboard({
 
   return (
     <div className="page fade-in">
+      {view === 'grades' ? (
+        <HomeLearningDashboard
+          courses={courses}
+          grades={allExamResults}
+          activities={moodle?.activities ?? []}
+          userId={moodle?.user?.id}
+          latestResult={latestResult}
+          analyzedAttemptIds={analyzedAttemptIds}
+          onOpenQuizAnalysis={exam => void handleOpenQuizAnalysis(exam)}
+          onOpenGradeHistory={() => setShowGradeHistoryModal(true)}
+          onOpenCourse={c =>
+            router.push(`/course?code=${encodeURIComponent(c.code)}&name=${encodeURIComponent(c.name)}&id=${c.id ?? ''}`)
+          }
+        />
+      ) : (<>
       {/* Hero */}
       <section className="hero-row">
         <div>
           <p className="eyebrow" suppressHydrationWarning>
-            {currentDateTime || 'THỨ NĂM, 27 THÁNG 8, 2026'}
+            {currentDateTime || 'Hôm nay'}
           </p>
           <h1 suppressHydrationWarning>
             {getGreeting(new Date().getHours())}, {profileUser?.fullname || 'Học viên'}
           </h1>
           <p className="subtitle">
-            &ldquo;{quote.text}&rdquo; <small>— {quote.author}</small>
+            {courses.length} khóa học · {deadlines.length} hạn nộp sắp tới
           </p>
         </div>
-        <div className="daily-goal" />
+        <div className="hero-quick-actions">
+          <a
+            href={lmsHomeUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary-clean"
+            title="Mở Moodle LMS"
+          >
+            <GraduationCap size={14} />
+            <span>Mở Moodle</span>
+            <ExternalLink size={12} />
+          </a>
+        </div>
       </section>
 
       {/* Continue learning */}
       <section className="section-block">
         <div className="section-head" style={{ flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
           <div>
-            <h2>Khóa học của bạn</h2>
-            <p>Khóa học mới nhất · Quản lý hoặc tiếp tục không gian học</p>
+            <h2>Khóa học</h2>
+            <p>Truy cập gần đây</p>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            {isAdminOrTeacher && (
-              <div
-                style={{
-                  position: 'relative',
-                  display: 'flex',
-                  alignItems: 'center',
-                  minWidth: '220px',
-                }}
-              >
-                <Search
-                  size={14}
-                  style={{
-                    position: 'absolute',
-                    left: '12px',
-                    color: '#94a3b8',
-                    pointerEvents: 'none',
-                  }}
-                />
-                <input
-                  type="text"
-                  placeholder="Tìm kiếm môn học..."
-                  value={courseSearch}
-                  onChange={e => setCourseSearch(e.target.value)}
-                  style={{
-                    width: '100%',
-                    height: '34px',
-                    padding: '0 28px 0 32px',
-                    borderRadius: '999px',
-                    border: '1px solid rgba(255, 255, 255, 0.12)',
-                    background: 'rgba(255, 255, 255, 0.05)',
-                    color: '#fff',
-                    fontSize: '12px',
-                    outline: 'none',
-                    transition: 'all 0.2s ease',
-                  }}
-                  onFocus={e => {
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-                    e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.6)';
-                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(248, 104, 196, 0.15)';
-                  }}
-                  onBlur={e => {
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-                    e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.12)';
-                    e.currentTarget.style.boxShadow = 'none';
-                  }}
-                />
-                {courseSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setCourseSearch('')}
-                    style={{
-                      position: 'absolute',
-                      right: '8px',
-                      background: 'none',
-                      border: 'none',
-                      color: '#94a3b8',
-                      cursor: 'pointer',
-                      fontSize: '13px',
-                      padding: '2px 4px',
-                    }}
-                    title="Xóa tìm kiếm"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            )}
-
-            <a
-              href={lmsHomeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="home-action-pill home-lms-pill"
-              title="Mở hệ thống Moodle LMS"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '7px 16px',
-                borderRadius: '999px',
-                background: 'rgba(248, 104, 196, 0.12)',
-                border: '1px solid rgba(248, 104, 196, 0.35)',
-                color: '#ffc2e8',
-                fontSize: '12px',
-                fontWeight: 600,
-                textDecoration: 'none',
-                boxShadow: '0 2px 10px rgba(248, 104, 196, 0.12)',
-                backdropFilter: 'blur(8px)',
-                transition: 'all 0.2s ease',
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.background = 'rgba(248, 104, 196, 0.22)';
-                e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.55)';
-                e.currentTarget.style.color = '#fff3fa';
-                e.currentTarget.style.boxShadow = '0 4px 14px rgba(248, 104, 196, 0.25)';
-                e.currentTarget.style.transform = 'translateY(-1px)';
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = 'rgba(248, 104, 196, 0.12)';
-                e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.35)';
-                e.currentTarget.style.color = '#ffc2e8';
-                e.currentTarget.style.boxShadow = '0 2px 10px rgba(248, 104, 196, 0.12)';
-                e.currentTarget.style.transform = 'translateY(0)';
-              }}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => navigate('Khóa học')}
+              className="btn-secondary-clean"
+              title="Xem tất cả khóa học"
             >
-              <GraduationCap size={14} />
-              <span>Mở LMS</span>
-              <ExternalLink size={12} style={{ opacity: 0.85 }} />
-            </a>
-
-            {!isAdminOrTeacher && (
-              <button
-                type="button"
-                onClick={() => router.push('/courses')}
-                className="home-action-pill home-view-all-pill"
-                title="Xem toàn bộ danh sách khóa học"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '7px 16px',
-                  borderRadius: '999px',
-                  background: 'linear-gradient(135deg, rgba(248, 104, 196, 0.25) 0%, rgba(248, 104, 196, 0.15) 100%)',
-                  border: '1px solid rgba(248, 104, 196, 0.45)',
-                  color: '#ffffff',
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  boxShadow: '0 2px 10px rgba(248, 104, 196, 0.18)',
-                  backdropFilter: 'blur(8px)',
-                  transition: 'all 0.2s ease',
-                }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(248, 104, 196, 0.4) 0%, rgba(248, 104, 196, 0.3) 100%)';
-                  e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.75)';
-                  e.currentTarget.style.boxShadow = '0 4px 16px rgba(248, 104, 196, 0.4)';
-                  e.currentTarget.style.transform = 'translateY(-1px)';
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(248, 104, 196, 0.25) 0%, rgba(248, 104, 196, 0.15) 100%)';
-                  e.currentTarget.style.borderColor = 'rgba(248, 104, 196, 0.45)';
-                  e.currentTarget.style.boxShadow = '0 2px 10px rgba(248, 104, 196, 0.18)';
-                  e.currentTarget.style.transform = 'translateY(0)';
-                }}
-              >
-                <span>Xem tất cả ({courses.length})</span>
-                <ArrowRight size={13} />
-              </button>
-            )}
+              <span>Xem tất cả ({courses.length})</span>
+              <ArrowRight size={13} />
+            </button>
           </div>
         </div>
 
-        {filteredCourses.length === 0 ? (
+        {courses.length === 0 ? (
           <div
             className="empty-state"
             style={{
@@ -798,39 +655,21 @@ function Dashboard({
             }}
           >
             <p style={{ margin: '0 0 1rem', color: '#94a3b8', fontSize: '14px' }}>
-              {courseSearch.trim()
-                ? `Không tìm thấy khóa học nào phù hợp với "${courseSearch}".`
-                : 'Không có khóa học nào trong danh mục này.'}
+              Không có khóa học nào trong danh mục này.
             </p>
-            {courseSearch.trim() ? (
-              <button
-                type="button"
-                className="primary-action"
-                onClick={() => setCourseSearch('')}
-                style={{ margin: '0 auto' }}
-              >
-                Xóa tìm kiếm
-              </button>
-            ) : (
-              <button className="primary-action" onClick={onSync} style={{ margin: '0 auto' }}>
-                ↻ Đồng bộ Moodle ngay
-              </button>
-            )}
+            <button className="primary-action" onClick={onSync} style={{ margin: '0 auto' }}>
+              ↻ Đồng bộ Moodle ngay
+            </button>
           </div>
         ) : (
           <div className="course-grid">
-            {(isAdminOrTeacher ? filteredCourses : filteredCourses.slice(0, 6)).map(c => (
+            {courses.map(c => (
               <CourseCard
                 course={c}
                 key={c.id ?? c.code}
                 onOpen={() =>
                   router.push(
-                    `/course?code=${encodeURIComponent(c.code)}&name=${encodeURIComponent(c.name)}&id=${c.id ?? ''}&mode=${c.isTeacher ? 'teacher' : 'student'}`
-                  )
-                }
-                onOpenTeacher={() =>
-                  router.push(
-                    `/course?code=${encodeURIComponent(c.code)}&name=${encodeURIComponent(c.name)}&id=${c.id ?? ''}&mode=teacher`
+                    `/course?code=${encodeURIComponent(c.code)}&name=${encodeURIComponent(c.name)}&id=${c.id ?? ''}`
                   )
                 }
               />
@@ -839,206 +678,206 @@ function Dashboard({
         )}
       </section>
 
-      {/* Deadlines + Activity (Student only) */}
-      {(!isAdminOrTeacher || courseFilter === 'learning') && (
-        <section className="lower-grid">
-          <article className="deadline-card">
-            <div className="section-head compact">
-              <div>
-                <h2>Sắp đến hạn</h2>
-                <p>Đừng bỏ lỡ các đầu việc quan trọng</p>
+      {/* Deadlines + Activity */}
+      <section className="lower-grid">
+        <article className="deadline-card">
+          <div className="section-head compact">
+            <div>
+              <h2>Sắp đến hạn</h2>
+              <p>Lịch nộp bài từ Moodle</p>
+            </div>
+            <button onClick={openCalendar}>Xem lịch</button>
+          </div>
+          <div className="deadline-list">
+            {deadlines.length === 0 ? (
+              <div className="empty-state" style={{ padding: '1.5rem 0', color: '#94a3b8', fontSize: '13px' }}>
+                Không có hạn nộp nào sắp tới.
               </div>
-              <button onClick={openCalendar}>Xem lịch</button>
-            </div>
-            <div className="deadline-list">
-              {deadlines.length === 0 ? (
-                <div className="empty-state" style={{ padding: '1.5rem 0', color: '#94a3b8', fontSize: '13px' }}>
-                  Không có deadline nào sắp tới từ Moodle.
-                </div>
-              ) : (
-                deadlines.slice(0, 3).map((d, i) => (
-                  <Deadline key={d.id} item={d} urgent={i === 0} onOpen={openHomework} />
-                ))
-              )}
-            </div>
-          </article>
+            ) : (
+              deadlines.slice(0, 3).map((d, i) => (
+                <Deadline key={d.id} item={d} urgent={i === 0} onOpen={openHomework} />
+              ))
+            )}
+          </div>
+        </article>
 
-          <article className="activity-card latest-result-card">
-            <div className="section-head compact">
-              <div>
-                <h2>Kết quả mới nhất</h2>
-                <p>Điểm bài thi từ Moodle LMS</p>
-              </div>
-              {latestResult ? (
-                <span className={`result-status-tag ${latestResult.passed ? 'pass' : 'fail'}`}>
-                  {latestResult.passed ? '✓ Đạt' : '✕ Cần cải thiện'}
-                </span>
-              ) : (
-                <button onClick={onSync} title="Đồng bộ lại từ Moodle">
-                  Đồng bộ
-                </button>
-              )}
+        <article className="activity-card latest-result-card">
+          <div className="section-head compact">
+            <div>
+              <h2>Kết quả mới nhất</h2>
+              <p>Cập nhật từ Moodle</p>
             </div>
-
             {latestResult ? (
-              <>
-                <div className="latest-result-body">
-                  <div className="result-course-info">
-                    <span className="result-course-code">{(latestResult.courseCode || 'MOODLE').toUpperCase()}</span>
-                    <span className="result-course-title" title={latestResult.courseName}>
-                      {latestResult.courseName}
-                    </span>
+              <span className={`result-status-tag ${latestResult.passed ? 'pass' : 'fail'}`}>
+                {latestResult.passed ? '✓ Đạt' : '✕ Cần cải thiện'}
+              </span>
+            ) : (
+              <button onClick={onSync} title="Đồng bộ lại từ Moodle">
+                Đồng bộ
+              </button>
+            )}
+          </div>
+
+          {latestResult ? (
+            <>
+              <div className="latest-result-body">
+                <div className="result-course-info">
+                  <span className="result-course-code">{(latestResult.courseCode || 'MOODLE').toUpperCase()}</span>
+                  <span className="result-course-title" title={latestResult.courseName}>
+                    {latestResult.courseName}
+                  </span>
+                </div>
+                <h3 className="result-exam-title" title={latestResult.name}>
+                  {latestResult.name}
+                </h3>
+
+                <div className="result-score-container">
+                  <div className="result-score-row">
+                    <div className="result-score-group">
+                      <span className={`result-score-val ${latestResult.passed ? 'pass' : 'fail'}`}>
+                        {formatGrade(latestResult.score)}
+                      </span>
+                      <span className="result-score-max">/{formatGrade(latestResult.maxScore)}</span>
+                    </div>
                   </div>
-                  <h3 className="result-exam-title" title={latestResult.name}>
-                    {latestResult.name}
-                  </h3>
 
-                  <div className="result-score-container">
-                    <div className="result-score-row">
-                      <div className="result-score-group">
-                        <span className={`result-score-val ${latestResult.passed ? 'pass' : 'fail'}`}>
-                          {formatGrade(latestResult.score)}
-                        </span>
-                        <span className="result-score-max">/{formatGrade(latestResult.maxScore)}</span>
-                      </div>
-                    </div>
+                  <div className="result-progress-track">
+                    <div
+                      className={`result-progress-bar ${latestResult.passed ? 'pass' : 'fail'}`}
+                      style={{
+                        width: `${Math.min(100, Math.max(0, (latestResult.score / (latestResult.maxScore || 10)) * 100))}%`,
+                      }}
+                    />
+                  </div>
 
-                    <div className="result-progress-track">
-                      <div
-                        className={`result-progress-bar ${latestResult.passed ? 'pass' : 'fail'}`}
-                        style={{
-                          width: `${Math.min(100, Math.max(0, (latestResult.score / (latestResult.maxScore || 10)) * 100))}%`,
-                        }}
-                      />
-                    </div>
-
-                    {latestResult.feedback ? (
-                      <div
-                        style={{
-                          marginTop: '0.85rem',
-                          padding: '0.75rem 0.9rem',
-                          borderRadius: '10px',
-                          background: 'linear-gradient(135deg, rgba(248, 104, 196, 0.15), rgba(219, 63, 138, 0.1))',
-                          border: '1px solid rgba(248, 104, 196, 0.35)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0.35rem',
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.35rem',
-                            fontSize: '11px',
-                            fontWeight: 700,
-                            color: '#ffe0f3',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.5px',
-                          }}
-                        >
-                          <MessageSquare size={13} style={{ flexShrink: 0 }} />
-                          <span>Nhận xét:</span>
-                        </div>
-                        <p style={{ margin: 0, fontSize: '13px', color: '#f3f2f8', fontStyle: 'italic', lineHeight: '1.45' }}>
-                          "{latestResult.feedback}"
-                        </p>
-                      </div>
-                    ) : (
+                  {latestResult.feedback ? (
+                    <div
+                      style={{
+                        marginTop: '0.85rem',
+                        padding: '0.75rem 0.9rem',
+                        borderRadius: '10px',
+                        background: 'linear-gradient(135deg, rgba(185, 43, 71, 0.15), rgba(219, 63, 138, 0.1))',
+                        border: '1px solid rgba(185, 43, 71, 0.35)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.35rem',
+                      }}
+                    >
                       <div
                         style={{
-                          marginTop: '0.85rem',
-                          padding: '0.55rem 0.85rem',
-                          borderRadius: '8px',
-                          background: 'rgba(255, 255, 255, 0.03)',
-                          border: '1px solid rgba(255, 255, 255, 0.08)',
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '0.5rem',
-                          fontSize: '12px',
-                          color: '#94a3b8',
+                          gap: '0.35rem',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          color: '#e2e8f0',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.5px',
                         }}
                       >
-                        <span style={{ fontWeight: 600, color: '#ffc2e8', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                          <MessageSquare size={13} style={{ flexShrink: 0 }} />
-                          <span>Nhận xét:</span>
-                        </span>
-                        <span style={{ color: '#cbd5e1', fontWeight: 600 }}>-</span>
+                        <MessageSquare size={13} style={{ flexShrink: 0 }} />
+                        <span>Nhận xét:</span>
                       </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="result-footer">
-                  <div className="result-footer-stat">
-                    <CalendarDays size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
-                    <section>
-                      <strong>
-                        {latestResult.gradedAt
-                          ? new Date(latestResult.gradedAt).toLocaleDateString('vi-VN', {
-                              day: '2-digit',
-                              month: '2-digit',
-                              year: 'numeric',
-                            })
-                          : 'Vừa xong'}
-                      </strong>
-                      <small>Thời gian chấm</small>
-                    </section>
-                  </div>
-
-                  <div className="result-actions">
-                    <button
-                      type="button"
-                      className="result-action-link"
-                      onClick={() => setShowGradeHistoryModal(true)}
+                      <p style={{ margin: 0, fontSize: '13px', color: '#f3f2f8', fontStyle: 'italic', lineHeight: '1.45' }}>
+                        "{latestResult.feedback}"
+                      </p>
+                    </div>
+                  ) : (
+                    <div
                       style={{
-                        cursor: 'pointer',
-                        border: '1px solid rgba(255, 255, 255, 0.15)',
-                        background: 'rgba(255, 255, 255, 0.06)',
-                        display: 'inline-flex',
+                        marginTop: '0.85rem',
+                        padding: '0.55rem 0.85rem',
+                        borderRadius: '8px',
+                        background: 'rgba(255, 255, 255, 0.03)',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        display: 'flex',
                         alignItems: 'center',
-                        gap: '5px',
-                        color: '#cbd5e1',
+                        gap: '0.5rem',
+                        fontSize: '12px',
+                        color: '#94a3b8',
                       }}
-                      title="Xem lịch sử điểm và nhận xét tất cả các môn"
                     >
-                      <BarChart3 size={14} />
-                      <span>Lịch sử điểm</span>
-                    </button>
-                    {(() => {
-                      const isAnalyzed = !!latestResult?.attemptId && analyzedAttemptIds.has(Number(latestResult.attemptId));
-                      const route = resolveGradeRoute(latestResult, isAnalyzed);
-                      return (
-                        <button
-                          className="result-ai-btn"
-                          onClick={() => handleOpenQuizAnalysis(latestResult)}
-                          title={route.buttonTooltip}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            background: route.buttonGradient,
-                            borderColor: route.borderColor,
-                          }}
-                        >
-                          <Sparkles size={14} />
-                          <span>{route.buttonLabel}</span>
-                        </button>
-                      );
-                    })()}
-                  </div>
+                      <span style={{ fontWeight: 600, color: '#f7cbd4', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                        <MessageSquare size={13} style={{ flexShrink: 0 }} />
+                        <span>Nhận xét:</span>
+                      </span>
+                      <span style={{ color: '#cbd5e1', fontWeight: 600 }}>-</span>
+                    </div>
+                  )}
                 </div>
-              </>
-            ) : (
-              <div className="result-empty">
-                <FileText size={26} style={{ color: '#64748b' }} />
-                <p>Chưa có kết quả thi</p>
-                <small>Làm bài kiểm tra trên LMS để hiển thị điểm tại đây</small>
               </div>
-            )}
-          </article>
-        </section>
-      )}
+
+              <div className="result-footer">
+                <div className="result-footer-stat">
+                  <CalendarDays size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
+                  <section>
+                    <strong>
+                      {latestResult.gradedAt
+                        ? new Date(latestResult.gradedAt).toLocaleDateString('vi-VN', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                          })
+                        : 'Vừa xong'}
+                    </strong>
+                    <small>Thời gian chấm</small>
+                  </section>
+                </div>
+
+                <div className="result-actions">
+                  <button
+                    type="button"
+                    className="result-action-link"
+                    onClick={() => setShowGradeHistoryModal(true)}
+                    style={{
+                      cursor: 'pointer',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      background: 'rgba(255, 255, 255, 0.06)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      color: '#cbd5e1',
+                    }}
+                    title="Xem lịch sử điểm và nhận xét tất cả các môn"
+                  >
+                    <BarChart3 size={14} />
+                    <span>Lịch sử điểm</span>
+                  </button>
+                  {(() => {
+                    const isAnalyzed = !!latestResult?.attemptId && analyzedAttemptIds.has(Number(latestResult.attemptId));
+                    const route = resolveGradeRoute(latestResult, isAnalyzed);
+                    return (
+                      <button
+                        className="result-ai-btn"
+                        onClick={() => handleOpenQuizAnalysis(latestResult)}
+                        title={route.buttonTooltip}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          background: route.buttonGradient,
+                          borderColor: route.borderColor,
+                        }}
+                      >
+                        <Sparkles size={14} />
+                        <span>{route.buttonLabel}</span>
+                      </button>
+                    );
+                  })()}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="result-empty">
+              <FileText size={26} style={{ color: '#64748b' }} />
+              <p>Chưa có kết quả thi</p>
+              <small>Làm bài kiểm tra trên LMS để hiển thị điểm tại đây</small>
+            </div>
+          )}
+        </article>
+      </section>
+
+      </>)}
 
       {/* Grade History Modal */}
       {showGradeHistoryModal && mounted && createPortal(
@@ -1066,10 +905,10 @@ function Dashboard({
               width: '100%',
               maxWidth: '820px',
               maxHeight: '88vh',
-              background: 'linear-gradient(180deg, #26101f 0%, #10070e 100%)',
-              border: '1px solid rgba(248, 104, 196, 0.35)',
+              background: 'linear-gradient(180deg, #18151b 0%, #0d1017 100%)',
+              border: '1px solid rgba(185, 43, 71, 0.35)',
               borderRadius: '22px',
-              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.65), 0 0 40px rgba(248, 104, 196, 0.18)',
+              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.65), 0 0 40px rgba(185, 43, 71, 0.18)',
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -1094,11 +933,11 @@ function Dashboard({
                     width: '42px',
                     height: '42px',
                     borderRadius: '12px',
-                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
+                    background: 'linear-gradient(135deg, #b92b47, #88162c)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
+                    boxShadow: '0 4px 14px rgba(185, 43, 71, 0.4)',
                     flexShrink: 0,
                   }}
                 >
@@ -1158,7 +997,7 @@ function Dashboard({
                     borderRadius: '9px',
                     border: 'none',
                     background:
-                      gradeModalFilter === 'all' ? 'rgba(248, 104, 196, 0.35)' : 'rgba(255, 255, 255, 0.04)',
+                      gradeModalFilter === 'all' ? 'rgba(185, 43, 71, 0.35)' : 'rgba(255, 255, 255, 0.04)',
                     color: gradeModalFilter === 'all' ? '#fff' : '#94a3b8',
                     fontSize: '12px',
                     fontWeight: 600,
@@ -1185,9 +1024,9 @@ function Dashboard({
                         border: 'none',
                         background:
                           gradeModalFilter === String(c.id ?? c.code)
-                            ? 'rgba(248, 104, 196, 0.35)'
+                            ? 'rgba(185, 43, 71, 0.35)'
                             : 'rgba(255, 255, 255, 0.04)',
-                        color: gradeModalFilter === String(c.id ?? c.code) ? '#ffc2e8' : '#94a3b8',
+                        color: gradeModalFilter === String(c.id ?? c.code) ? '#f7cbd4' : '#94a3b8',
                         fontSize: '12px',
                         fontWeight: 600,
                         cursor: 'pointer',
@@ -1327,8 +1166,8 @@ function Dashboard({
                           padding: '0.65rem 0.85rem',
                           borderRadius: '10px',
                           background:
-                            'linear-gradient(135deg, rgba(248, 104, 196, 0.12), rgba(219, 63, 138, 0.08))',
-                          border: '1px solid rgba(248, 104, 196, 0.28)',
+                            'linear-gradient(135deg, rgba(185, 43, 71, 0.12), rgba(219, 63, 138, 0.08))',
+                          border: '1px solid rgba(185, 43, 71, 0.28)',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '0.25rem',
@@ -1338,7 +1177,7 @@ function Dashboard({
                           style={{
                             fontSize: '11px',
                             fontWeight: 700,
-                            color: '#ffc2e8',
+                            color: '#f7cbd4',
                             textTransform: 'uppercase',
                             letterSpacing: '0.4px',
                             display: 'inline-flex',
@@ -1375,7 +1214,7 @@ function Dashboard({
                           color: '#94a3b8',
                         }}
                       >
-                        <span style={{ fontWeight: 600, color: '#ffc2e8', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                        <span style={{ fontWeight: 600, color: '#f7cbd4', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
                           <MessageSquare size={13} style={{ flexShrink: 0 }} />
                           <span>Nhận xét:</span>
                         </span>
@@ -1577,7 +1416,7 @@ function Deadline({
 
   if (isAttendance) {
     deadlineIcon = '⏱';
-    badgeStyle = { backgroundColor: 'rgba(59, 130, 246, 0.18)', color: '#60a5fa' };
+    badgeStyle = { backgroundColor: 'rgba(185, 43, 71, 0.18)', color: '#e06c82' };
   } else if (isExam) {
     deadlineIcon = '✎';
     badgeStyle = { backgroundColor: 'rgba(245, 158, 11, 0.18)', color: '#fbbf24' };
@@ -1667,8 +1506,8 @@ function HomeworkModal({
   let eyebrowText = 'BÀI TẬP MOODLE';
   let timeLabel = 'Hạn nộp bài';
   let iconBadge = '▤';
-  let iconStyle: React.CSSProperties = { backgroundColor: 'rgba(248, 104, 196, 0.2)', color: '#ffc2e8' };
-  let statusDotColor = '#ff8ad4';
+  let iconStyle: React.CSSProperties = { backgroundColor: 'rgba(185, 43, 71, 0.2)', color: '#f7cbd4' };
+  let statusDotColor = '#e06c82';
 
   if (isManual) {
     eyebrowText = 'THÔNG BÁO TỪ GIẢNG VIÊN';
@@ -1680,8 +1519,8 @@ function HomeworkModal({
     eyebrowText = 'PHIÊN ĐIỂM DANH';
     timeLabel = 'Thời gian điểm danh';
     iconBadge = '⏱';
-    iconStyle = { backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' };
-    statusDotColor = '#60a5fa';
+    iconStyle = { backgroundColor: 'rgba(185, 43, 71, 0.2)', color: '#e06c82' };
+    statusDotColor = '#e06c82';
   } else if (isExam) {
     eyebrowText = 'BÀI KIỂM TRA';
     timeLabel = item.openTimestamp && item.closeTimestamp ? 'Thời gian làm bài' : 'Hạn làm bài';
@@ -1692,8 +1531,8 @@ function HomeworkModal({
     eyebrowText = 'BÀI TẬP';
     timeLabel = 'Hạn nộp bài';
     iconBadge = '▤';
-    iconStyle = { backgroundColor: 'rgba(248, 104, 196, 0.2)', color: '#ffc2e8' };
-    statusDotColor = '#ff8ad4';
+    iconStyle = { backgroundColor: 'rgba(185, 43, 71, 0.2)', color: '#f7cbd4' };
+    statusDotColor = '#e06c82';
   }
 
   return (
@@ -1973,193 +1812,6 @@ function Library({ notify }: { notify: (s: string) => void }) {
   );
 }
 
-/* ── Practice / Quiz ─────────────────────────────────────── */
-
-function Practice({ notify }: { notify: (s: string) => void }) {
-  const [questions, setQuestions] = useState<QuizQuestion[]>(defaultQuiz);
-  const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<number[]>([]);
-  const [done, setDone] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [startedAt, setStartedAt] = useState(Date.now());
-  const [saved, setSaved] = useState(false);
-
-  const generate = async () => {
-    setLoading(true);
-    setDone(false);
-    setStep(0);
-    setAnswers([]);
-    setSaved(false);
-    setStartedAt(Date.now());
-    try {
-      const res = await fetch('/api/quiz', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic: 'Kiến thức tổng hợp',
-          count: 5,
-        }),
-      });
-      const data = (await res.json()) as QuizResponse;
-      if (!res.ok) throw new Error(data.error);
-      if (data.questions) setQuestions(data.questions);
-      notify(data.mode === 'ai' ? 'Đã tạo quiz mới bằng AI' : 'Đã tạo quiz luyện tập');
-    } catch (e) {
-      notify(e instanceof Error ? e.message : 'Không thể tạo quiz');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void generate();
-  }, []);
-
-  const choose = (n: number) => {
-    const a = [...answers];
-    a[step] = n;
-    setAnswers(a);
-  };
-
-  const score = answers.filter((a, i) => a === questions[i]?.answer).length;
-
-  const finish = async () => {
-    setDone(true);
-    const duration = Math.round((Date.now() - startedAt) / 1000);
-    try {
-      const res = await fetch('/api/progress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          courseCode: 'QUIZ',
-          topic: 'Kiến thức tổng hợp',
-          score,
-          total: questions.length,
-          durationSeconds: duration,
-        }),
-      });
-      if (res.ok) setSaved(true);
-    } catch {
-      // offline progress
-    }
-  };
-
-  const next = () => {
-    if (step < questions.length - 1) setStep(step + 1);
-    else void finish();
-  };
-
-  if (done) {
-    return (
-      <div className="workspace-page fade-in">
-        <div className="result-card">
-          <div className="result-ring">
-            <span>
-              {score}/{questions.length}
-            </span>
-          </div>
-          <p className="eyebrow">HOÀN THÀNH BÀI LUYỆN</p>
-          <h1>{score === questions.length ? 'Xuất sắc! 🎉' : 'Làm tốt lắm!'}</h1>
-          <p>Bạn đã hoàn thành bài luyện tập câu hỏi trắc nghiệm.</p>
-
-          <div className="result-stats">
-            <div>
-              <b>{Math.round((score / questions.length) * 100)}%</b>
-              <small>Chính xác</small>
-            </div>
-            <div>
-              <b>{Math.max(1, Math.round((Date.now() - startedAt) / 60000))} phút</b>
-              <small>Thời gian</small>
-            </div>
-            <div>
-              <b>+{score * 10}</b>
-              <small>XP nhận được</small>
-            </div>
-          </div>
-
-          <div className="save-result">
-            {saved ? '✓ Kết quả đã lưu vào tiến độ' : 'Kết quả hiển thị cục bộ'}
-          </div>
-          <button onClick={() => void generate()}>Tạo bài mới</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="workspace-page fade-in">
-      <div className="workspace-title">
-        <div>
-          <p className="eyebrow">QUIZ DO AI TẠO</p>
-          <h1>Luyện tập trước kỳ thi</h1>
-          <p>Câu hỏi trắc nghiệm tạo từ tài liệu học tập của bạn.</p>
-        </div>
-        <button className="primary-action" onClick={() => void generate()} disabled={loading}>
-          ✦ {loading ? 'Đang tạo…' : 'Tạo bộ câu hỏi mới'}
-        </button>
-      </div>
-
-      <div className="quiz-layout">
-        <aside className="quiz-info">
-          <div className="quiz-icon">◎</div>
-          <h2>Bộ câu hỏi trắc nghiệm</h2>
-          <p>{questions.length} câu · Khoảng 5 phút</p>
-          <div className="quiz-progress">
-            <i style={{ width: `${((step + 1) / questions.length) * 100}%` }} />
-          </div>
-          <small>
-            Tiến độ {step + 1}/{questions.length}
-          </small>
-          <hr />
-          <div className="practice-note">ⓘ Bài tự luyện không tính vào điểm Moodle.</div>
-        </aside>
-
-        <section className="question-card">
-          {loading ? (
-            <div className="artifact-loading">
-              <span className="bot-avatar">✦</span>
-              <h3>AI đang tạo câu hỏi…</h3>
-            </div>
-          ) : (
-            <>
-              <div className="question-count">
-                <span>
-                  CÂU {step + 1} / {questions.length}
-                </span>
-                <small>CHỌN MỘT ĐÁP ÁN</small>
-              </div>
-              <h2>{questions[step]?.q}</h2>
-
-              <div className="choices">
-                {questions[step]?.choices?.map((c, i) => (
-                  <button key={c} className={answers[step] === i ? 'chosen' : ''} onClick={() => choose(i)}>
-                    <b>{String.fromCharCode(65 + i)}</b>
-                    <span>{c}</span>
-                    <i>{answers[step] === i ? '✓' : ''}</i>
-                  </button>
-                ))}
-              </div>
-
-              {answers[step] !== undefined && questions[step]?.explanation && (
-                <div className="answer-hint">ⓘ {questions[step].explanation}</div>
-              )}
-
-              <div className="question-actions">
-                <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>
-                  ← Quay lại
-                </button>
-                <button className="next" onClick={next} disabled={answers[step] === undefined}>
-                  {step === questions.length - 1 ? 'Hoàn thành' : 'Câu tiếp theo'} →
-                </button>
-              </div>
-            </>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-}
-
 /* ── Modal / Toast ───────────────────────────────────────── */
 
 function Modal({
@@ -2217,46 +1869,32 @@ function HomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
-  const courseIdParam = searchParams.get('courseId');
-
   const [active, setActive] = useState('Tổng quan');
-  const [teacherCourseId, setTeacherCourseId] = useState<number | string | null>(courseIdParam || null);
-
-  useEffect(() => {
-    if (courseIdParam) {
-      setTeacherCourseId(courseIdParam);
-    }
-  }, [courseIdParam]);
 
   useEffect(() => {
     if (tabParam) {
-      if (tabParam.toLowerCase() === 'courses' || tabParam.toLowerCase() === 'course') {
-        router.replace('/courses');
-        return;
-      }
       const map: Record<string, string> = {
+        courses: 'Khóa học',
+        course: 'Khóa học',
         library: 'Thư viện',
-        practice: 'Luyện tập',
         overview: 'Tổng quan',
-        teacher: 'Giảng viên',
+        activities: 'Hoạt động',
+        grades: 'Bảng điểm',
       };
       const resolved = map[tabParam.toLowerCase()] || tabParam;
+      if (resolved === 'Luyện tập' || tabParam.toLowerCase() === 'practice') {
+        router.push('/quiz');
+        return;
+      }
       setActive(resolved);
     } else if (typeof window !== 'undefined' && window.location.hash) {
       const hash = window.location.hash.toLowerCase();
       if (hash.includes('courses') || hash.includes('course')) {
-        router.replace('/courses');
+        setActive('Khóa học');
       } else if (hash.includes('library')) setActive('Thư viện');
-      else if (hash.includes('practice')) setActive('Luyện tập');
-      else if (hash.includes('teacher')) setActive('Giảng viên');
+      else if (hash.includes('practice')) router.push('/quiz');
     }
   }, [tabParam, router]);
-
-  useEffect(() => {
-    if (active === 'Khóa học') {
-      router.replace('/courses');
-    }
-  }, [active, router]);
 
   const [moodle, setMoodle] = useState<MoodleData | null>(null);
   const [user, setUser] = useState<MoodleUser | null>(null);
@@ -2301,12 +1939,15 @@ function HomeContent() {
   };
 
   const navigate = (tab: string) => {
-    if (tab === 'Khóa học' || tab === 'courses') {
-      router.push('/courses');
+    if (tab === 'courses') {
+      setActive('Khóa học');
+      setSearch('');
+      window.scrollTo({ top: 0 });
       return;
     }
     setActive(tab);
     setSearch('');
+    window.scrollTo({ top: 0 });
   };
 
   const openHomework = (item: DeadlineItem) => {
@@ -2397,7 +2038,7 @@ function HomeContent() {
     // Clicking a sync button is an explicit gesture: re-check/register this
     // device's FCM token even when the 12-hour registration throttle is active.
     if (user?.id) {
-      void ensureFcmTokenRegistered(user.id, user.role);
+      void ensureFcmTokenRegistered(user.id);
     }
     void sync(true);
   };
@@ -2419,7 +2060,7 @@ function HomeContent() {
     // Teachers also need a device token so they receive artifact-ready pushes
     // for the AI materials they generate themselves.
     if (user?.id) {
-      void registerFcmToken(user.id, false, user.role);
+      void registerFcmToken(user.id, false);
     }
   }, [user?.id, user?.role]);
 
@@ -2429,6 +2070,17 @@ function HomeContent() {
     if (storedUser) {
       try {
         const parsed = JSON.parse(storedUser) as MoodleUser;
+
+        // Tài khoản bị cấm không được khôi phục phiên (phòng tự động đăng nhập lại sau đăng xuất).
+        if (isBlockedAccount(parsed.username)) {
+          localStorage.removeItem('moodleToken');
+          localStorage.removeItem('moodleUser');
+          localStorage.removeItem('moodleData');
+          localStorage.removeItem('moodleDataSyncedAt');
+          router.push('/login');
+          return;
+        }
+
         if (
           token &&
           (!parsed.avatarUrl ||
@@ -2444,16 +2096,21 @@ function HomeContent() {
       }
     }
 
+    let needsActivityBackfill = false;
     const storedMoodle = localStorage.getItem('moodleData');
     if (storedMoodle) {
       try {
-        setMoodle(JSON.parse(storedMoodle) as MoodleData);
+        const parsed = JSON.parse(storedMoodle) as MoodleData;
+        setMoodle(parsed);
+        if (!Array.isArray(parsed.activities)) {
+          needsActivityBackfill = true;
+        }
       } catch {
         localStorage.removeItem('moodleData');
       }
     }
 
-    void sync(false, false);
+    void sync(needsActivityBackfill, false);
 
     const key = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -2465,18 +2122,19 @@ function HomeContent() {
     return () => window.removeEventListener('keydown', key);
   }, []);
 
+  // Đồng bộ Moodle định kỳ để lịch và thông tin deadline luôn theo thời gian thực
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const timer = setInterval(() => void syncRef.current(false, false), 5 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [user?.id]);
+
   const moodleCourses: Course[] = useMemo(() => {
     if (!moodle?.courses?.length) return [];
-    const isStudentUser = user?.role === 'student';
     return moodle.courses.map((course, index) => {
-      const isTeacher = !isStudentUser && (
-        course.role === 'editingteacher' ||
-        course.role === 'teacher' ||
-        course.role === 'manager' ||
-        course.role === 'coursecreator' ||
-        course.role === 'admin' ||
-        Boolean(course.isTeacher)
-      );
       return {
         id: course.id,
         code: course.shortname,
@@ -2484,17 +2142,10 @@ function HomeContent() {
         progress: course.progress ?? 0,
         color: defaultColors[index % defaultColors.length],
         icon: course.shortname.slice(0, 2).toUpperCase(),
-        next: isTeacher ? 'Quản lý khóa học & Giảng dạy' : 'Xem nội dung khóa học',
-        role: isTeacher ? (course.role || 'editingteacher') : 'student',
-        isTeacher,
+        next: 'Xem nội dung khóa học',
       };
     });
-  }, [moodle, user?.role]);
-
-  const handleOpenTeacherCourse = (course: Course) => {
-    setTeacherCourseId(course.id ?? course.code);
-    navigate('Giảng viên');
-  };
+  }, [moodle]);
 
   const searchResults = useMemo(() => {
     if (!search.trim()) return [];
@@ -2511,12 +2162,7 @@ function HomeContent() {
       {
         title: 'Tạo quiz luyện tập',
         meta: 'Công cụ AI',
-        action: () => navigate('Luyện tập'),
-      },
-      {
-        title: 'Bàn làm việc Giảng viên',
-        meta: 'Hút điểm & Lò ấp Moodle XML',
-        action: () => navigate('Giảng viên'),
+        action: () => router.push('/quiz'),
       },
       {
         title: 'Hỏi gia sư AI',
@@ -2536,12 +2182,6 @@ function HomeContent() {
     return items.filter(x => (x.title + x.meta).toLowerCase().includes(q)).slice(0, 6);
   }, [search, moodleCourses, router]);
 
-  const isAdminOrTeacher = useMemo(() => {
-    if (user?.role === 'teacher') return true;
-    if (user?.role === 'student') return false;
-    return moodleCourses.some(c => c.isTeacher);
-  }, [user?.role, moodleCourses]);
-
   const mergedDeadlines = useMemo(() => {
     return mergeMoodleDeadlines(moodle?.deadlines ?? []);
   }, [moodle?.deadlines]);
@@ -2553,27 +2193,98 @@ function HomeContent() {
       .sort((a, b) => a.timestamp - b.timestamp);
   }, [mergedDeadlines]);
 
+  const mobileNavTabs = useMemo(
+    () => [
+      { key: 'Tổng quan', label: 'Tổng quan', icon: LayoutDashboard },
+      { key: 'Khóa học', label: 'Khóa học', icon: BookOpen },
+      { key: 'Hoạt động', label: 'Hoạt động', icon: CalendarClock },
+      { key: 'Bảng điểm', label: 'Bảng điểm', icon: BarChart3 },
+    ],
+    []
+  );
+  const mobileActiveIndex = mobileNavTabs.findIndex(t => t.key === active);
+  const mobileSlider = useGlassSlider({
+    count: mobileNavTabs.length,
+    activeIndex: mobileActiveIndex,
+    axis: 'x',
+    onSelectIndex: idx => {
+      const target = mobileNavTabs[idx];
+      if (target) {
+        setActive(target.key);
+        setSearch('');
+        window.scrollTo({ top: 0 });
+      }
+    },
+  });
+
   return (
-    <main className="app-shell">
-      <CourseTopBar
-        search={search}
-        onSearchChange={setSearch}
-        searchRef={searchRef}
-        syncing={syncing}
-        onSync={handleManualSync}
-        notifications={notifications}
-        onToggleNotifications={() => setNotifications(!notifications)}
-        onCloseNotifications={() => setNotifications(false)}
-        notificationPermission={notificationPermission}
-        onRequestNotificationPermission={undefined}
-        courses={moodleCourses}
+    <main className="app-shell home-shell">
+      <HomeSidebar
+        active={active}
+        onSelect={tab => {
+          setActive(tab);
+          setSearch('');
+          window.scrollTo({ top: 0 });
+        }}
         user={user}
         displayName={user?.fullname || 'Student'}
+        syncing={syncing}
+        onSync={handleManualSync}
         onOpenProfile={() => setProfile(true)}
         onOpenNotification={handleOpenNotification}
-        lmsUrl={moodle?.moodleUrl || 'http://moodle.test'}
-        isTeacher={active === 'Giảng viên' || user?.role === 'teacher' || user?.role === 'editingteacher'}
+        courses={moodleCourses}
       />
+      <div className="home-topbar-mobile">
+        <CourseTopBar
+          search={search}
+          onSearchChange={setSearch}
+          searchRef={searchRef}
+          syncing={syncing}
+          onSync={handleManualSync}
+          notifications={notifications}
+          onToggleNotifications={() => setNotifications(!notifications)}
+          onCloseNotifications={() => setNotifications(false)}
+          notificationPermission={notificationPermission}
+          onRequestNotificationPermission={undefined}
+          courses={moodleCourses}
+          user={user}
+          displayName={user?.fullname || 'Student'}
+          onOpenProfile={() => setProfile(true)}
+          onOpenNotification={handleOpenNotification}
+          lmsUrl={moodle?.moodleUrl || 'http://moodle.test'}
+        />
+        <nav className="home-mobile-tabs" aria-label="Điều hướng">
+          <div
+            className="home-mobile-tabs-track"
+            ref={mobileSlider.containerRef}
+            {...mobileSlider.handlers}
+          >
+            {mobileActiveIndex >= 0 && (
+              <span
+                className={`home-mobile-tabs-slider ${mobileSlider.isDragging ? 'dragging' : ''}`}
+                style={{ transform: `translateX(${mobileSlider.sliderX})` }}
+                aria-hidden="true"
+              />
+            )}
+            {mobileNavTabs.map(({ key, label, icon: Icon }, idx) => (
+              <button
+                key={key}
+                type="button"
+                className={mobileSlider.effectiveIndex === idx ? 'active' : ''}
+                onClick={() => {
+                  if (mobileSlider.justDraggedRef.current) return;
+                  setActive(key);
+                  setSearch('');
+                  window.scrollTo({ top: 0 });
+                }}
+              >
+                <Icon size={14} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      </div>
 
       <section className="content">
         <ErrorBoundary fallbackTitle="Lỗi hiển thị nội dung phân hệ">
@@ -2585,21 +2296,40 @@ function HomeContent() {
             openHomework={openHomework}
             moodle={moodle}
             onSync={handleManualSync}
-            isAdminOrTeacher={isAdminOrTeacher}
-            onOpenTeacherCourse={handleOpenTeacherCourse}
+          />
+        )}
+        {active === 'Bảng điểm' && (
+          <Dashboard
+            view="grades"
+            navigate={navigate}
+            openCalendar={() => setCalendar(true)}
+            openHomework={openHomework}
+            moodle={moodle}
+            onSync={handleManualSync}
+          />
+        )}
+        {active === 'Khóa học' && (
+          <CoursesView
+            moodle={moodle}
+            onSync={handleManualSync}
+            syncing={syncing}
+            openCourse={(c: Course) =>
+              router.push(`/course?code=${encodeURIComponent(c.code)}&name=${encodeURIComponent(c.name)}&id=${c.id ?? ''}`)
+            }
+          />
+        )}
+        {active === 'Hoạt động' && (
+          <HomeActivitiesPanel
+            courses={moodleCourses}
+            activities={moodle?.activities ?? []}
+            syncing={syncing}
+            onSync={handleManualSync}
+            onOpenCourse={c =>
+              router.push(`/course?code=${encodeURIComponent(c.code || '')}&name=${encodeURIComponent(c.name)}&id=${c.id ?? ''}`)
+            }
           />
         )}
         {active === 'Thư viện' && <Library notify={notify} />}
-        {active === 'Luyện tập' && <Practice notify={notify} />}
-        {active === 'Giảng viên' && (
-          <TeacherPortal
-            courses={moodleCourses}
-            moodleUrl={moodle?.moodleUrl || 'http://moodle.test'}
-            token={typeof window !== 'undefined' ? localStorage.getItem('moodleToken') || '' : ''}
-            initialCourseId={teacherCourseId || undefined}
-            sources={moodle?.resources || []}
-          />
-        )}
         </ErrorBoundary>
         <SiteFooter />
       </section>

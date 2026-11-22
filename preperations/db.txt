@@ -1,0 +1,66 @@
+Supabase: Short-term data
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
+
+CREATE TABLE public.users (
+  moodle_user_id integer NOT NULL,
+  role character varying NOT NULL,
+  name character varying,
+  CONSTRAINT users_pkey PRIMARY KEY (moodle_user_id)
+);
+CREATE TABLE public.fcm_tokens (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id integer,
+  token text NOT NULL UNIQUE,
+  last_used_at timestamp with time zone DEFAULT now(),
+  device_id character varying NOT NULL,
+  url text,
+  CONSTRAINT fcm_tokens_pkey PRIMARY KEY (id),
+  CONSTRAINT fcm_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(moodle_user_id)
+);
+CREATE TABLE public.events (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  moodle_event_id integer UNIQUE,
+  event_type character varying NOT NULL,
+  title character varying NOT NULL,
+  deliver_time timestamp with time zone NOT NULL,
+  sent_reminders ARRAY DEFAULT '{}'::integer[],
+  created_at timestamp with time zone DEFAULT now(),
+  moodle_course_id integer,
+  event_details text,
+  CONSTRAINT events_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.semantic_query_cache (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  course_id text NOT NULL,
+  query_text text NOT NULL,
+  query_embedding USER-DEFINED,
+  ai_response text NOT NULL,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()),
+  hit_count integer NOT NULL DEFAULT 1,
+  last_accessed_at timestamp with time zone DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT semantic_query_cache_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.user_api_keys (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id integer NOT NULL,
+  provider character varying NOT NULL,
+  key_name character varying,
+  encrypted_api_key text NOT NULL,
+  encryption_iv text NOT NULL,
+  auth_tag text NOT NULL,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT user_api_keys_pkey PRIMARY KEY (id),
+  CONSTRAINT user_api_keys_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(moodle_user_id)
+);
+CREATE TABLE public.user_course_analytics (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id integer NOT NULL,
+  moodle_course_id integer NOT NULL,
+  course_name character varying NOT NULL,
+  grade_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+  feedback_history jsonb NOT NULL DEFAULT '[]'::jsonb,
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT user_course_analytics_pkey PRIMARY KEY (id),
+  CONSTRAINT user_course_analytics_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(moodle_user_id)
+);

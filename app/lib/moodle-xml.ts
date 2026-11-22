@@ -16,8 +16,18 @@ export interface QuizQuestionItem {
   defaultGrade?: number;
 }
 
+/**
+ * Strips control characters that are illegal in XML 1.0 documents and trims
+ * surrounding whitespace. Tab (\t), newline (\n) and carriage return (\r) are
+ * preserved because they are valid and occasionally meaningful.
+ */
+function sanitizeText(unsafe: string | null | undefined): string {
+  if (!unsafe) return '';
+  return String(unsafe).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
+}
+
 function escapeXml(unsafe: string): string {
-  return unsafe
+  return sanitizeText(unsafe)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -26,37 +36,67 @@ function escapeXml(unsafe: string): string {
 }
 
 function cdata(content: string): string {
-  const safe = content.replace(/\]\]>/g, ']]]]><![CDATA[>');
+  const safe = sanitizeText(content).replace(/\]\]>/g, ']]]]><![CDATA[>');
   return `<![CDATA[${safe}]]>`;
+}
+
+/**
+ * Moodle treats "/" (and "\") in a category path as a hierarchy separator, so a
+ * course name such as "Toán / Lý" would silently become two nested categories.
+ * Replace separators with a dash and collapse whitespace to keep the category flat.
+ */
+function sanitizeCategoryName(name: string): string {
+  return sanitizeText(name).replace(/[/\\]+/g, '-').replace(/\s+/g, ' ').trim();
 }
 
 export function convertQuestionsToMoodleXml(
   questions: QuizQuestionItem[],
   categoryName?: string
 ): string {
+  const safeCategory = categoryName ? sanitizeCategoryName(categoryName) : '';
   const lines: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<quiz>',
   ];
 
-  if (categoryName) {
+  if (safeCategory) {
     lines.push('  <!-- Question Category -->');
     lines.push('  <question type="category">');
     lines.push('    <category>');
-    lines.push(`      <text>$course$/top/${escapeXml(categoryName)}</text>`);
+    lines.push(`      <text>$course$/top/${escapeXml(safeCategory)}</text>`);
     lines.push('    </category>');
     lines.push('  </question>');
   }
 
   questions.forEach((q, idx) => {
     const qNum = idx + 1;
-    const cleanTitle = q.questionText.replace(/<[^>]*>/g, '').trim();
+    const questionText = sanitizeText(q.questionText);
+    const cleanTitle = questionText.replace(/<[^>]*>/g, '').trim();
     const shortName = cleanTitle.length > 50 ? `${cleanTitle.slice(0, 47)}...` : cleanTitle;
     const grade = q.defaultGrade ?? 1;
-    const isMatching = q.type === 'matching' || (Array.isArray(q.pairs) && q.pairs.length > 0);
-    const isShortAnswer = q.type === 'shortanswer' || (Array.isArray(q.acceptedAnswers) && q.acceptedAnswers.length > 0);
-    const isTrueFalse = q.type === 'truefalse' || (!isMatching && !isShortAnswer && (q.options?.length ?? 0) === 2 && ((q.options?.[0] || '').toLowerCase().includes('đúng') || (q.options?.[0] || '').toLowerCase().includes('true')));
-    const isMultiSelect = q.type === 'multiselect' || (!isMatching && !isShortAnswer && Array.isArray(q.correctAnswerIndices) && q.correctAnswerIndices.length > 1);
+    const explanation = sanitizeText(q.explanation);
+    const options = (q.options || []).map(sanitizeText).filter(Boolean);
+    const pairs = (q.pairs || [])
+      .map(p => ({ left: sanitizeText(p.left), right: sanitizeText(p.right) }))
+      .filter(p => p.left && p.right);
+    const acceptedAnswers = (q.acceptedAnswers || []).map(sanitizeText).filter(Boolean);
+
+    const isMatching = q.type === 'matching' || pairs.length >= 2;
+    const isShortAnswer = q.type === 'shortanswer' || (!isMatching && acceptedAnswers.length > 0);
+    const isTrueFalse =
+      q.type === 'truefalse' ||
+      (!isMatching && !isShortAnswer && options.length === 2 &&
+        (options[0].toLowerCase().includes('đúng') || options[0].toLowerCase().includes('true')));
+    const isMultiSelect =
+      q.type === 'multiselect' ||
+      (!isMatching && !isShortAnswer && !isTrueFalse &&
+        Array.isArray(q.correctAnswerIndices) && q.correctAnswerIndices.length > 1);
+
+    // Nothing renderable (e.g. a multichoice with no options) would produce an
+    // invalid question that Moodle rejects. Skip it instead of emitting garbage.
+    if (!isMatching && !isShortAnswer && !isTrueFalse && options.length === 0) {
+      return;
+    }
 
     if (isMatching) {
       // ----------------------------------------------------------------------
@@ -68,12 +108,12 @@ export function convertQuestionsToMoodleXml(
       lines.push(`      <text>${cdata(`Câu ${qNum} [Nối cặp]: ${shortName || 'Matching'}`)}</text>`);
       lines.push('    </name>');
       lines.push('    <questiontext format="html">');
-      lines.push(`      <text>${cdata(`<p>${q.questionText}</p>`)}</text>`);
+      lines.push(`      <text>${cdata(`<p>${questionText}</p>`)}</text>`);
       lines.push('    </questiontext>');
 
-      if (q.explanation && q.explanation.trim()) {
+      if (explanation) {
         lines.push('    <generalfeedback format="html">');
-        lines.push(`      <text>${cdata(`<p>${q.explanation.trim()}</p>`)}</text>`);
+        lines.push(`      <text>${cdata(`<p>${explanation}</p>`)}</text>`);
         lines.push('    </generalfeedback>');
       } else {
         lines.push('    <generalfeedback format="html">');
@@ -87,7 +127,7 @@ export function convertQuestionsToMoodleXml(
       lines.push('    <idnumber></idnumber>');
       lines.push('    <shuffleanswers>true</shuffleanswers>');
 
-      (q.pairs || []).forEach(pair => {
+      pairs.forEach(pair => {
         lines.push('    <subquestion format="html">');
         lines.push(`      <text>${cdata(`<p>${pair.left}</p>`)}</text>`);
         lines.push('      <answer>');
@@ -107,12 +147,12 @@ export function convertQuestionsToMoodleXml(
       lines.push(`      <text>${cdata(`Câu ${qNum} [Trả lời ngắn]: ${shortName || 'Short Answer'}`)}</text>`);
       lines.push('    </name>');
       lines.push('    <questiontext format="html">');
-      lines.push(`      <text>${cdata(`<p>${q.questionText}</p>`)}</text>`);
+      lines.push(`      <text>${cdata(`<p>${questionText}</p>`)}</text>`);
       lines.push('    </questiontext>');
 
-      if (q.explanation && q.explanation.trim()) {
+      if (explanation) {
         lines.push('    <generalfeedback format="html">');
-        lines.push(`      <text>${cdata(`<p>${q.explanation.trim()}</p>`)}</text>`);
+        lines.push(`      <text>${cdata(`<p>${explanation}</p>`)}</text>`);
         lines.push('    </generalfeedback>');
       } else {
         lines.push('    <generalfeedback format="html">');
@@ -126,9 +166,9 @@ export function convertQuestionsToMoodleXml(
       lines.push('    <idnumber></idnumber>');
       lines.push('    <usecase>0</usecase>');
 
-      const answers = (q.acceptedAnswers && q.acceptedAnswers.length > 0)
-        ? q.acceptedAnswers
-        : (q.options && q.options.length > 0 ? q.options : ['']);
+      const answers = acceptedAnswers.length > 0
+        ? acceptedAnswers
+        : options.length > 0 ? options : [questionText || 'Đáp án'];
 
       answers.forEach(ans => {
         lines.push('    <answer fraction="100" format="moodle_auto_format">');
@@ -146,7 +186,7 @@ export function convertQuestionsToMoodleXml(
       // ----------------------------------------------------------------------
       const correctIdx = q.correctAnswerIndex ?? 0;
       const firstOptIsCorrect = correctIdx === 0;
-      const firstOptText = (q.options?.[0] || '').toLowerCase();
+      const firstOptText = (options[0] || '').toLowerCase();
       const isStatementTrue = firstOptText.includes('đúng') || firstOptText.includes('true') ? firstOptIsCorrect : !firstOptIsCorrect;
 
       lines.push(`  <!-- Question ${qNum}: True/False -->`);
@@ -155,12 +195,12 @@ export function convertQuestionsToMoodleXml(
       lines.push(`      <text>${cdata(`Câu ${qNum} [Đúng/Sai]: ${shortName || 'True/False'}`)}</text>`);
       lines.push('    </name>');
       lines.push('    <questiontext format="html">');
-      lines.push(`      <text>${cdata(`<p>${q.questionText}</p>`)}</text>`);
+      lines.push(`      <text>${cdata(`<p>${questionText}</p>`)}</text>`);
       lines.push('    </questiontext>');
 
-      if (q.explanation && q.explanation.trim()) {
+      if (explanation) {
         lines.push('    <generalfeedback format="html">');
-        lines.push(`      <text>${cdata(`<p>${q.explanation.trim()}</p>`)}</text>`);
+        lines.push(`      <text>${cdata(`<p>${explanation}</p>`)}</text>`);
         lines.push('    </generalfeedback>');
       } else {
         lines.push('    <generalfeedback format="html">');
@@ -177,7 +217,7 @@ export function convertQuestionsToMoodleXml(
       lines.push(`    <answer fraction="${isStatementTrue ? '100' : '0'}" format="html">`);
       lines.push(`      <text>true</text>`);
       lines.push('      <feedback format="html">');
-      lines.push(`        <text>${isStatementTrue && q.explanation ? cdata(`<p>✓ ${q.explanation}</p>`) : ''}</text>`);
+      lines.push(`        <text>${isStatementTrue && explanation ? cdata(`<p>✓ ${explanation}</p>`) : ''}</text>`);
       lines.push('      </feedback>');
       lines.push('    </answer>');
 
@@ -185,7 +225,7 @@ export function convertQuestionsToMoodleXml(
       lines.push(`    <answer fraction="${!isStatementTrue ? '100' : '0'}" format="html">`);
       lines.push(`      <text>false</text>`);
       lines.push('      <feedback format="html">');
-      lines.push(`        <text>${!isStatementTrue && q.explanation ? cdata(`<p>✓ ${q.explanation}</p>`) : ''}</text>`);
+      lines.push(`        <text>${!isStatementTrue && explanation ? cdata(`<p>✓ ${explanation}</p>`) : ''}</text>`);
       lines.push('      </feedback>');
       lines.push('    </answer>');
 
@@ -194,12 +234,20 @@ export function convertQuestionsToMoodleXml(
       // ----------------------------------------------------------------------
       // 2. Multiple Select Question (single: false)
       // ----------------------------------------------------------------------
-      const correctIndices = q.correctAnswerIndices && q.correctAnswerIndices.length > 0
+      const rawIndices = q.correctAnswerIndices && q.correctAnswerIndices.length > 0
         ? q.correctAnswerIndices
         : (typeof q.correctAnswerIndex === 'number' ? [q.correctAnswerIndex] : [0]);
+      // Keep only in-range indices so at least one option is graded 100 and the
+      // positive fractions sum to 100 (Moodle rejects malformed answer sets).
+      const correctIndices = rawIndices
+        .map(n => Number(n))
+        .filter(n => Number.isInteger(n) && n >= 0 && n < options.length);
+      if (correctIndices.length === 0 && options.length > 0) {
+        correctIndices.push(0);
+      }
 
       const correctCount = correctIndices.length;
-      const safeOptions = q.options || [];
+      const safeOptions = options;
       const incorrectCount = Math.max(1, safeOptions.length - correctCount);
 
       // Fraction for each correct answer (e.g. 50% for 2, 33.33333% for 3)
@@ -213,12 +261,12 @@ export function convertQuestionsToMoodleXml(
       lines.push(`      <text>${cdata(`Câu ${qNum} [Nhiều đáp án]: ${shortName || 'Multiple Select'}`)}</text>`);
       lines.push('    </name>');
       lines.push('    <questiontext format="html">');
-      lines.push(`      <text>${cdata(`<p>${q.questionText}</p>`)}</text>`);
+      lines.push(`      <text>${cdata(`<p>${questionText}</p>`)}</text>`);
       lines.push('    </questiontext>');
 
-      if (q.explanation && q.explanation.trim()) {
+      if (explanation) {
         lines.push('    <generalfeedback format="html">');
-        lines.push(`      <text>${cdata(`<p>${q.explanation.trim()}</p>`)}</text>`);
+        lines.push(`      <text>${cdata(`<p>${explanation}</p>`)}</text>`);
         lines.push('    </generalfeedback>');
       } else {
         lines.push('    <generalfeedback format="html">');
@@ -250,8 +298,8 @@ export function convertQuestionsToMoodleXml(
         lines.push(`    <answer fraction="${fraction}" format="html">`);
         lines.push(`      <text>${cdata(`<p>${optText}</p>`)}</text>`);
         lines.push('      <feedback format="html">');
-        if (isCorrect && q.explanation) {
-          lines.push(`        <text>${cdata(`<p>✓ ${q.explanation}</p>`)}</text>`);
+        if (isCorrect && explanation) {
+          lines.push(`        <text>${cdata(`<p>✓ ${explanation}</p>`)}</text>`);
         } else {
           lines.push('        <text></text>');
         }
@@ -265,6 +313,9 @@ export function convertQuestionsToMoodleXml(
       // 3. Single Choice Question (single: true)
       // ----------------------------------------------------------------------
       const correctIdx = typeof q.correctAnswerIndex === 'number' ? q.correctAnswerIndex : 0;
+      // Clamp so exactly one option is graded 100 (an out-of-range index would
+      // otherwise produce a question with no correct answer, which Moodle rejects).
+      const safeCorrectIdx = options.length > 0 ? Math.min(Math.max(0, correctIdx), options.length - 1) : 0;
 
       lines.push(`  <!-- Question ${qNum}: Single Choice -->`);
       lines.push('  <question type="multichoice">');
@@ -272,12 +323,12 @@ export function convertQuestionsToMoodleXml(
       lines.push(`      <text>${cdata(`Câu ${qNum}: ${shortName || 'Trắc nghiệm'}`)}</text>`);
       lines.push('    </name>');
       lines.push('    <questiontext format="html">');
-      lines.push(`      <text>${cdata(`<p>${q.questionText}</p>`)}</text>`);
+      lines.push(`      <text>${cdata(`<p>${questionText}</p>`)}</text>`);
       lines.push('    </questiontext>');
 
-      if (q.explanation && q.explanation.trim()) {
+      if (explanation) {
         lines.push('    <generalfeedback format="html">');
-        lines.push(`      <text>${cdata(`<p>${q.explanation.trim()}</p>`)}</text>`);
+        lines.push(`      <text>${cdata(`<p>${explanation}</p>`)}</text>`);
         lines.push('    </generalfeedback>');
       } else {
         lines.push('    <generalfeedback format="html">');
@@ -303,14 +354,14 @@ export function convertQuestionsToMoodleXml(
       lines.push(`      <text>${cdata('<p>Chưa chính xác. Hãy xem lại lời giải thích.</p>')}</text>`);
       lines.push('    </incorrectfeedback>');
 
-      (q.options || []).forEach((optText, optIdx) => {
-        const isCorrect = optIdx === correctIdx;
+      options.forEach((optText, optIdx) => {
+        const isCorrect = optIdx === safeCorrectIdx;
         const fraction = isCorrect ? '100' : '0';
         lines.push(`    <answer fraction="${fraction}" format="html">`);
         lines.push(`      <text>${cdata(`<p>${optText}</p>`)}</text>`);
         lines.push('      <feedback format="html">');
-        if (isCorrect && q.explanation) {
-          lines.push(`        <text>${cdata(`<p>✓ ${q.explanation}</p>`)}</text>`);
+        if (isCorrect && explanation) {
+          lines.push(`        <text>${cdata(`<p>✓ ${explanation}</p>`)}</text>`);
         } else {
           lines.push('        <text></text>');
         }

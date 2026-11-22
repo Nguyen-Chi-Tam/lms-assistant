@@ -13,7 +13,6 @@ export async function GET(request: Request) {
     const moodleCourseIdStr = searchParams.get('moodleCourseId') || searchParams.get('courseId');
     const userIdStr = searchParams.get('userId') || searchParams.get('moodleUserId');
     const sessionId = searchParams.get('sessionId') || searchParams.get('id');
-    const role = searchParams.get('role'); // 'teacher' | 'student'
 
     if (!userIdStr && !sessionId) {
       return NextResponse.json(
@@ -25,14 +24,13 @@ export async function GET(request: Request) {
     const userId = userIdStr ? parseInt(userIdStr, 10) : null;
     const moodleCourseId = moodleCourseIdStr ? parseInt(moodleCourseIdStr, 10) : null;
 
-    const cacheKey = `chat_sessions:${userId || '0'}:${sessionId || 'none'}:${moodleCourseId || '0'}:${role || 'all'}`;
+    const cacheKey = `chat_sessions:${userId || '0'}:${sessionId || 'none'}:${moodleCourseId || '0'}`;
     const result = await fetchWithCache(cacheKey, 20_000, async () => {
       try {
         const filterObj: Record<string, string | number | undefined> = {
           user_id: userId || undefined,
           moodle_course_id: moodleCourseId || undefined,
         };
-        if (role) filterObj.role = role;
 
         const sessions = await getFirebaseRows('chat_sessions', filterObj);
         if (sessions) {
@@ -135,7 +133,6 @@ export async function POST(request: Request) {
       id?: string;
       userId?: number;
       userName?: string;
-      role?: 'teacher' | 'student';
       moodleCourseId?: number;
       response_model?: string;
       responseModel?: string;
@@ -153,7 +150,7 @@ export async function POST(request: Request) {
     const targetSessionId = body.sessionId || body.id;
     const userId = Number(body.userId) || 4; // default demo student ID
     const moodleCourseId = Number(body.moodleCourseId) || 1;
-    const userRole = body.role || (userId === 2 ? 'teacher' : 'student');
+    const userRole = 'student';
     const rawMessages = Array.isArray(body.messages) ? body.messages : [];
     const messages = rawMessages.map(msg => {
       let text = (msg.text ?? msg.content ?? '').trim();
@@ -181,7 +178,6 @@ export async function POST(request: Request) {
           user_id: userId,
           moodle_course_id: moodleCourseId,
         };
-        if (body.role) filter.role = body.role;
         const existingRows = await getFirebaseRows('chat_sessions', filter, 1);
         existingSessionId = existingRows?.[0]?.id;
       }
@@ -189,7 +185,7 @@ export async function POST(request: Request) {
       const sessionId = existingSessionId || crypto.randomUUID();
       const sessionData: Record<string, unknown> = {
         user_id: userId,
-        user_name: body.userName || (userRole === 'teacher' ? 'Giảng viên' : 'Sinh viên'),
+        user_name: body.userName || 'Sinh viên',
         role: userRole,
         moodle_course_id: moodleCourseId,
         messages,
@@ -215,8 +211,8 @@ export async function POST(request: Request) {
         await supabaseAdmin.from('users').upsert(
           {
             moodle_user_id: userId,
-            role: userId === 2 ? 'teacher' : 'student',
-            name: body.userName || (userId === 2 ? 'Admin User' : 'Sinh viên'),
+            role: 'student',
+            name: body.userName || 'Sinh viên',
           },
           { onConflict: 'moodle_user_id', ignoreDuplicates: true }
         );
@@ -368,7 +364,6 @@ export async function DELETE(request: Request) {
     const sessionId = searchParams.get('sessionId') || searchParams.get('id');
     const userId = Number(searchParams.get('userId')) || 0;
     const moodleCourseId = Number(searchParams.get('moodleCourseId') || searchParams.get('courseId')) || 0;
-    const role = searchParams.get('role');
 
     if (!sessionId && (!userId || !moodleCourseId)) {
       return NextResponse.json({ error: 'Cần cung cấp sessionId hoặc userId và courseId.' }, { status: 400 });
@@ -385,7 +380,6 @@ export async function DELETE(request: Request) {
           user_id: userId,
           moodle_course_id: moodleCourseId,
         };
-        if (role) filter.role = role;
         const sessions = await getFirebaseRows('chat_sessions', filter);
         if (sessions) {
           firebaseAvailable = true;

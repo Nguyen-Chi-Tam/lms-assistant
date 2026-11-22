@@ -39,9 +39,9 @@ export type AppRuntime = {
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
-  APMIX_API_KEY?: string;
-  APMIX_MODEL?: string;
-  APMIX_BASE_URL?: string;
+  AIONLABS_API_KEY?: string;
+  AIONLABS_BASE_URL?: string;
+  AIONLABS_MODEL?: string;
   MASTER_ENCRYPTION_KEY?: string;
 };
 
@@ -140,9 +140,9 @@ export function runtimeEnv(): AppRuntime {
     MOODLE_DB_PASSWORD: getVar('MOODLE_DB_PASSWORD') || '',
     MOODLE_DB_NAME: getVar('MOODLE_DB_NAME') || 'moodle',
     MOODLE_DB_ENABLED: getVar('MOODLE_DB_ENABLED'),
-    APMIX_API_KEY: getVar('APMIX_API_KEY'),
-    APMIX_MODEL: getVar('APMIX_MODEL'),
-    APMIX_BASE_URL: getVar('APMIX_BASE_URL'),
+    AIONLABS_API_KEY: getVar('AIONLABS_API_KEY'),
+    AIONLABS_BASE_URL: getVar('AIONLABS_BASE_URL'),
+    AIONLABS_MODEL: getVar('AIONLABS_MODEL'),
     MASTER_ENCRYPTION_KEY: getVar('MASTER_ENCRYPTION_KEY'),
   };
 }

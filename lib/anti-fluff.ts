@@ -31,6 +31,44 @@ const LEADING_FLUFF_REGEX = /^(?:(?:\*{1,2}|_{1,2})?(?:dạ\s+vâng|dạ|xin\s+c
 const TRAILING_FLUFF_REGEX = /(?:\n+|\.\s+)(?:(?:\*{1,2}|_{1,2})?(?:hy\s+vọng\s+(?:thông\s+tin|câu\s+trả\s+lời|giải\s+thích|bài\s+viết|hướng\s+dẫn|giáo\s+án|nội\s+dung)|chúc\s+(?:bạn|thầy\s+cô|quý\s+thầy\s+cô|anh\/chị)|nếu\s+(?:bạn|thầy\s+cô|anh\/chị)\s+cần\s+(?:thêm\s+thông\s+tin|hỗ\s+trợ)|tóm\s+lại|hope\s+(?:this\s+helps|this\s+information\s+helps|it\s+helps)|in\s+conclusion|to\s+summarize|espero\s+que\s+esto\s+te\s+ayude|en\s+conclusión)[^.\n]*[.\s!👋🎓😊]*(?:\*{1,2}|_{1,2})?[\s\n]*)$/iu;
 
 /**
+ * Matches verbose citation tags like "[trích đoạn 5]", "[HỌC LIỆU ĐÃ LƯU 2]".
+ */
+const VERBOSE_CITATION_REGEX =
+  /\[(?:(?:học\s*liệu|tài\s*liệu)(?:\s*đã\s*lưu)?|trích\s*đoạn|đoạn\s*trích|trích|nguồn|giáo\s*trình|bài\s*giảng|cite:?)\s*\[?\d{1,3}(?:\s*,\s*\d{1,3})*\]?\]/giu;
+
+/**
+ * Matches numeric citation markers: [1], [2], [3], [10], [1, 2], [1-3], [1][2].
+ * Four-digit values (e.g. [2024]) are intentionally left alone; citations never
+ * need more than three digits. Markdown links such as [1](https://...) are skipped.
+ */
+const NUMERIC_CITATION_REGEX = /\[\d{1,3}(?:\s*[-,–]\s*\d{1,3})*\](?!\()/g;
+
+/**
+ * Removes inline citation markers from answer prose. Sources are still shown by the
+ * app's source badges, so answers stay clean without bracketed reference numbers.
+ * Code spans/blocks are protected so array indexing such as `items[1]` is preserved.
+ */
+export function stripCitationMarkers(text: string): string {
+  if (!text) return '';
+
+  const codeFragments: string[] = [];
+  const protectedText = text.replace(/```[\s\S]*?```|`[^`\n]*`/g, fragment => {
+    codeFragments.push(fragment);
+    return `\u0000CITE_CODE_${codeFragments.length - 1}\u0000`;
+  });
+
+  const cleaned = protectedText
+    .replace(VERBOSE_CITATION_REGEX, '')
+    .replace(NUMERIC_CITATION_REGEX, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+([,.;:!?])/g, '$1')
+    .replace(/\(\s*\)/g, '')
+    .trim();
+
+  return cleaned.replace(/\u0000CITE_CODE_(\d+)\u0000/g, (_, index) => codeFragments[Number(index)] ?? '');
+}
+
+/**
  * Regex for identifying lazy template placeholders like [Tên sinh viên], [Chèn ví dụ tại đây], etc.
  */
 const PLACEHOLDER_REGEX = /\[(?:tên\s+(?:sinh\s+viên|bạn|giảng\s+viên|thầy\s+cô|trường|lớp|môn)|ngày(?:\/tháng)?(?:\/năm)?|thời\s+gian|địa\s+điểm|mã\s+sv|mã\s+số|chèn\s+ví\s+dụ[^\]]*|điền\s+vào\s+đây|nội\s+dung\s+cần\s+điền|insert\s+here|your\s+name)\]/giu;
@@ -147,7 +185,7 @@ export const ANTI_FLUFF_SYSTEM_INSTRUCTION = `QUY TẮC ANTI-FLUFF, KHÔNG MÀU 
 1. TRIỆT TIÊU VĂN MẪU, LỜI CHÀO & THÔNG BÁO NGUỒN (ANTI-FLUFF - TUYỆT ĐỐI KHÔNG PERFORMATIVE):
    - TUYỆT ĐỐI CẤM MỌI CÂU TỪ CHÀO HỎI VÀ XÃ GIAO ĐẦU CÂU: CẤM nói "Chào anh/chị", "Chào bạn", "Chào thầy/cô", "Kính chào", "Xin chào", "Dạ vâng", "Thưa bạn/thầy cô"... Kèm mọi icon chào mừng (🎓, 👋, 😊).
    - TUYỆT ĐỐI CẤM MỌI CÂU THÔNG BÁO NGUỒN SÁO RỖNG (CẤM TUYỆT ĐỐI: "Dựa trên tài liệu bạn cung cấp...", "Dựa trên kiến thức mở rộng ngoài khóa học...", "Dựa trên các nguồn bên ngoài tôi tìm được...", "Theo tài liệu...", "Based on the sources provided...", "Based on the external sources I found...").
-   - ĐI THẲNG TRỰC TIẾP VÀO NỘI DUNG VẤN ĐỀ (Jump straight to the problem): Bắt đầu câu trả lời ngay từ từ đầu tiên bằng bản chất chuyên môn hoặc giải pháp. Nguồn tài liệu đã có hệ thống trích dẫn [1], [2] và huy hiệu nguồn tự động hiển thị ở chân trang. Tuyệt đối không tự thuyết minh nguồn.
+   - ĐI THẲNG TRỰC TIẾP VÀO NỘI DUNG VẤN ĐỀ (Jump straight to the problem): Bắt đầu câu trả lời ngay từ từ đầu tiên bằng bản chất chuyên môn hoặc giải pháp. Nguồn tài liệu được hiển thị tự động ở chân trang; tuyệt đối không chèn marker trích dẫn dạng [n] (ví dụ [1], [2], [3], [10]) vào câu trả lời và không tự thuyết minh nguồn.
    - TUYỆT ĐỐI CẤM VĂN MẪU KẾT BÀI THỪA: Cấm các câu như "Hy vọng thông tin này giúp ích...", "Hy vọng giáo án...", "Chúc bạn/thầy cô...", "Tóm lại,...", "Kết luận:...". Ngắt bài ngay khi hoàn thành nội dung trọng tâm.
 
 2. ĐỊNH DẠNG CODE & THUẬT NGỮ CHUẨN MỰC:

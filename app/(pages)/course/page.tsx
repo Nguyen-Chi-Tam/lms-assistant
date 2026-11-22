@@ -1,8 +1,7 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { parseApiResponse } from '@/lib/api-response';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -19,6 +18,7 @@ import {
   Check,
   Trash2,
   Square,
+  Target,
   Send,
   Plus,
   Play,
@@ -27,6 +27,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   Folder,
   BarChart3,
   BookmarkPlus,
@@ -55,6 +56,8 @@ import {
   Layout,
   Pencil,
   Bell,
+  Gauge,
+  LogIn,
 } from 'lucide-react';
 import {
   baseCourses,
@@ -74,16 +77,15 @@ import type {
   MoodleUser,
   QuizAnalysisData,
   RagMode,
-  StudyToolResponse,
   TutorResponse,
 } from '@/app/types';
-import { MarkdownRenderer } from '@/app/components/MarkdownRenderer';
-import { InteractiveMindmap } from '@/app/components/InteractiveMindmap';
-import { QuizComponent } from '@/app/components/QuizComponent';
-import { QuizAnalysisModal } from '@/app/components/QuizAnalysisModal';
-import { CourseHeader } from '@/app/components/CourseHeader';
-import { CourseTopBar } from '@/app/components/CourseTopBar';
-import { CourseSwitcher } from '@/app/components/CourseSwitcher';
+import { generateArtifact } from '@/app/lib/artifact-client';
+import { MarkdownRenderer } from '@/app/components/ui/MarkdownRenderer';
+import { InteractiveMindmap } from '@/app/components/learning/InteractiveMindmap';
+import { QuizAnalysisModal } from '@/app/components/learning/QuizAnalysisModal';
+import { CourseHeader } from '@/app/components/course/CourseHeader';
+import { CourseTopBar } from '@/app/components/course/CourseTopBar';
+import { CourseSwitcher } from '@/app/components/course/CourseSwitcher';
 import {
   getStoredAnalysis,
   saveStoredAnalysis,
@@ -100,30 +102,26 @@ import {
 import type { SlideDeckData } from '@/lib/pptx-export';
 import { cleanSummaryData } from '@/lib/summary-cleaner';
 import { ensureFcmTokenRegistered, registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
-import { ErrorBoundary } from '@/app/components/ErrorBoundary';
-
-// Heavy, conditionally-rendered workspaces are loaded on demand so they do not
-// ship in the course route's initial bundle (TeacherPortal alone is ~280 kB and
-// pulls in the docx export stack; SlidePresentation pulls in pptxgenjs).
-const TeacherPortal = dynamic(
-  () => import('@/app/components/teacher/TeacherPortal').then(mod => mod.TeacherPortal),
-  {
-    loading: () => (
-      <div className="flex h-96 items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
-      </div>
-    ),
-    ssr: false,
-  }
-);
-
+import { askPuterStream, checkPuterHealth, checkIsPuterSignedIn, isPuterSignedIn, signInPuter } from '@/app/lib/puter-client';
+import { isPuterModelSelector, parsePuterModelSelector } from '@/app/lib/puter-models';
+import { finalizePuterTutorAnswer, type PuterTutorJob } from '@/app/lib/puter-tutor';
+import { stripCitationMarkers } from '@/lib/anti-fluff';
+import { ErrorBoundary } from '@/app/components/ui/ErrorBoundary';
+import { QuickTestGate } from '@/app/components/playable/QuickTestGate';
+import { LearningSpace } from '@/app/components/learning/LearningSpace';
+import { LearningDashboard } from '@/app/components/dashboard/LearningDashboard';
+// dependency stays out of the course route's initial bundle.
 const SlidePresentation = dynamic(
-  () => import('@/app/components/SlidePresentation').then(mod => mod.SlidePresentation),
+  () => import('@/app/components/learning/SlidePresentation').then(mod => mod.SlidePresentation),
   { ssr: false }
 );
 
 
 const MOODLE_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+
+// Chat history is rendered lazily: only the newest prompts are mounted at first,
+// older ones are prepended when the student scrolls up (or clicks "load older").
+const CHAT_PROMPT_PAGE_SIZE = 10;
 
 /* ── Flashcards Component ────────────────────────────────── */
 
@@ -160,9 +158,9 @@ function Flashcards({
             {cards.length > 0 ? `Thẻ ${i + 1} / ${cards.length}` : 'Chưa có thẻ nào'}
           </p>
         </div>
-        <button onClick={add} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+        <button className="flash-add-btn" onClick={add} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
           <Plus size={14} />
-          Thêm thẻ
+          <span>Thêm thẻ</span>
         </button>
       </div>
 
@@ -385,13 +383,13 @@ function StudyArtifact({
         <div className="tool-config-head">
           <div className="tool-icon-box" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{toolIcon}</div>
           <div>
-            <h3>Khởi tạo {toolName}</h3>
-            <p>Phân tích và tổng hợp dựa trên {selectedSourcesCount} nguồn tài liệu đã chọn của môn {courseTitle}.</p>
+            <h3>Tạo {toolName}</h3>
+            <p>Dựa trên {selectedSourcesCount} tài liệu đã chọn</p>
           </div>
         </div>
 
         <div>
-          <div className="tool-section-label">1. CHỌN MỨC ĐỘ CHI TIẾT</div>
+          <div className="tool-section-label">Mức độ</div>
           <div className="level-selector">
             <button
               type="button"
@@ -402,7 +400,7 @@ function StudyArtifact({
                 <Zap size={14} />
                 Cơ bản
               </strong>
-              <small>3-4 luận điểm trọng tâm, tổng hợp nhanh trong 1-2 phút</small>
+              <small>Ý chính ngắn gọn</small>
             </button>
 
             <button
@@ -414,7 +412,7 @@ function StudyArtifact({
                 <BookOpen size={14} />
                 Tiêu chuẩn
               </strong>
-              <small>Cấu trúc mạch lạc, 5-7 luận điểm cân đối, dễ tiếp thu</small>
+              <small>Đầy đủ, cân đối</small>
             </button>
 
             <button
@@ -426,23 +424,23 @@ function StudyArtifact({
                 <Sparkles size={14} />
                 Chuyên sâu
               </strong>
-              <small>Phân tích đa chiều, đào sâu nguyên lý, công thức và ví dụ thực tế</small>
+              <small>Phân tích sâu và ví dụ</small>
             </button>
           </div>
         </div>
 
         <div>
-          <div className="tool-section-label">2. CHỦ ĐỀ / PHẠM VI TRỌNG TÂM (TÙY CHỌN)</div>
+          <div className="tool-section-label">Chủ đề (tùy chọn)</div>
           <input
             className="tool-topic-input"
             value={topicInput}
             onChange={e => setTopicInput(e.target.value)}
-            placeholder={`Để trống để phân tích toàn bộ môn ${courseTitle}, hoặc nhập chuyên đề...`}
+            placeholder="Nhập chủ đề hoặc để trống cho toàn bộ môn..."
           />
         </div>
 
         <div>
-          <div className="tool-section-label">3. PHẠM VI DỮ LIỆU THAM KHẢO</div>
+          <div className="tool-section-label">Nguồn tham khảo</div>
           <div className="level-selector">
             <button
               type="button"
@@ -451,9 +449,9 @@ function StudyArtifact({
             >
               <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Lock size={14} style={{ color: selectedRagMode === 'strict' ? '#f87171' : undefined }} />
-                Bám sát (Strict)
+                Chỉ tài liệu
               </strong>
-              <small>100% bám sát tài liệu đã chọn, không suy diễn ngoài giáo trình</small>
+              <small>Chỉ dùng tài liệu đã chọn</small>
             </button>
 
             <button
@@ -463,9 +461,9 @@ function StudyArtifact({
             >
               <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Sparkles size={14} style={{ color: selectedRagMode === 'hybrid' ? '#10b981' : undefined }} />
-                RAG Lai (Hybrid)
+                Kết hợp
               </strong>
-              <small>Ưu tiên giáo trình; tự động bù đắp tri thức chuyên ngành khi thiếu</small>
+              <small>Ưu tiên tài liệu, bổ sung khi thiếu</small>
             </button>
 
             <button
@@ -475,9 +473,9 @@ function StudyArtifact({
             >
               <strong style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Globe size={14} style={{ color: selectedRagMode === 'creative' ? '#38bdf8' : undefined }} />
-                Sáng tạo (Creative)
+                Mở rộng
               </strong>
-              <small>Tự do mở rộng thực tiễn ngành, xu hướng và tư duy đa chiều</small>
+              <small>Kết hợp kiến thức thực tiễn</small>
             </button>
           </div>
         </div>
@@ -489,7 +487,7 @@ function StudyArtifact({
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
         >
           <Sparkles size={16} />
-          Bắt đầu khởi tạo {type}
+          Tạo {type}
         </button>
       </div>
     );
@@ -553,9 +551,9 @@ function StudyArtifact({
 
   if (type === 'Flashcard') {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 0.5rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <div className="flashcard-artifact-wrap" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div className="flashcard-meta-bar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 0.5rem' }}>
+          <div className="flashcard-meta-info" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span className="level-badge">{levelLabel}</span>
             <small style={{ color: '#94a3b8' }}>Chủ đề: {artifact.topic}</small>
           </div>
@@ -596,14 +594,14 @@ function StudyArtifact({
   return (
     <div className="artifact summary">
       <div className="artifact-head">
-        <div>
+        <div className="summary-head-info">
           <h2>{summary.title || `Tóm tắt: ${courseTitle}`}</h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+          <div className="summary-meta-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
             <span className="level-badge">{levelLabel}</span>
             <small style={{ color: '#94a3b8' }}>Chủ đề: {artifact.topic}</small>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="summary-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
           <button
             className="reconfigure-btn"
             onClick={onReset}
@@ -623,8 +621,8 @@ function StudyArtifact({
           <button
             className="reconfigure-btn"
             style={{
-              background: 'rgba(59, 130, 246, 0.25)',
-              borderColor: '#3b82f6',
+              background: 'rgba(185, 43, 71, 0.25)',
+              borderColor: '#b92b47',
               color: '#ffffff',
               display: 'inline-flex',
               alignItems: 'center',
@@ -734,12 +732,6 @@ function CourseDetailContent() {
   const initialIntent = searchParams.get('intent') || searchParams.get('q') || '';
   // When draft=1 the intent is pre-filled but NOT auto-sent (user can edit model/prompt first)
   const draftMode = searchParams.get('draft') === '1';
-  // Artifact-ready pushes deep-link with `tool=Tóm tắt|Mindmap|Flashcard|Slide`.
-  const queryTool = searchParams.get('tool');
-  const teacherInitialTool =
-    queryTool && ['Tóm tắt', 'Mindmap', 'Flashcard', 'Slide'].includes(queryTool)
-      ? queryTool
-      : undefined;
 
   const [moodle, setMoodle] = useState<MoodleData | null>(null);
   const [user, setUser] = useState<MoodleUser | null>(null);
@@ -774,12 +766,11 @@ function CourseDetailContent() {
   };
 
   useEffect(() => {
-    // Teachers also need a device token so they receive artifact-ready pushes
-    // for the AI materials they generate themselves.
+    // Register this device for scheduled reminders and artifact-ready pushes.
     if (user?.id) {
-      void registerFcmToken(user.id, false, user.role);
+      void registerFcmToken(user.id, false);
     }
-  }, [user?.id, user?.role]);
+  }, [user?.id]);
 
   // Sync Moodle data and read local caches
   const syncMoodleData = async (force = false) => {
@@ -810,7 +801,6 @@ function CourseDetailContent() {
               fullname: data.user!.name || prev?.fullname || '',
               username: data.user!.username || prev?.username || '',
               avatarUrl,
-              role: data.user!.role || prev?.role || 'student',
             };
             localStorage.setItem('moodleUser', JSON.stringify(updated));
             return updated;
@@ -828,7 +818,7 @@ function CourseDetailContent() {
     // A manual sync is an explicit user gesture: make sure this browser has a
     // valid FCM token in the DB (and a freshly stored registration URL).
     if (user?.id) {
-      void ensureFcmTokenRegistered(user.id, user.role);
+      void ensureFcmTokenRegistered(user.id);
     }
     void syncMoodleData(true);
   };
@@ -870,20 +860,10 @@ function CourseDetailContent() {
   // Compute all available courses (exclusively from Moodle live courses)
   const allCourses: Course[] = useMemo(() => {
     const coursesMap = new Map<string, Course>();
-    const defaultColors = ['#e056a0', '#ff8a65', '#20bfa9', '#3b82f6', '#ec4899', '#f59e0b'];
+    const defaultColors = ['#9f1d35', '#ff8a65', '#20bfa9', '#b92b47', '#ec4899', '#f59e0b'];
 
     if (moodle?.courses?.length) {
       moodle.courses.forEach((mc, index) => {
-        const isStudentUser = user?.role === 'student';
-        const isTeacher = !isStudentUser && (
-          user?.role === 'teacher' ||
-          mc.role === 'editingteacher' ||
-          mc.role === 'teacher' ||
-          mc.role === 'manager' ||
-          mc.role === 'coursecreator' ||
-          mc.role === 'admin' ||
-          Boolean(mc.isTeacher)
-        );
         coursesMap.set(mc.shortname.toLowerCase(), {
           id: mc.id,
           code: mc.shortname,
@@ -891,15 +871,13 @@ function CourseDetailContent() {
           progress: mc.progress ?? 0,
           color: defaultColors[index % defaultColors.length],
           icon: mc.shortname.slice(0, 2).toUpperCase(),
-          next: isTeacher ? 'Quản lý khóa học & Giảng dạy' : 'Xem nội dung khóa học Moodle',
-          role: isTeacher ? (mc.role || 'editingteacher') : 'student',
-          isTeacher,
+          next: 'Xem nội dung khóa học Moodle',
         });
       });
     }
 
     return Array.from(coursesMap.values());
-  }, [moodle, user?.role]);
+  }, [moodle]);
 
   // Determine current active course
   const activeCourse: Course = useMemo(() => {
@@ -937,7 +915,7 @@ function CourseDetailContent() {
         code: codeStr,
         name: nameStr,
         progress: 0,
-        color: '#e056a0',
+        color: '#9f1d35',
         icon: codeStr.slice(0, 2).toUpperCase(),
         next: 'Khóa học Moodle',
       };
@@ -949,7 +927,7 @@ function CourseDetailContent() {
         code: '',
         name: 'Chưa chọn khóa học',
         progress: 0,
-        color: '#e056a0',
+        color: '#9f1d35',
         icon: 'LM',
         next: '',
       }
@@ -962,8 +940,6 @@ function CourseDetailContent() {
       router.replace('/home');
     }
   }, [queryCode, queryName, queryId, router]);
-
-  const isTeacherCourse = Boolean(activeCourse.isTeacher);
 
   const handleCourseChange = (target: Course) => {
     router.replace(
@@ -1080,6 +1056,9 @@ function CourseDetailContent() {
   }, [sources]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const loadOlderPromptsRef = useRef(false);
+  const pendingScrollRestoreRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   // Throttles SSE-driven React state updates (~20fps) to avoid per-token re-renders
   const streamUiThrottleRef = useRef(0);
@@ -1091,6 +1070,7 @@ function CourseDetailContent() {
     },
   ]);
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  const [visiblePromptCount, setVisiblePromptCount] = useState<number>(CHAT_PROMPT_PAGE_SIZE);
 
   // Reset chat and all study artifacts (mindmap, flashcard, summary, slide) when switching courses
   useEffect(() => {
@@ -1102,6 +1082,7 @@ function CourseDetailContent() {
       },
     ]);
     setChatSessionId(null);
+    setVisiblePromptCount(CHAT_PROMPT_PAGE_SIZE);
     setArtifactsMap({});
     if (!initialIntent || !draftMode) {
       setInput('');
@@ -1111,6 +1092,20 @@ function CourseDetailContent() {
     }
   }, [activeCourse.id, activeCourse.code, activeCourse.name, courseSources.length]);
 
+  // Index of the oldest mounted message: keep only the newest prompts in the DOM
+  // so very long sessions do not render (and re-render) hundreds of messages.
+  const visibleChatStartIndex = useMemo(() => {
+    if (visiblePromptCount <= 0) return chat.length;
+    let prompts = 0;
+    for (let i = chat.length - 1; i >= 0; i -= 1) {
+      if (chat[i].role === 'user') {
+        prompts += 1;
+        if (prompts >= visiblePromptCount) return i;
+      }
+    }
+    return 0;
+  }, [chat, visiblePromptCount]);
+
   const [input, setInput] = useState(
     initialIntent.startsWith('__') || initialIntent.startsWith('Tiếp tục học') ? '' : initialIntent
   );
@@ -1118,15 +1113,30 @@ function CourseDetailContent() {
   const [tool, setTool] = useState(() => {
     const qTool = searchParams.get('tool');
     if (qTool) {
-      return qTool === 'Quiz' ? 'Trắc nghiệm' : qTool;
+      return qTool === 'Quiz' || qTool === 'Trắc nghiệm' ? 'Không gian học tập' : qTool;
     }
     return initialIntent === '__mindmap' ? 'Mindmap' : 'Chat';
+  });
+  // The full quiz only lives in the learning space now: old ?tool=Trắc nghiệm
+  // links (and remediation jumps) open the space with the quiz already active.
+  const [learningSpaceStartQuiz, setLearningSpaceStartQuiz] = useState(() => {
+    const qTool = searchParams.get('tool');
+    return qTool === 'Quiz' || qTool === 'Trắc nghiệm';
   });
   const [artifactsMap, setArtifactsMap] = useState<Record<string, GeneratedArtifact[]>>({});
   const loadedArtifactCourses = useRef<Set<string>>(new Set());
   const [selectedArtifactIds, setSelectedArtifactIds] = useState<Record<string, string>>({});
 
   const [showArtifactList, setShowArtifactList] = useState(false);
+  const [showArtifactMenu, setShowArtifactMenu] = useState(false);
+  const artifactMenuRef = useRef<HTMLDivElement>(null);
+  const artifactMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const artifactMenuPopoverRef = useRef<HTMLDivElement>(null);
+  const [artifactMenuPosition, setArtifactMenuPosition] = useState<{
+    top: number;
+    left: number;
+    maxHeight?: number;
+  }>({ top: 0, left: 0 });
   const [artifactLoading, setArtifactLoading] = useState(false);
   const artifactAbortRef = useRef<AbortController | null>(null);
   const artifactRequestIdRef = useRef<string | null>(null);
@@ -1137,7 +1147,73 @@ function CourseDetailContent() {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const [selectedModel, setSelectedModel] = useState<string>('auto');
-  const [availableModels, setAvailableModels] = useState<Array<{ id: string; provider: string; label: string; available?: boolean }>>([]);
+  const [availableModels, setAvailableModels] = useState<Array<{
+    id: string;
+    provider: string;
+    modelId?: string;
+    label: string;
+    available?: boolean;
+    isSystem?: boolean;
+  }>>([]);
+  const [puterSignedIn, setPuterSignedIn] = useState<boolean>(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void checkIsPuterSignedIn(2500).then(signed => {
+      if (!cancelled) setPuterSignedIn(signed);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const getPuterOptionLabel = useCallback(
+    (m: { id: string; provider: string; modelId?: string; label: string }) => {
+      if (m.provider !== 'puter') return m.label;
+      if (!puterSignedIn) {
+        return `${m.label} (Sign in)`;
+      }
+      return `${m.label} — Hệ thống`;
+    },
+    [puterSignedIn]
+  );
+
+  // Puter.js is a browser-only provider, so the selector doubles as its health check UI.
+  const [puterHealth, setPuterHealth] = useState<{
+    status: 'idle' | 'checking' | 'online' | 'offline';
+    modelId?: string;
+    latencyMs?: number;
+    message?: string;
+  }>({ status: 'idle' });
+
+  const runPuterHealthCheck = async (selector: string) => {
+    const modelId = parsePuterModelSelector(selector);
+    if (!modelId) return;
+
+    if (!isPuterSignedIn()) {
+      setPuterHealth({
+        status: 'offline',
+        modelId,
+        message: 'Chưa đăng nhập Puter (cần đăng nhập để dùng)',
+      });
+      return;
+    }
+
+    setPuterHealth({ status: 'checking', modelId });
+    const result = await checkPuterHealth(modelId);
+    setPuterHealth({
+      status: result.ok ? 'online' : 'offline',
+      modelId,
+      latencyMs: result.latencyMs,
+      message: result.ok ? result.reply : result.error,
+    });
+
+    if (result.ok) {
+      notify(`Puter.js hoạt động (${modelId}) — ${(result.latencyMs / 1000).toFixed(1)}s`);
+    } else {
+      notify(`Puter.js lỗi (${modelId}): ${result.error || 'không rõ nguyên nhân'}`);
+    }
+  };
   const [mounted, setMounted] = useState<boolean>(false);
   useEffect(() => {
     setMounted(true);
@@ -1148,23 +1224,58 @@ function CourseDetailContent() {
     }
   }, []);
 
-  // Fetch available AI models for Teachers to perform Healthcheck
-  useEffect(() => {
-    if (isTeacherCourse) {
-      fetch('/api/models?all=true')
-        .then(res => res.json())
-        .then(data => {
-          const mList = (data as any)?.models;
-          if (mList && Array.isArray(mList)) {
-            setAvailableModels(mList);
-          }
-        })
-        .catch(err => console.warn('Failed to load available models for teacher:', err));
+  // Fetch the available AI models so every student can choose their tutor model.
+  const loadAvailableModels = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/models?userId=${user?.id ?? ''}`, { cache: 'no-store' });
+      const data = (await res.json()) as {
+        models?: Array<{
+          id: string;
+          provider: string;
+          modelId?: string;
+          label: string;
+          available?: boolean;
+          isSystem?: boolean;
+        }>;
+      };
+      setAvailableModels(Array.isArray(data?.models) ? data.models : []);
+    } catch (err) {
+      console.warn('Failed to load available AI models:', err);
     }
-  }, [isTeacherCourse]);
+  }, [user?.id]);
+
+  useEffect(() => {
+    void loadAvailableModels();
+  }, [loadAvailableModels]);
+
+  // BYOK settings live in the top bar modal: refresh the selector right after a
+  // key is added or removed instead of waiting for a full page reload.
+  useEffect(() => {
+    const handleByokChange = () => {
+      void loadAvailableModels();
+    };
+    window.addEventListener('byok-keys-changed', handleByokChange);
+    return () => window.removeEventListener('byok-keys-changed', handleByokChange);
+  }, [loadAvailableModels]);
+
+  // If a BYOK key is removed, fall back to auto instead of keeping a stale model id.
+  useEffect(() => {
+    if (selectedModel === 'auto' || availableModels.length === 0) return;
+    if (!availableModels.some(m => m.id === selectedModel)) {
+      setSelectedModel('auto');
+    }
+  }, [availableModels, selectedModel]);
+
+  const activePuterModelId = parsePuterModelSelector(selectedModel);
+  const activePuterHealth = activePuterModelId && puterHealth.modelId === activePuterModelId
+    ? puterHealth
+    : { status: 'idle' as const };
+  // A manual choice must be honored by that model alone; failures are shown, not cascaded.
+  const isManualModelSelection = selectedModel !== 'auto';
+
   const [showGradeHistory, setShowGradeHistory] = useState<boolean>(false);
   const [showActivityModal, setShowActivityModal] = useState<boolean>(false);
-  const [teacherTab, setTeacherTab] = useState<'assistant' | 'grades' | 'quiz' | 'notifications'>('assistant');
+  const [showLearningDashboard, setShowLearningDashboard] = useState<boolean>(false);
   const askedIntent = useRef(false);
 
   // Student Document & Resource Upload Modal State
@@ -1265,19 +1376,18 @@ function CourseDetailContent() {
 
   // Trigger lazy loading of learning artifacts ONLY when an artifact tool is active
   useEffect(() => {
-    if (isTeacherCourse) return;
     const isArtifactTool = ['Tóm tắt', 'Mindmap', 'Flashcard', 'Slide'].includes(tool);
     if (isArtifactTool && activeCourse.id) {
       void loadLearningArtifacts(activeCourse.id, user?.id || 4);
     }
-  }, [tool, activeCourse.id, user?.id, isTeacherCourse, loadLearningArtifacts]);
+  }, [tool, activeCourse.id, user?.id, loadLearningArtifacts]);
 
-  // Hydrate course chat session & personal materials (Student view ONLY)
+  // Hydrate course chat session & personal materials
   useEffect(() => {
     let isCancelled = false;
     const currentUserId = user?.id || 4;
     const currentCourseId = activeCourse.id;
-    if (!currentCourseId || isTeacherCourse) return;
+    if (!currentCourseId) return;
 
     async function hydrateCourseData() {
       // 1. Fetch personal materials and merge into sources
@@ -1348,6 +1458,7 @@ function CourseDetailContent() {
             return m;
           });
           setChat(loadedMessages as ChatMessage[]);
+          setVisiblePromptCount(CHAT_PROMPT_PAGE_SIZE);
           if (chatData.latest.id) setChatSessionId(String(chatData.latest.id));
         }
       } catch (err) {
@@ -1360,7 +1471,7 @@ function CourseDetailContent() {
     return () => {
       isCancelled = true;
     };
-  }, [activeCourse.id, user?.id, isTeacherCourse, activeCourse.code]);
+  }, [activeCourse.id, user?.id, activeCourse.code]);
 
   // Compute exam results for current active course ONLY (excluding attendance)
   const courseExamResults = useMemo(() => {
@@ -1509,9 +1620,8 @@ function CourseDetailContent() {
     }
   }, [courseExamResults, input, selectedExamResult]);
 
-  // Sync analyzed status with database source of truth (students only)
+  // Sync analyzed status with database source of truth
   useEffect(() => {
-    if (isTeacherCourse) return;
     const localIds = getAllStoredAttemptIds();
     setAnalyzedAttemptIds(new Set(localIds));
 
@@ -1529,7 +1639,7 @@ function CourseDetailContent() {
         setAnalyzedAttemptIds(serverAttemptIds);
       })
       .catch(() => {});
-  }, [isTeacherCourse, activeCourse.id]);
+  }, [activeCourse.id]);
 
   // Listen to popstate event to close grade history or modal if open
   useEffect(() => {
@@ -1548,8 +1658,10 @@ function CourseDetailContent() {
     const qMode = searchParams.get('mode');
     const qTopics = searchParams.get('topics');
     if (qTool) {
-      const resolved = qTool === 'Quiz' ? 'Trắc nghiệm' : qTool;
+      const isQuizTool = qTool === 'Quiz' || qTool === 'Trắc nghiệm';
+      const resolved = isQuizTool ? 'Không gian học tập' : qTool;
       setTool(prev => (prev !== resolved ? resolved : prev));
+      if (isQuizTool) setLearningSpaceStartQuiz(true);
     }
     if (qMode === 'targeted') {
       setQuizInitialMode('targeted');
@@ -1680,6 +1792,8 @@ function CourseDetailContent() {
             has_details: route.hasDetails,
             has_feedback: route.hasFeedback,
             forceReanalyze,
+            model: selectedModel,
+            strictModel: isManualModelSelection,
           }),
         });
         const responseText = await apiRes.text();
@@ -1721,7 +1835,6 @@ function CourseDetailContent() {
   // Deep-link from an "artifact ready" push notification: auto-open the saved
   // quiz diagnosis for the matching attempt.
   useEffect(() => {
-    if (isTeacherCourse) return;
     const requested = searchParams.get('analysisAttempt');
     if (!requested) return;
     if (autoOpenedAnalysisRef.current === requested) return;
@@ -1740,7 +1853,7 @@ function CourseDetailContent() {
     } catch {
       // ignore history failures
     }
-  }, [searchParams, courseExamResults, isTeacherCourse]);
+  }, [searchParams, courseExamResults]);
 
   // Close drawers on Escape key
   useEffect(() => {
@@ -1748,6 +1861,7 @@ function CourseDetailContent() {
       if (e.key === 'Escape') {
         if (showGradeHistory) setShowGradeHistory(false);
         if (showActivityModal) setShowActivityModal(false);
+        if (showLearningDashboard) setShowLearningDashboard(false);
         if (!isSourcePanelCollapsed && typeof window !== 'undefined' && window.innerWidth < 1100) {
           setIsSourcePanelCollapsed(true);
         }
@@ -1755,18 +1869,18 @@ function CourseDetailContent() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showGradeHistory, showActivityModal, isSourcePanelCollapsed]);
+  }, [showGradeHistory, showActivityModal, showLearningDashboard, isSourcePanelCollapsed]);
 
   // Lock body scroll when any modal is active in course page
   useEffect(() => {
-    const isAnyModalOpen = showGradeHistory || showActivityModal || showUploadModal || profile;
+    const isAnyModalOpen = showGradeHistory || showActivityModal || showLearningDashboard || showUploadModal || profile;
     if (!isAnyModalOpen) return;
     const originalOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = originalOverflow;
     };
-  }, [showGradeHistory, showActivityModal, showUploadModal, profile]);
+  }, [showGradeHistory, showActivityModal, showLearningDashboard, showUploadModal, profile]);
 
   // Auto cleanup RAM vector cache ONLY on actual course page unmount
   const courseCodeRef = useRef(activeCourse.code);
@@ -1859,6 +1973,38 @@ function CourseDetailContent() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, loading]);
+
+  const loadOlderPrompts = useCallback(() => {
+    if (visibleChatStartIndex <= 0) return;
+    const container = messagesContainerRef.current;
+    if (container) pendingScrollRestoreRef.current = container.scrollHeight;
+    setVisiblePromptCount(prev => prev + CHAT_PROMPT_PAGE_SIZE);
+  }, [visibleChatStartIndex]);
+
+  // After older messages are prepended, keep the reading position on the
+  // message the student was looking at instead of jumping to the top.
+  useLayoutEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container || pendingScrollRestoreRef.current === null) return;
+    const previousScrollHeight = pendingScrollRestoreRef.current;
+    pendingScrollRestoreRef.current = null;
+    const previousScrollBehavior = container.style.scrollBehavior;
+    container.style.scrollBehavior = 'auto';
+    container.scrollTop = container.scrollHeight - previousScrollHeight;
+    container.style.scrollBehavior = previousScrollBehavior;
+    loadOlderPromptsRef.current = false;
+  }, [visiblePromptCount]);
+
+  // Lazy-load older prompts when the student scrolls near the top of the window.
+  const handleMessagesScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container || loadOlderPromptsRef.current) return;
+    if (visibleChatStartIndex <= 0) return;
+    if (container.scrollTop > 48) return;
+    loadOlderPromptsRef.current = true;
+    pendingScrollRestoreRef.current = container.scrollHeight;
+    setVisiblePromptCount(prev => prev + CHAT_PROMPT_PAGE_SIZE);
+  }, [visibleChatStartIndex]);
 
   const selectedSourceNames = sources.filter((_, i) => checked[i]).map(s => s.name);
 
@@ -1964,7 +2110,9 @@ function CourseDetailContent() {
           allowExternalSource: isExternalEffective,
           answerStyle,
           model: selectedModel,
-          stream: true,
+          strictModel: isManualModelSelection,
+          // Puter jobs are executed in the browser, so ask the server for JSON context only.
+          stream: !activePuterModelId,
           history: currentBaseChat.slice(1).map(c => ({ role: c.role, text: c.text })),
         }),
       });
@@ -2005,6 +2153,7 @@ function CourseDetailContent() {
             const dataStr = trimmed.slice(5).trim();
             if (dataStr === '[DONE]') continue;
 
+            let streamErrorMessage: string | null = null;
             try {
               const parsed = JSON.parse(dataStr);
               if (parsed.model) {
@@ -2085,6 +2234,7 @@ function CourseDetailContent() {
                 if (parsed.model) responseModelName = parsed.model;
                 if (parsed.provider) responseProviderName = parsed.provider;
                 if (parsed.fullText) fullAnswer = parsed.fullText;
+                fullAnswer = stripCitationMarkers(fullAnswer);
                 const msgRagMode = (parsed.ragMode as RagMode) || effectiveRagMode;
                 const msgIsFallback = Boolean(parsed.isFallback);
                 const msgFinishReason = (parsed.finishReason as string) || 'stop';
@@ -2106,51 +2256,138 @@ function CourseDetailContent() {
                 });
               }
               if (parsed.error) {
-                throw new Error(parsed.error);
+                // Defer: the block's catch is only for malformed JSON, not server errors.
+                streamErrorMessage = String(parsed.error);
               }
             } catch (pErr) {
               if (pErr instanceof Error && pErr.message !== 'Unexpected end of JSON input') {
                 console.warn('SSE parse error:', pErr);
               }
             }
+            if (streamErrorMessage) {
+              throw new Error(streamErrorMessage);
+            }
           }
         }
       } else {
-        const data = (await res.json()) as TutorResponse & { model?: string; provider?: string; ragMode?: RagMode; isFallback?: boolean };
-        fullAnswer = data.answer ?? '';
-        receivedSources = (data.sources ?? []) as Array<string | CitationSource>;
-        responseModelName = data.model || 'Groq LPU';
-        responseProviderName = data.provider || 'groq';
-        const msgRagMode = data.ragMode || effectiveRagMode;
-        const msgIsFallback = Boolean(data.isFallback);
-        const msgFinishReason = data.finishReason || 'stop';
-        setChat(v => {
-          const updated = [...v];
-          if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
-            updated[updated.length - 1] = {
-              role: 'ai',
-              text: fullAnswer,
-              sources: receivedSources,
-              model: responseModelName,
-              provider: responseProviderName,
-              ragMode: msgRagMode,
-              isFallback: msgIsFallback,
-              finishReason: msgFinishReason,
-            };
-          } else {
-            updated.push({
-              role: 'ai',
-              text: fullAnswer,
-              sources: receivedSources,
-              model: responseModelName,
-              provider: responseProviderName,
-              ragMode: msgRagMode,
-              isFallback: msgIsFallback,
-              finishReason: msgFinishReason,
+        const data = (await res.json()) as
+          | (TutorResponse & { model?: string; provider?: string; ragMode?: RagMode; isFallback?: boolean })
+          | PuterTutorJob;
+
+        if ('puterJob' in data && data.puterJob) {
+          // ── Puter.js path: the server retrieved the grounded context; Puter writes the answer. ──
+          const job = data;
+          responseModelName = availableModels.find(m => m.id === selectedModel)?.label || `Puter ${job.modelId}`;
+          responseProviderName = 'puter';
+
+          let puterText = '';
+          let lastFlushAt = 0;
+          const paintPuterAnswer = (final: boolean) => {
+            setChat(v => {
+              const updated = [...v];
+              const last = updated[updated.length - 1];
+              if (last && last.role === 'ai') {
+                updated[updated.length - 1] = {
+                  ...last,
+                  text: puterText,
+                  model: responseModelName,
+                  provider: responseProviderName,
+                  ...(final
+                    ? {
+                        sources: receivedSources,
+                        ragMode: job.ragMode,
+                        isFallback: Boolean(job.isParametricFallback),
+                        finishReason: 'stop',
+                      }
+                    : {}),
+                };
+              } else {
+                updated.push({
+                  role: 'ai',
+                  text: puterText,
+                  sources: final ? receivedSources : [],
+                  model: responseModelName,
+                  provider: responseProviderName,
+                  ragMode: job.ragMode,
+                  isFallback: Boolean(job.isParametricFallback),
+                  finishReason: 'stop',
+                });
+              }
+              return updated;
             });
+          };
+
+          if (!isPuterSignedIn()) {
+            notify('Đang mở đăng nhập Puter để tiếp tục...');
+            const ok = await signInPuter();
+            setPuterSignedIn(ok);
+            if (!ok) {
+              throw new Error('Cần đăng nhập Puter để sử dụng model này.');
+            }
           }
-          return updated;
-        });
+
+          const streamed = await askPuterStream(job.system, job.userPrompt, {
+            model: job.modelId,
+            temperature: job.temperature,
+            maxTokens: job.maxTokens,
+            signal: controller.signal,
+            onDelta: delta => {
+              puterText += delta;
+              const now = Date.now();
+              if (now - lastFlushAt < 50) return;
+              lastFlushAt = now;
+              paintPuterAnswer(false);
+            },
+          });
+
+          puterText = streamed || puterText;
+          const finalized = finalizePuterTutorAnswer(job, puterText);
+          puterText = finalized.text;
+          fullAnswer = finalized.text;
+          receivedSources = finalized.sources;
+          paintPuterAnswer(true);
+        } else {
+          const tutorData = data as TutorResponse & {
+            model?: string;
+            provider?: string;
+            ragMode?: RagMode;
+            isFallback?: boolean;
+          };
+          fullAnswer = stripCitationMarkers(tutorData.answer ?? '');
+          receivedSources = (tutorData.sources ?? []) as Array<string | CitationSource>;
+          responseModelName = tutorData.model || 'Groq LPU';
+          responseProviderName = tutorData.provider || 'groq';
+          const msgRagMode = tutorData.ragMode || effectiveRagMode;
+          const msgIsFallback = Boolean(tutorData.isFallback);
+          const msgFinishReason = tutorData.finishReason || 'stop';
+          setChat(v => {
+            const updated = [...v];
+            if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
+              updated[updated.length - 1] = {
+                role: 'ai',
+                text: fullAnswer,
+                sources: receivedSources,
+                model: responseModelName,
+                provider: responseProviderName,
+                ragMode: msgRagMode,
+                isFallback: msgIsFallback,
+                finishReason: msgFinishReason,
+              };
+            } else {
+              updated.push({
+                role: 'ai',
+                text: fullAnswer,
+                sources: receivedSources,
+                model: responseModelName,
+                provider: responseProviderName,
+                ragMode: msgRagMode,
+                isFallback: msgIsFallback,
+                finishReason: msgFinishReason,
+              });
+            }
+            return updated;
+          });
+        }
       }
 
       // Save to chat-sessions database with response_model
@@ -2272,6 +2509,12 @@ function CourseDetailContent() {
 
   // Tab switching simply activates the view without auto-fetching
   const openTool = (next: string) => {
+    setShowArtifactMenu(false);
+    // Opening the learning space from its tab always starts on the activity grid,
+    // unless a remediation/deep link explicitly requested the quiz.
+    if (next === 'Không gian học tập' && tool !== next) {
+      setLearningSpaceStartQuiz(false);
+    }
     if (tool === next) {
       if ((artifactsMap[next] || []).length > 0) {
         setShowArtifactList(prev => !prev);
@@ -2288,6 +2531,66 @@ function CourseDetailContent() {
       }
     }
   };
+
+  useEffect(() => {
+    if (!showArtifactMenu) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        artifactMenuRef.current &&
+        !artifactMenuRef.current.contains(target) &&
+        !artifactMenuPopoverRef.current?.contains(target)
+      ) {
+        setShowArtifactMenu(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowArtifactMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showArtifactMenu]);
+
+  useEffect(() => {
+    if (!showArtifactMenu || !artifactMenuTriggerRef.current) return;
+
+    const updateArtifactMenuPosition = () => {
+      const rect = artifactMenuTriggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const menuWidth = Math.min(268, window.innerWidth - 24);
+      const menuHeight = artifactMenuPopoverRef.current?.offsetHeight || 348;
+      const gap = 8;
+      const margin = 12;
+      const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+      const spaceAbove = rect.top - gap - margin;
+      const openUp = spaceBelow < menuHeight && spaceAbove > spaceBelow;
+      const available = Math.max(openUp ? spaceAbove : spaceBelow, 160);
+      const top = openUp
+        ? Math.max(margin, rect.top - gap - Math.min(menuHeight, available))
+        : Math.min(rect.bottom + gap, window.innerHeight - Math.min(menuHeight, available) - margin);
+      setArtifactMenuPosition({
+        top: Math.max(margin, top),
+        left: Math.max(margin, Math.min(rect.left, window.innerWidth - menuWidth - margin)),
+        maxHeight: Math.min(available, window.innerHeight - 24),
+      });
+    };
+
+    updateArtifactMenuPosition();
+    window.addEventListener('resize', updateArtifactMenuPosition);
+    window.addEventListener('scroll', updateArtifactMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateArtifactMenuPosition);
+      window.removeEventListener('scroll', updateArtifactMenuPosition, true);
+    };
+  }, [showArtifactMenu]);
 
 
   // Manual abort for artifact generation
@@ -2332,7 +2635,6 @@ function CourseDetailContent() {
     const effectiveRagMode: RagMode =
       toolRagMode ||
       (allowExternal !== undefined ? (allowExternal ? 'creative' : 'hybrid') : ragMode);
-    const effectiveAllowExternal = effectiveRagMode === 'creative';
 
     if (artifactAbortRef.current) {
       artifactAbortRef.current.abort();
@@ -2353,40 +2655,89 @@ function CourseDetailContent() {
     artifactRequestIdRef.current = requestId;
 
     try {
-      const res = await fetch('/api/study-tools', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          type: apiType,
-          requestId,
+      const draftId = `${type}-draft-${requestId}`;
+      // Kiến trúc mới: gom context (không AI) → SSE stream / micro-batching → convert sang shape UI.
+      const artifactData = await generateArtifact(
+        {
+          type: apiType as 'summary' | 'mindmap' | 'slides' | 'flashcards',
           topic: topic || activeCourse.name,
-          course: `${activeCourse.name} (${activeCourse.code})`,
           courseId: activeCourse.id,
-          courseCode: activeCourse.code,
           userId: user?.id || 4,
-          userName: user?.fullname || 'Sinh viên',
           sources: selectedSources,
           sourceNames: selectedSourceNames,
           level,
           ragMode: effectiveRagMode,
-          allowExternalSource: effectiveAllowExternal,
           model: selectedModel,
-        }),
-      });
-      const data = await parseApiResponse<StudyToolResponse>(res);
+          strictModel: isManualModelSelection,
+        },
+        {
+          onMeta: meta => console.log(`[artifact] stream via ${meta.modelName || meta.provider}`),
+          onPartialData: partial => {
+            if (artifactRequestIdRef.current !== requestId) return;
+            const draftArtifact: GeneratedArtifact = {
+              id: draftId,
+              name: topic || activeCourse.name,
+              data: partial,
+              originalData: partial,
+              level,
+              topic: topic || activeCourse.name,
+            };
+            setArtifactsMap(prev => {
+              const list = prev[type] || [];
+              const idx = list.findIndex(item => item.id === draftId);
+              const nextList = idx >= 0
+                ? list.map((item, i) => (i === idx ? draftArtifact : item))
+                : [...list, draftArtifact];
+              return { ...prev, [type]: nextList };
+            });
+            setSelectedArtifactIds(prev => ({ ...prev, [type]: draftId }));
+            setShowArtifactList(false);
+            setArtifactLoading(false);
+          },
+        },
+        controller.signal
+      );
       if (artifactRequestIdRef.current !== requestId) return;
 
+      // Vẫn lưu artifact vào Firestore/Supabase như luồng /api/study-tools cũ.
+      let savedArtifactId: string | null = null;
+      try {
+        const saveRes = await fetch('/api/learning-artifacts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user?.id || 4,
+            moodleCourseId: activeCourse.id,
+            artifactType: apiType,
+            contentData: {
+              name: topic || activeCourse.name,
+              topic: topic || activeCourse.name,
+              level,
+              data: artifactData,
+            },
+          }),
+        });
+        if (saveRes.ok) {
+          const saved = (await saveRes.json()) as { artifact?: { id?: string } };
+          savedArtifactId = saved.artifact?.id || null;
+        }
+      } catch (saveErr) {
+        console.warn('Could not persist artifact:', saveErr);
+      }
+
       const newArtifact: GeneratedArtifact = {
-        id: data.artifactId || `${type}-${Date.now()}`,
+        id: savedArtifactId || `${type}-${Date.now()}`,
         name: topic || activeCourse.name,
-        data: data.data,
-        originalData: data.data,
+        data: artifactData,
+        originalData: artifactData,
         level,
         topic: topic || activeCourse.name,
         orientation: type === 'Mindmap' ? 'horizontal' : undefined,
       };
-      setArtifactsMap(prev => ({ ...prev, [type]: [...(prev[type] || []), newArtifact] }));
+      setArtifactsMap(prev => {
+        const withoutDraft = (prev[type] || []).filter(item => item.id !== draftId);
+        return { ...prev, [type]: [...withoutDraft, newArtifact] };
+      });
       setSelectedArtifactIds(prev => ({ ...prev, [type]: newArtifact.id }));
       setShowArtifactList(false);
     } catch (e) {
@@ -2833,6 +3184,12 @@ function CourseDetailContent() {
 
   return (
     <main className="app-shell course-shell-layout">
+      <QuickTestGate
+        courseId={activeCourse.id}
+        courseName={activeCourse.name}
+        userId={user?.id}
+        sources={courseSources}
+      />
       <CourseTopBar
         search={search}
         onSearchChange={setSearch}
@@ -2846,7 +3203,6 @@ function CourseDetailContent() {
         onRequestNotificationPermission={undefined}
         user={user}
         displayName={displayName}
-        isTeacher={isTeacherCourse}
         onOpenProfile={() => setProfile(true)}
         onOpenNotification={(notif) => {
           setNotifications(false);
@@ -2863,34 +3219,10 @@ function CourseDetailContent() {
         <ErrorBoundary fallbackTitle="Lỗi hiển thị không gian khóa học">
         {/* Course Detail Page Body */}
 
-        {isTeacherCourse ? (
-          <div className={`workspace-page course-workspace teacher-workspace fade-in ${teacherTab === 'assistant' ? 'assistant-tab-active' : ''}`}>
-            <CourseHeader
-              activeCourse={activeCourse}
-              allCourses={allCourses}
-              isTeacher={true}
-              onSelectCourse={handleCourseChange}
-            />
-
-            <TeacherPortal
-              courses={allCourses}
-              moodleUrl={moodle?.moodleUrl || 'http://moodle.test'}
-              token={typeof window !== 'undefined' ? localStorage.getItem('moodleToken') || '' : ''}
-              initialCourseId={activeCourse.id || activeCourse.code}
-              hideHeader={true}
-              sources={courseSources}
-              initialTab="assistant"
-              initialTool={teacherInitialTool}
-              currentUser={user || undefined}
-              onTabChange={setTeacherTab}
-            />
-          </div>
-        ) : (
           <div className="workspace-page course-workspace student-workspace fade-in">
             <CourseHeader
               activeCourse={activeCourse}
               allCourses={allCourses}
-              isTeacher={false}
               onSelectCourse={handleCourseChange}
             />
 
@@ -2910,7 +3242,7 @@ function CourseDetailContent() {
               <div className="source-panel-header">
                 <div className="panel-title">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                    <Folder size={15} style={{ color: '#ff9dce' }} />
+                    <Folder size={15} style={{ color: '#f0a3b2' }} />
                     <strong>Nguồn tài liệu</strong>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
@@ -3048,7 +3380,7 @@ function CourseDetailContent() {
 
                 <button className="add-source" onClick={handleAddSource} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                   <Plus size={15} />
-                  Thêm nguồn tài liệu (PDF, Word, Web)
+                  Thêm tài liệu
                 </button>
               </div>
             </aside>
@@ -3062,45 +3394,118 @@ function CourseDetailContent() {
                       type="button"
                       className="expand-source-pill"
                       onClick={() => setIsSourcePanelCollapsed(false)}
-                      title="Mở danh sách tài liệu môn học"
+                      title="Mở danh sách tài liệu"
                       style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                     >
-                      <Folder size={14} style={{ color: '#ff9dce' }} />
-                      <span className="expand-source-text">Nguồn tài liệu</span>
+                      <Folder size={14} style={{ color: '#f0a3b2' }} />
+                      <span className="expand-source-text">Tài liệu</span>
                       <span className="source-count-badge">{selectedSourceNames.length}</span>
                     </button>
                   )}
-                  {[
-                    { id: 'Chat', label: 'Chat', icon: <MessageSquare size={14} /> },
-                    { id: 'Tóm tắt', label: 'Tóm tắt', icon: <FileText size={14} /> },
-                    { id: 'Mindmap', label: 'Mindmap', icon: <GitFork size={14} /> },
-                    { id: 'Flashcard', label: 'Flashcard', icon: <Layers size={14} /> },
-                    { id: 'Slide', label: 'Slide', icon: <Layout size={14} /> },
-                    { id: 'Trắc nghiệm', label: 'Trắc nghiệm', icon: <HelpCircle size={14} /> },
-                  ].map(tab => {
-                    const artifactCount = (artifactsMap[tab.id] || []).length;
-                    return (
-                      <button
-                        key={tab.id}
-                        className={tool === tab.id ? 'selected' : ''}
-                        onClick={() => void openTool(tab.id)}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                        title={
-                          artifactCount > 0
-                            ? `${tab.label} (${artifactCount} học liệu đã tạo${tool === tab.id ? ' · Nhấn để ẩn/hiện danh sách' : ''})`
-                            : tab.label
-                        }
-                      >
-                        {tab.icon}
-                        <span>{tab.label}</span>
-                        {artifactCount > 0 && (
-                          <span className="tab-artifact-count-badge">
-                            {artifactCount}
-                          </span>
-                        )}
-                      </button>
+                  <button
+                    className={tool === 'Chat' ? 'selected' : ''}
+                    onClick={() => void openTool('Chat')}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    title="Chat"
+                  >
+                    <MessageSquare size={14} />
+                    <span>Chat</span>
+                  </button>
+
+                  <button
+                    className={tool === 'Không gian học tập' ? 'selected' : ''}
+                    onClick={() => void openTool('Không gian học tập')}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    title="Luyện tập"
+                  >
+                    <Target size={14} />
+                    <span>Luyện tập</span>
+                  </button>
+
+                  {(() => {
+                    const artifactTabs = [
+                      { id: 'Tóm tắt', label: 'Tóm tắt', desc: 'Tóm tắt bài giảng', icon: <FileText size={14} /> },
+                      { id: 'Mindmap', label: 'Mindmap', desc: 'Sơ đồ tư duy', icon: <GitFork size={14} /> },
+                      { id: 'Flashcard', label: 'Flashcard', desc: 'Thẻ ghi nhớ', icon: <Layers size={14} /> },
+                      { id: 'Slide', label: 'Slide', desc: 'Bài trình chiếu', icon: <Layout size={14} /> },
+                    ];
+                    const savedArtifactCount = artifactTabs.reduce(
+                      (total, tab) => total + (artifactsMap[tab.id] || []).length,
+                      0
                     );
-                  })}
+                    const isArtifactTool = artifactTabs.some(tab => tab.id === tool);
+
+                    return (
+                      <div className="artifact-menu" ref={artifactMenuRef}>
+                        <button
+                          type="button"
+                          ref={artifactMenuTriggerRef}
+                          className={`artifact-menu-trigger ${isArtifactTool ? 'selected' : ''}`}
+                          onClick={() => setShowArtifactMenu(prev => !prev)}
+                          aria-haspopup="menu"
+                          aria-expanded={showArtifactMenu}
+                          title="Học liệu"
+                        >
+                          <Layers size={14} />
+                          <span>Học liệu</span>
+                          {savedArtifactCount > 0 && (
+                            <span className="tab-artifact-count-badge">{savedArtifactCount}</span>
+                          )}
+                          <ChevronDown size={13} className={showArtifactMenu ? 'artifact-menu-chevron-open' : ''} />
+                        </button>
+                        {showArtifactMenu && mounted && createPortal(
+                          <div
+                            ref={artifactMenuPopoverRef}
+                            className="artifact-menu-popover"
+                            role="menu"
+                            aria-label="Công cụ học tập"
+                            style={{
+                              top: artifactMenuPosition.top,
+                              left: artifactMenuPosition.left,
+                              maxHeight: artifactMenuPosition.maxHeight,
+                            }}
+                          >
+                            <div className="artifact-menu-header" role="presentation">
+                              <span className="artifact-menu-header-title">
+                                <Sparkles size={12} />
+                                Tài nguyên học tập
+                              </span>
+                              <span className="artifact-menu-header-hint">{artifactTabs.length} công cụ</span>
+                            </div>
+                            {artifactTabs.map(tab => {
+                              const artifactCount = (artifactsMap[tab.id] || []).length;
+                              return (
+                                <button
+                                  type="button"
+                                  key={tab.id}
+                                  role="menuitem"
+                                  className={`artifact-menu-item ${tool === tab.id ? 'selected' : ''}`}
+                                  onClick={() => void openTool(tab.id)}
+                                  title={
+                                    artifactCount > 0
+                                      ? `${tab.label} (${artifactCount} học liệu đã tạo)`
+                                      : tab.label
+                                  }
+                                >
+                                  <span className="artifact-menu-icon">{tab.icon}</span>
+                                  <span className="artifact-menu-text">
+                                    <span className="artifact-menu-label">{tab.label}</span>
+                                    <span className="artifact-menu-desc">{tab.desc}</span>
+                                  </span>
+                                  {artifactCount > 0 ? (
+                                    <span className="tab-artifact-count-badge">{artifactCount}</span>
+                                  ) : (
+                                    <ChevronRight size={13} className="artifact-menu-item-arrow" />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>,
+                          document.body
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="tool-tabs-actions">
@@ -3108,56 +3513,35 @@ function CourseDetailContent() {
                     type="button"
                     onClick={() => {
                       setShowGradeHistory(false);
-                      setShowActivityModal(prev => !prev);
-                    }}
-                    className="grade-history-tab-btn"
-                    title={showActivityModal ? 'Ẩn hoạt động (Esc)' : 'Xem bài tập, lịch thi & hạn nộp môn học'}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <CalendarCheck size={14} />
-                    <span>Hoạt động</span>
-                    {courseActivities.length > 0 && (
-                      <span
-                        style={{
-                          background: showActivityModal ? '#20bfa9' : 'rgba(32, 191, 169, 0.3)',
-                          color: '#fff',
-                          fontSize: '10px',
-                          fontWeight: 700,
-                          padding: '1px 6px',
-                          borderRadius: '999px',
-                        }}
-                      >
-                        {courseActivities.length}
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
                       setShowActivityModal(false);
-                      setShowGradeHistory(prev => !prev);
+                      setShowLearningDashboard(prev => !prev);
                     }}
                     className="grade-history-tab-btn"
-                    title={showGradeHistory ? 'Ẩn bảng điểm (Esc)' : 'Xem kết quả học tập & nhận xét môn học'}
+                    title={showLearningDashboard ? 'Ẩn bảng điều khiển (Esc)' : 'Mở bảng điều khiển học tập'}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                   >
-                    <BarChart3 size={14} />
-                    <span>Bảng điểm</span>
-                    {courseExamResults.length > 0 && (
-                      <span
-                        style={{
-                          background: showGradeHistory ? '#f868c4' : 'rgba(248, 104, 196, 0.3)',
-                          color: '#fff',
-                          fontSize: '10px',
-                          fontWeight: 700,
-                          padding: '1px 6px',
-                          borderRadius: '999px',
-                        }}
-                      >
-                        {courseExamResults.length}
-                      </span>
-                    )}
+                    <Gauge size={14} />
+                    <span>Điểm &amp; Bài tập</span>
+                    {(() => {
+                      const now = Date.now();
+                      const pendingCount = courseActivities.filter(a => (a.closeTimestamp || a.timestamp) >= now).length;
+                      const badgeCount = pendingCount + courseExamResults.length;
+                      if (badgeCount <= 0) return null;
+                      return (
+                        <span
+                          style={{
+                            background: showLearningDashboard ? '#b92b47' : 'rgba(185, 43, 71, 0.3)',
+                            color: '#fff',
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            padding: '1px 6px',
+                            borderRadius: '999px',
+                          }}
+                        >
+                          {badgeCount}
+                        </span>
+                      );
+                    })()}
                   </button>
 
                   <a
@@ -3177,8 +3561,20 @@ function CourseDetailContent() {
 
               {tool === 'Chat' ? (
                 <>
-                  <div className="messages">
+                  <div className="messages" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
+                    {visibleChatStartIndex > 0 && (
+                      <button
+                        type="button"
+                        className="messages-load-older"
+                        onClick={loadOlderPrompts}
+                        title="Tải thêm các câu hỏi cũ hơn"
+                      >
+                        <ChevronUp size={13} />
+                        <span>Tải thêm {CHAT_PROMPT_PAGE_SIZE} câu hỏi cũ hơn</span>
+                      </button>
+                    )}
                     {chat.map((m, i) => {
+                      if (i < visibleChatStartIndex) return null;
                       if (m.role === 'ai' && !m.text.trim() && (!m.sources || m.sources.length === 0)) {
                         return null;
                       }
@@ -3399,7 +3795,7 @@ function CourseDetailContent() {
                                         color: isCohere
                                           ? '#fb7185'
                                           : isGemini
-                                          ? '#ff9dce'
+                                          ? '#f0a3b2'
                                           : isGroq
                                           ? '#fb923c'
                                           : isCache
@@ -3506,7 +3902,7 @@ function CourseDetailContent() {
                       <div className="grade-strategy-toolbar">
                         <div className="grade-strategy-label-wrap">
                           <span className="grade-strategy-title">
-                            <Sparkles size={13} style={{ color: '#ff7ad9' }} />
+                            <Sparkles size={13} style={{ color: '#e06c82' }} />
                             Phương pháp phản hồi:
                           </span>
                           <span className="grade-strategy-count-pill" title="Số lượng phương pháp đang kết hợp cùng lúc">
@@ -3606,7 +4002,7 @@ function CourseDetailContent() {
                           void ask();
                         }
                       }}
-                      placeholder={`Đặt câu hỏi về ${activeCourse.name} từ các tài liệu đã chọn...`}
+                      placeholder="Nhập câu hỏi về môn học..."
                     />
                     <div className="chat-compose-footer">
                       <>
@@ -3623,10 +4019,10 @@ function CourseDetailContent() {
                                     : 'strict';
                               notify(
                                 next === 'strict'
-                                  ? '🔒 Chế độ Bám sát nghiêm ngặt: 100% tài liệu môn học, ngắt mạch nếu không có'
+                                  ? 'Nguồn trả lời: Chỉ tài liệu môn học'
                                   : next === 'hybrid'
-                                    ? '⚡ Chế độ RAG Lai: Ưu tiên tài liệu, tự động mở rộng kiến thức khi thiếu'
-                                    : '🌐 Chế độ Sáng tạo: Ưu tiên tư duy thực tiễn, tra cứu & mở rộng ngoài giáo trình'
+                                    ? 'Nguồn trả lời: Kết hợp tài liệu và kiến thức bổ sung'
+                                    : 'Nguồn trả lời: Mở rộng thực tiễn'
                               );
                               return next;
                             });
@@ -3634,10 +4030,10 @@ function CourseDetailContent() {
                           className={`mode-indicator-chip mode-${ragMode}`}
                           title={
                             ragMode === 'strict'
-                              ? 'Chế độ Bám sát (Strict RAG): 100% sự thật trong tài liệu, ngắt mạch khi thiếu (Bấm để chuyển sang RAG Lai)'
+                              ? 'Chỉ trả lời từ tài liệu đã chọn'
                               : ragMode === 'hybrid'
-                                ? 'Chế độ RAG Lai (Hybrid RAG): Ưu tiên tài liệu, tự động bù đắp tri thức khi thiếu (Bấm để chuyển sang Sáng tạo)'
-                                : 'Chế độ Sáng tạo (Creative Mode): Tự do mở rộng & liên hệ thực tiễn ngoài giáo trình (Bấm để chuyển sang Bám sát)'
+                                ? 'Ưu tiên tài liệu, tự bổ sung khi thiếu'
+                                : 'Mở rộng kiến thức ngoài giáo trình'
                           }
                           style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
                         >
@@ -3650,13 +4046,13 @@ function CourseDetailContent() {
                           )}
                           <span className="chip-label-full">
                             {ragMode === 'strict'
-                              ? 'Bám sát: 100%'
+                              ? 'Chỉ tài liệu'
                               : ragMode === 'hybrid'
-                                ? 'RAG Lai (Ưu tiên tài liệu)'
-                                : 'Sáng tạo (Nguồn ngoài)'}
+                                ? 'Kết hợp'
+                                : 'Mở rộng'}
                           </span>
                           <span className="chip-label-short">
-                            {ragMode === 'strict' ? 'Strict' : ragMode === 'hybrid' ? 'Hybrid' : 'Creative'}
+                            {ragMode === 'strict' ? 'Tài liệu' : ragMode === 'hybrid' ? 'Kết hợp' : 'Mở rộng'}
                           </span>
                         </button>
 
@@ -3668,54 +4064,153 @@ function CourseDetailContent() {
                               const next = prev === 'concise' ? 'detailed' : 'concise';
                               notify(
                                 next === 'detailed'
-                                  ? 'Chế độ phân tích: Chi tiết & Chuyên sâu'
-                                  : 'Chế độ phân tích: Nhanh & Trọng tâm'
+                                  ? 'Độ chi tiết: Chi tiết'
+                                  : 'Độ chi tiết: Ngắn gọn'
                               );
                               return next;
                             });
                           }}
                           className={`mode-indicator-chip ${answerStyle === 'detailed' ? 'style-detailed' : ''}`}
-                          title="Chuyển đổi giữa phân tích trọng tâm và phân tích chuyên sâu"
+                          title="Chọn độ dài câu trả lời"
                           style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
                         >
                           {answerStyle === 'concise' ? <Zap size={13} /> : <BookOpen size={13} />}
-                          <span className="chip-label-full">{answerStyle === 'concise' ? 'Nhanh / Trọng tâm' : 'Chi tiết / Chuyên sâu'}</span>
+                          <span className="chip-label-full">{answerStyle === 'concise' ? 'Ngắn gọn' : 'Chi tiết'}</span>
                           <span className="chip-label-short">{answerStyle === 'concise' ? 'Ngắn' : 'Chi tiết'}</span>
                         </button>
                       </>
 
-                      {/* AI Model Selector & Healthcheck (CHỈ HIỂN THỊ VỚI GIẢNG VIÊN ĐỂ TEST / HEALTHCHECK) */}
-                      {isTeacherCourse && (
-                        <select
-                          value={selectedModel}
-                          onChange={e => {
-                            setSelectedModel(e.target.value);
-                            const chosen = availableModels.find(m => m.id === e.target.value);
-                            const label = e.target.value === 'auto'
-                              ? 'Tự động'
-                              : (chosen?.label || e.target.value);
-                            notify(`[Giảng viên] Đã chọn: ${label}`);
+                      {/* AI Model Selector */}
+                      <select
+                        value={selectedModel}
+                        onChange={e => {
+                          const nextModel = e.target.value;
+                          setSelectedModel(nextModel);
+                          const chosen = availableModels.find(m => m.id === nextModel);
+                          const label = nextModel === 'auto'
+                            ? 'Tự động'
+                            : (chosen ? getPuterOptionLabel(chosen) : nextModel);
+                          notify(`Model AI: ${label}`);
+                          if (isPuterModelSelector(nextModel)) {
+                            if (!isPuterSignedIn()) {
+                              notify('Đang mở cửa sổ đăng nhập Puter...');
+                              void signInPuter().then(ok => {
+                                setPuterSignedIn(ok);
+                                if (ok) {
+                                  notify('Đăng nhập Puter thành công!');
+                                  void runPuterHealthCheck(nextModel);
+                                } else {
+                                  notify('Chưa hoàn tất đăng nhập Puter. Bấm nút "Sign in" bên cạnh để thử lại.');
+                                }
+                              });
+                            } else {
+                              void runPuterHealthCheck(nextModel);
+                            }
+                          }
+                        }}
+                        className="model-selector-chip"
+                        title="Chọn model AI cho gia sư — model thủ công chỉ dùng đúng model đó, không tự fallback"
+                        style={{
+                          height: '32px',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          borderRadius: '8px',
+                          background: selectedModel !== 'auto' ? 'rgba(185, 43, 71, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                          borderColor: selectedModel !== 'auto' ? 'rgba(185, 43, 71, 0.5)' : 'rgba(255, 255, 255, 0.12)',
+                          color: '#e2e8f0',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <option value="auto">Model: Tự động</option>
+                        {availableModels.some(m => m.id.endsWith('#byok')) && (
+                          <optgroup label="Model từ API Key của bạn (BYOK)">
+                            {availableModels.filter(m => m.id.endsWith('#byok')).map(m => (
+                              <option key={m.id} value={m.id} disabled={m.available === false}>
+                                {m.available === false ? '[Offline] ' : ''}{m.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {availableModels.some(m => !m.id.endsWith('#byok')) && (
+                          <optgroup label="Model hệ thống">
+                            {availableModels
+                              .filter(m => !m.id.endsWith('#byok'))
+                              .map(m => (
+                                <option key={m.id} value={m.id} disabled={m.available === false}>
+                                  {m.available === false ? '[Offline] ' : ''}{getPuterOptionLabel(m)}
+                                </option>
+                              ))}
+                          </optgroup>
+                        )}
+                      </select>
+
+                      {activePuterModelId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!isPuterSignedIn()) {
+                              notify('Đang mở đăng nhập Puter...');
+                              void signInPuter().then(ok => {
+                                setPuterSignedIn(ok);
+                                if (ok) {
+                                  notify('Đăng nhập Puter thành công!');
+                                  void runPuterHealthCheck(selectedModel);
+                                }
+                              });
+                            } else {
+                              void runPuterHealthCheck(selectedModel);
+                            }
                           }}
-                          className="model-selector-chip"
-                          title="Chọn model AI để kiểm tra kết nối và độ nhạy"
-                          style={{
-                            height: '32px',
-                            fontSize: '11px',
-                            fontWeight: 600,
-                            borderRadius: '8px',
-                            background: selectedModel !== 'auto' ? 'rgba(248, 104, 196, 0.22)' : 'rgba(255, 255, 255, 0.05)',
-                            borderColor: selectedModel !== 'auto' ? 'rgba(248, 104, 196, 0.5)' : 'rgba(255, 255, 255, 0.12)',
-                            color: '#e2e8f0',
-                            cursor: 'pointer',
-                          }}
+                          disabled={puterSignedIn && activePuterHealth.status === 'checking'}
+                          className={`puter-health-chip ${
+                            !puterSignedIn
+                              ? 'puter-health-offline'
+                              : `puter-health-${activePuterHealth.status}`
+                          }`}
+                          title={
+                            !puterSignedIn
+                              ? 'Chưa đăng nhập Puter. Bấm để mở đăng nhập.'
+                              : activePuterHealth.status === 'online'
+                                ? `Puter.js phản hồi sau ${((activePuterHealth.latencyMs || 0) / 1000).toFixed(1)}s. Bấm để kiểm tra lại.`
+                                : activePuterHealth.status === 'offline'
+                                  ? `${activePuterHealth.message || 'Puter.js không phản hồi.'} Bấm để thử lại.`
+                                  : 'Chạy health check Puter.js ngay trên trình duyệt'
+                          }
                         >
-                          <option value="auto">Model: Tự động</option>
-                          {availableModels.map(m => (
-                            <option key={m.id} value={m.id} disabled={m.available === false}>
-                              {m.available === false ? '[Offline] ' : ''}{m.label}
-                            </option>
-                          ))}
-                        </select>
+                          {!puterSignedIn ? (
+                            <LogIn size={12} />
+                          ) : activePuterHealth.status === 'checking' ? (
+                            <Clock size={12} className="puter-health-spin" />
+                          ) : activePuterHealth.status === 'online' ? (
+                            <CheckCircle2 size={12} />
+                          ) : activePuterHealth.status === 'offline' ? (
+                            <AlertCircle size={12} />
+                          ) : (
+                            <Gauge size={12} />
+                          )}
+                          <span className="chip-label-full">
+                            {!puterSignedIn
+                              ? 'Puter: Sign in'
+                              : activePuterHealth.status === 'checking'
+                                ? 'Puter: đang kiểm tra…'
+                                : activePuterHealth.status === 'online'
+                                  ? `Puter: Online · ${((activePuterHealth.latencyMs || 0) / 1000).toFixed(1)}s`
+                                  : activePuterHealth.status === 'offline'
+                                    ? 'Puter: lỗi — thử lại'
+                                    : 'Puter: kiểm tra'}
+                          </span>
+                          <span className="chip-label-short">
+                            {!puterSignedIn
+                              ? 'Sign in'
+                              : activePuterHealth.status === 'checking'
+                                ? 'Puter…'
+                                : activePuterHealth.status === 'online'
+                                  ? 'Puter OK'
+                                  : activePuterHealth.status === 'offline'
+                                    ? 'Puter lỗi'
+                                    : 'Puter'}
+                          </span>
+                        </button>
                       )}
 
                       <div className="chat-compose-actions">
@@ -3770,20 +4265,25 @@ function CourseDetailContent() {
                 </>
               ) : (
                 <div className="tool-workspace-container">
-                  {tool === 'Trắc nghiệm' ? (
-                    <QuizComponent
-                      key={`quiz-${activeCourse.id}-${activeCourse.code}`}
-                      courseTitle={activeCourse.name}
-                      courseCode={activeCourse.code}
+                  {tool === 'Không gian học tập' ? (
+                    <LearningSpace
+                      key={`learningspace-${activeCourse.id}-${learningSpaceStartQuiz ? 'quiz' : 'hub'}`}
                       courseId={activeCourse.id}
-                      selectedSources={sources.filter((_, i) => checked[i])}
-                      allowExternalSource={allowExternalSource}
+                      courseCode={activeCourse.code}
+                      courseName={activeCourse.name}
+                      userId={user?.id}
+                      sources={sources.filter((_, i) => checked[i])}
+                      open={true}
+                      onClose={() => setTool('Chat')}
                       ragMode={ragMode}
+                      allowExternalSource={allowExternalSource}
                       selectedModel={selectedModel}
                       hasLmsGrades={courseExamResults.length > 0}
-                      initialMode={quizInitialMode}
-                      initialWeakTopics={quizInitialTopics}
                       notify={notify}
+                      onPuterSignInChange={setPuterSignedIn}
+                      startWithQuiz={learningSpaceStartQuiz}
+                      initialQuizMode={learningSpaceStartQuiz ? quizInitialMode : 'comprehensive'}
+                      initialQuizWeakTopics={learningSpaceStartQuiz ? quizInitialTopics : []}
                     />
                   ) : (
                     <div className={`artifact-browser ${!artifactLoading && showArtifactList ? 'with-list' : 'focus-mode'}`}>
@@ -3855,7 +4355,6 @@ function CourseDetailContent() {
             </section>
           </div>
         </div>
-      )}
         </ErrorBoundary>
       </section>
 
@@ -3915,6 +4414,17 @@ function CourseDetailContent() {
         </div>
       )}
 
+      {showLearningDashboard && mounted && (
+        <LearningDashboard
+          course={activeCourse}
+          grades={courseExamResults}
+          activities={courseActivities}
+          lmsCourseUrl={lmsCourseUrl}
+          onClose={() => setShowLearningDashboard(false)}
+          onAnalyzeGrade={handleAskAiAboutGrade}
+        />
+      )}
+
       {/* Grade History Popup Modal (Strictly for this course) */}
       {showGradeHistory && mounted && createPortal(
         <div
@@ -3941,10 +4451,10 @@ function CourseDetailContent() {
               width: '100%',
               maxWidth: '720px',
               maxHeight: '86vh',
-              background: 'linear-gradient(180deg, #26101f 0%, #10070e 100%)',
-              border: '1px solid rgba(248, 104, 196, 0.35)',
+              background: 'linear-gradient(180deg, #18151b 0%, #0d1017 100%)',
+              border: '1px solid rgba(185, 43, 71, 0.35)',
               borderRadius: '20px',
-              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.7), 0 0 40px rgba(248, 104, 196, 0.18)',
+              boxShadow: '0 25px 80px rgba(0, 0, 0, 0.7), 0 0 40px rgba(185, 43, 71, 0.18)',
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -3969,12 +4479,12 @@ function CourseDetailContent() {
                     width: '42px',
                     height: '42px',
                     borderRadius: '12px',
-                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
+                    background: 'linear-gradient(135deg, #b92b47, #88162c)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     flexShrink: 0,
-                    boxShadow: '0 4px 14px rgba(248, 104, 196, 0.45)',
+                    boxShadow: '0 4px 14px rgba(185, 43, 71, 0.45)',
                     color: '#fff',
                   }}
                 >
@@ -3991,9 +4501,9 @@ function CourseDetailContent() {
                         fontWeight: 700,
                         padding: '2px 8px',
                         borderRadius: '999px',
-                        background: 'rgba(248, 104, 196, 0.25)',
-                        border: '1px solid rgba(248, 104, 196, 0.4)',
-                        color: '#ffc2e8',
+                        background: 'rgba(185, 43, 71, 0.25)',
+                        border: '1px solid rgba(185, 43, 71, 0.4)',
+                        color: '#f7cbd4',
                       }}
                     >
                       {courseExamResults.length} đầu điểm
@@ -4152,8 +4662,8 @@ function CourseDetailContent() {
                           padding: '0.65rem 0.85rem',
                           borderRadius: '10px',
                           background:
-                            'linear-gradient(135deg, rgba(248, 104, 196, 0.12), rgba(219, 63, 138, 0.08))',
-                          border: '1px solid rgba(248, 104, 196, 0.28)',
+                            'linear-gradient(135deg, rgba(185, 43, 71, 0.12), rgba(219, 63, 138, 0.08))',
+                          border: '1px solid rgba(185, 43, 71, 0.28)',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '0.25rem',
@@ -4163,7 +4673,7 @@ function CourseDetailContent() {
                           style={{
                             fontSize: '11px',
                             fontWeight: 700,
-                            color: '#ffc2e8',
+                            color: '#f7cbd4',
                             textTransform: 'uppercase',
                             letterSpacing: '0.4px',
                             display: 'flex',
@@ -4200,7 +4710,7 @@ function CourseDetailContent() {
                           color: '#94a3b8',
                         }}
                       >
-                        <span style={{ fontWeight: 600, color: '#ffc2e8', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                        <span style={{ fontWeight: 600, color: '#f7cbd4', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
                           <MessageSquare size={13} style={{ flexShrink: 0 }} />
                           <span>Nhận xét:</span>
                         </span>
@@ -4308,7 +4818,7 @@ function CourseDetailContent() {
               width: '100%',
               maxWidth: '680px',
               maxHeight: '86vh',
-              background: 'linear-gradient(180deg, #26101f 0%, #10070e 100%)',
+              background: 'linear-gradient(180deg, #18151b 0%, #0d1017 100%)',
               border: '1px solid rgba(32, 191, 169, 0.35)',
               borderRadius: '20px',
               boxShadow: '0 25px 80px rgba(0, 0, 0, 0.7), 0 0 40px rgba(32, 191, 169, 0.15)',
@@ -4649,9 +5159,9 @@ function CourseDetailContent() {
                           style={{
                             padding: '6px 14px',
                             borderRadius: '8px',
-                            background: 'rgba(248, 104, 196, 0.18)',
-                            border: '1px solid rgba(248, 104, 196, 0.35)',
-                            color: '#ffc2e8',
+                            background: 'rgba(185, 43, 71, 0.18)',
+                            border: '1px solid rgba(185, 43, 71, 0.35)',
+                            color: '#f7cbd4',
                             fontSize: '12px',
                             fontWeight: 600,
                             cursor: 'pointer',
@@ -4761,7 +5271,7 @@ function CourseDetailContent() {
                     width: '36px',
                     height: '36px',
                     borderRadius: '10px',
-                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
+                    background: 'linear-gradient(135deg, #b92b47, #88162c)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -4808,10 +5318,10 @@ function CourseDetailContent() {
                   style={{
                     display: 'grid',
                     gridTemplateColumns: 'repeat(3, 1fr)',
-                    background: '#180f14',
+                    background: '#121014',
                     padding: '4px',
                     borderRadius: '10px',
-                    border: '1px solid #2e1d26',
+                    border: '1px solid #242a38',
                     gap: '4px',
                   }}
                 >
@@ -4830,8 +5340,8 @@ function CourseDetailContent() {
                         style={{
                           padding: '0.6rem 0.5rem',
                           borderRadius: '8px',
-                          border: isSelected ? '1px solid rgba(248, 104, 196, 0.5)' : '1px solid transparent',
-                          background: isSelected ? 'rgba(248, 104, 196, 0.2)' : 'transparent',
+                          border: isSelected ? '1px solid rgba(185, 43, 71, 0.5)' : '1px solid transparent',
+                          background: isSelected ? 'rgba(185, 43, 71, 0.2)' : 'transparent',
                           color: isSelected ? '#ffffff' : '#9894ad',
                           cursor: 'pointer',
                           display: 'flex',
@@ -4843,7 +5353,7 @@ function CourseDetailContent() {
                           transition: 'all 0.2s ease',
                         }}
                       >
-                        <Icon size={15} style={{ color: isSelected ? '#ff9dce' : '#71717a' }} />
+                        <Icon size={15} style={{ color: isSelected ? '#f0a3b2' : '#71717a' }} />
                         <span>{tab.label}</span>
                       </button>
                     );
@@ -4872,9 +5382,9 @@ function CourseDetailContent() {
                       onClick={() => uploadFileInputRef.current?.click()}
                       style={{
                         padding: '1.75rem 1.25rem',
-                        border: uploadDragActive ? '2px dashed #f868c4' : '2px dashed rgba(248, 104, 196, 0.4)',
+                        border: uploadDragActive ? '2px dashed #b92b47' : '2px dashed rgba(185, 43, 71, 0.4)',
                         borderRadius: '12px',
-                        background: uploadDragActive ? 'rgba(248, 104, 196, 0.15)' : 'rgba(20, 18, 34, 0.6)',
+                        background: uploadDragActive ? 'rgba(185, 43, 71, 0.15)' : 'rgba(20, 18, 34, 0.6)',
                         textAlign: 'center',
                         cursor: 'pointer',
                         transition: 'all 0.2s ease',
@@ -4902,8 +5412,8 @@ function CourseDetailContent() {
                       />
 
                       {uploadFile ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%', maxWidth: '380px', padding: '0.65rem 0.85rem', background: '#180f14', borderRadius: '10px', border: '1px solid rgba(248, 104, 196, 0.35)' }} onClick={e => e.stopPropagation()}>
-                          <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(248, 104, 196, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff9dce', flexShrink: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%', maxWidth: '380px', padding: '0.65rem 0.85rem', background: '#121014', borderRadius: '10px', border: '1px solid rgba(185, 43, 71, 0.35)' }} onClick={e => e.stopPropagation()}>
+                          <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(185, 43, 71, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f0a3b2', flexShrink: 0 }}>
                             <FileText size={18} />
                           </div>
                           <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
@@ -4928,7 +5438,7 @@ function CourseDetailContent() {
                         </div>
                       ) : (
                         <>
-                          <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(248, 104, 196, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff9dce', marginBottom: '0.2rem' }}>
+                          <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(185, 43, 71, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f0a3b2', marginBottom: '0.2rem' }}>
                             <UploadCloud size={24} />
                           </div>
                           <strong style={{ fontSize: '0.92rem', color: '#f3f2f8' }}>
@@ -4942,7 +5452,7 @@ function CourseDetailContent() {
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#e2e8f0', marginBottom: '0.4rem' }}>
                         Tên hiển thị tài liệu (Tùy chọn):
                       </label>
                       <input
@@ -4954,9 +5464,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#180f14',
+                          background: '#121014',
                           color: '#f3f2f8',
-                          border: '1px solid #2e1d26',
+                          border: '1px solid #242a38',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -4970,7 +5480,7 @@ function CourseDetailContent() {
                 {uploadTab === 'url' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#e2e8f0', marginBottom: '0.4rem' }}>
                         Địa chỉ liên kết Web (URL): <span style={{ color: '#ef4444' }}>*</span>
                       </label>
                       <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -4985,9 +5495,9 @@ function CourseDetailContent() {
                             width: '100%',
                             padding: '0.65rem 0.85rem 0.65rem 36px',
                             borderRadius: '8px',
-                            background: '#180f14',
+                            background: '#121014',
                             color: '#f3f2f8',
-                            border: '1px solid #2e1d26',
+                            border: '1px solid #242a38',
                             fontSize: '16px',
                             outline: 'none',
                             boxSizing: 'border-box',
@@ -4997,7 +5507,7 @@ function CourseDetailContent() {
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#e2e8f0', marginBottom: '0.4rem' }}>
                         Tiêu đề liên kết / Tên tài liệu:
                       </label>
                       <input
@@ -5009,9 +5519,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#180f14',
+                          background: '#121014',
                           color: '#f3f2f8',
-                          border: '1px solid #2e1d26',
+                          border: '1px solid #242a38',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -5025,7 +5535,7 @@ function CourseDetailContent() {
                 {uploadTab === 'text' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#e2e8f0', marginBottom: '0.4rem' }}>
                         Tiêu đề ghi chú:
                       </label>
                       <input
@@ -5037,9 +5547,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.65rem 0.85rem',
                           borderRadius: '8px',
-                          background: '#180f14',
+                          background: '#121014',
                           color: '#f3f2f8',
-                          border: '1px solid #2e1d26',
+                          border: '1px solid #242a38',
                           fontSize: '16px',
                           outline: 'none',
                           boxSizing: 'border-box',
@@ -5048,7 +5558,7 @@ function CourseDetailContent() {
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#ffe0f3', marginBottom: '0.4rem' }}>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#e2e8f0', marginBottom: '0.4rem' }}>
                         Nội dung bài học / Ghi chép: <span style={{ color: '#ef4444' }}>*</span>
                       </label>
                       <textarea
@@ -5061,9 +5571,9 @@ function CourseDetailContent() {
                           width: '100%',
                           padding: '0.75rem',
                           borderRadius: '8px',
-                          background: '#180f14',
+                          background: '#121014',
                           color: '#f3f2f8',
-                          border: '1px solid #2e1d26',
+                          border: '1px solid #242a38',
                           fontSize: '16px',
                           outline: 'none',
                           resize: 'vertical',
@@ -5094,7 +5604,7 @@ function CourseDetailContent() {
                   style={{
                     padding: '0.55rem 1.15rem',
                     borderRadius: '8px',
-                    border: '1px solid #2e1d26',
+                    border: '1px solid #242a38',
                     background: 'transparent',
                     color: '#9894ad',
                     fontWeight: 600,
@@ -5111,12 +5621,12 @@ function CourseDetailContent() {
                     padding: '0.55rem 1.35rem',
                     borderRadius: '8px',
                     border: 'none',
-                    background: 'linear-gradient(135deg, #f868c4, #db3f8a)',
+                    background: 'linear-gradient(135deg, #b92b47, #88162c)',
                     color: '#ffffff',
                     fontWeight: 700,
                     fontSize: '0.88rem',
                     cursor: uploadLoading ? 'not-allowed' : 'pointer',
-                    boxShadow: '0 4px 14px rgba(248, 104, 196, 0.4)',
+                    boxShadow: '0 4px 14px rgba(185, 43, 71, 0.4)',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '6px',
@@ -5193,7 +5703,8 @@ function CourseDetailContent() {
           setAnalysisModalOpen(false);
           setQuizInitialMode('targeted');
           setQuizInitialTopics(topics);
-          setTool('Trắc nghiệm');
+          setLearningSpaceStartQuiz(true);
+          setTool('Không gian học tập');
           notify(`Đã chuyển sang Lò ấp trắc nghiệm: Khắc phục ${topics.length} điểm mù`);
         }}
         onAskTutor={analysisData => {

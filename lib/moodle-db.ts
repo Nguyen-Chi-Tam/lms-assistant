@@ -46,7 +46,7 @@ export function getMoodlePool(): mysql.Pool {
 }
 
 /**
- * Lấy danh sách user_id của sinh viên ghi danh trong môn học.
+ * Lấy danh sách user_id đang ghi danh trong môn học.
  * Chiến lược kép:
  * 1. Ưu tiên tra cứu trực tiếp MySQL Moodle (cực nhanh trong môi trường Node.js)
  * 2. Fallback sang Moodle REST API `core_enrol_get_enrolled_users` khi chạy trong sandbox (Cloudflare Workers / vinext)
@@ -54,7 +54,7 @@ export function getMoodlePool(): mysql.Pool {
 export async function getEnrolledUserIdsFromMoodleDb(courseId: number): Promise<number[]> {
   if (!courseId) return [];
 
-  // 1. Thử MySQL trực tiếp: Lọc CHỈ LẤY SINH VIÊN (role = 'student'), tuyệt đối không lấy giáo viên/trợ giảng
+  // 1. Thử MySQL trực tiếp: lấy toàn bộ tài khoản đang ghi danh (không phân biệt vai trò Moodle).
   if (isMoodleDbAvailable()) {
     try {
       const pool = getMoodlePool();
@@ -62,12 +62,8 @@ export async function getEnrolledUserIdsFromMoodleDb(courseId: number): Promise<
       SELECT DISTINCT ue.userid
       FROM mdl_user_enrolments ue
       JOIN mdl_enrol e ON e.id = ue.enrolid
-      JOIN mdl_context ctx ON ctx.instanceid = e.courseid AND ctx.contextlevel = 50
-      JOIN mdl_role_assignments ra ON ra.userid = ue.userid AND ra.contextid = ctx.id
-      JOIN mdl_role r ON r.id = ra.roleid
       WHERE e.courseid = ? 
         AND ue.status = 0 
-        AND r.shortname = 'student'
     `;
       const [rows] = await pool.query(queryStr, [courseId]);
       if (Array.isArray(rows) && rows.length > 0) {
@@ -78,7 +74,7 @@ export async function getEnrolledUserIdsFromMoodleDb(courseId: number): Promise<
     }
   }
 
-  // 2. Fallback sang Moodle REST API: Chỉ lấy tài khoản có role 'student'
+  // 2. Fallback sang Moodle REST API: lấy toàn bộ tài khoản đang ghi danh.
   try {
     const { MOODLE_URL, MOODLE_TOKEN } = runtimeEnv();
     if (MOODLE_URL && MOODLE_TOKEN) {
@@ -94,7 +90,6 @@ export async function getEnrolledUserIdsFromMoodleDb(courseId: number): Promise<
         const data = (await res.json()) as any;
         if (Array.isArray(data)) {
           return data
-            .filter((u: any) => Array.isArray(u.roles) && u.roles.some((r: any) => r.shortname === 'student'))
             .map((u: any) => Number(u.id))
             .filter(Boolean);
         }

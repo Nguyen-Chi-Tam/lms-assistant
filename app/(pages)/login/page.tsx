@@ -17,7 +17,7 @@ export default function LoginPage() {
     event.preventDefault();
     setLoading(true);
     setError('');
-    setStepMessage('Đang xác thực thông tin và phân loại vai trò...');
+    setStepMessage('Đang xác thực thông tin tài khoản...');
 
     // Clear any previous session / cached data to prevent cross-account contamination
     try {
@@ -28,7 +28,7 @@ export default function LoginPage() {
     } catch {}
 
     try {
-      // Step 1: Divide role first via /api/login
+      // Step 1: Authenticate against Moodle
       const response = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -37,7 +37,7 @@ export default function LoginPage() {
       const data = (await response.json()) as {
         error?: string;
         moodleToken?: string;
-        user?: { id?: number; role?: string; fullname?: string; username?: string; avatarUrl?: string };
+        user?: { id?: number; fullname?: string; username?: string; avatarUrl?: string };
       };
       if (!response.ok || !data.moodleToken || !data.user) {
         throw new Error(data.error ?? 'Không thể đăng nhập.');
@@ -45,13 +45,12 @@ export default function LoginPage() {
 
       const token = data.moodleToken;
       const user = data.user;
-      const role = user.role === 'teacher' ? 'teacher' : 'student';
 
       localStorage.setItem('moodleToken', token);
-      localStorage.setItem('moodleUser', JSON.stringify({ ...user, role }));
+      localStorage.setItem('moodleUser', JSON.stringify(user));
 
       // Step 2: Sync Moodle data during login
-      setStepMessage(`Vai trò: ${role === 'teacher' ? 'Giảng viên' : 'Học viên'}. Đang đồng bộ Moodle...`);
+      setStepMessage('Đang đồng bộ dữ liệu Moodle...');
 
       try {
         const syncRes = await fetch('/api/moodle?force=true', {
@@ -64,16 +63,6 @@ export default function LoginPage() {
 
         if (syncRes.ok) {
           const moodleData = (await syncRes.json()) as any;
-          if (moodleData?.courses && Array.isArray(moodleData.courses)) {
-            // Guarantee student accounts have no teacher flags
-            if (role === 'student') {
-              moodleData.courses = moodleData.courses.map((c: any) => ({
-                ...c,
-                isTeacher: false,
-                role: 'student',
-              }));
-            }
-          }
           localStorage.setItem('moodleData', JSON.stringify(moodleData));
           localStorage.setItem('moodleDataSyncedAt', String(Date.now()));
 
@@ -83,7 +72,6 @@ export default function LoginPage() {
               JSON.stringify({
                 ...user,
                 ...moodleData.user,
-                role,
               })
             );
           }
@@ -92,12 +80,10 @@ export default function LoginPage() {
         console.warn('Moodle sync during login warning:', syncErr);
       }
 
-      // Register Web Push token for both students and teachers. Students get
-      // scheduled cron reminders; teachers get artifact-ready notifications
-      // for the AI materials they create.
+      // Step 3: Register Web Push token for this student device.
       if (user.id) {
         try {
-          await registerFcmToken(user.id, true, role);
+          await registerFcmToken(user.id, true);
         } catch (fcmErr) {
           console.warn('FCM registration on login:', fcmErr);
         }
@@ -117,35 +103,34 @@ export default function LoginPage() {
     <main className="auth-page">
       <section className="auth-panel">
         <div className="auth-brand"><img src="/lms-assistant-icon.png" alt="" /><strong>LMS Assistant</strong></div>
-        <p className="eyebrow">KHÔNG GIAN HỌC TẬP</p>
-        <h1>{mode === 'login' ? 'Chào mừng trở lại' : 'Tạo tài khoản học tập'}</h1>
-        <p className="auth-subtitle">{mode === 'login' ? 'Đăng nhập bằng tài khoản Moodle của bạn.' : 'Tài khoản học viên được tạo và quản lý trên Moodle.'}</p>
+        <h1>{mode === 'login' ? 'Đăng nhập' : 'Đăng ký tài khoản'}</h1>
+        <p className="auth-subtitle">{mode === 'login' ? 'Sử dụng tài khoản Moodle của bạn để tiếp tục.' : 'Tài khoản được cấp và quản lý trên hệ thống Moodle.'}</p>
         <div className="auth-tabs" role="tablist" aria-label="Tài khoản">
           <button className={mode === 'login' ? 'selected' : ''} onClick={() => { setMode('login'); setError(''); }} role="tab" aria-selected={mode === 'login'}>Đăng nhập</button>
           <button className={mode === 'signup' ? 'selected' : ''} onClick={() => { setMode('signup'); setError(''); }} role="tab" aria-selected={mode === 'signup'}>Đăng ký</button>
         </div>
         {mode === 'signup' ? (
           <div className="signup-note">
-            <strong>Đăng ký trên Moodle</strong>
-            <p>LMS Assistant dùng tài khoản Moodle để xác thực. Hãy đăng ký với quản trị viên hoặc dùng trang đăng ký của hệ thống Moodle, sau đó quay lại đây để đăng nhập.</p>
+            <strong>Đăng ký qua Moodle</strong>
+            <p>Vui lòng tạo tài khoản trên hệ thống Moodle của trường, sau đó quay lại đây để đăng nhập.</p>
             <button onClick={() => setMode('login')}>Quay lại đăng nhập</button>
           </div>
         ) : (
           <form onSubmit={submit} className="auth-form">
-            <label>Email hoặc tên đăng nhập<input type="text" value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" inputMode="email" placeholder="student@example.com" required /></label>
+            <label>Tên đăng nhập hoặc email<input type="text" value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" inputMode="email" placeholder="student@example.com" required /></label>
             <label>Mật khẩu<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" required /></label>
             {error && <p className="auth-error" role="alert">{error}</p>}
             <button className="auth-submit" type="submit" disabled={loading}>
               {loading ? (stepMessage || 'Đang đăng nhập...') : 'Đăng nhập'}
             </button>
             {loading && stepMessage && (
-              <p style={{ marginTop: '8px', fontSize: '12px', color: '#ffc2e8', textAlign: 'center' }}>
+              <p style={{ marginTop: '8px', fontSize: '12px', color: '#f0a3b2', textAlign: 'center' }}>
                 {stepMessage}
               </p>
             )}
           </form>
         )}
-        <p className="auth-footer">Kết nối bảo mật với Moodle</p>
+        <p className="auth-footer">Kết nối đồng bộ với Moodle</p>
       </section>
     </main>
   );

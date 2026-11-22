@@ -1,5 +1,9 @@
 import { getGroqClient, executeWithGroqPool, GROQ_MODEL, GROQ_BACKUP_MODELS } from '@/models/groq';
 import { isProviderBlocked, blockProviderUntilTomorrow, isQuotaExhaustedError } from '@/models/registry';
+import { isStudentProgressQuery } from '@/lib/scope-guard';
+
+/** Nhãn ý định 3 cấp do Groq trả về trong CÙNG request với cụm từ khóa. */
+export type ReformulatedIntent = 'student_progress' | 'curriculum_or_prereq' | 'off_topic';
 
 export interface QueryReformulationResult {
   originalQuery: string;
@@ -8,6 +12,8 @@ export interface QueryReformulationResult {
   topics?: string[];
   source: 'groq' | 'rule_based' | 'passthrough';
   latencyMs?: number;
+  /** Tầng 0 / 1-2 / 3 được phân loại ngay bước này để Gatekeeper không gọi LLM lần 2. */
+  intent?: ReformulatedIntent;
 }
 
 // In-memory LRU cache for query reformulation (prevents duplicate Groq calls)
@@ -55,6 +61,34 @@ export function cleanQueryRuleBased(text: string): string {
 function isAlreadyConcise(text: string): boolean {
   const words = text.trim().split(/\s+/);
   return words.length <= 4 && text.length <= 30;
+}
+
+/**
+ * Parse JSON thuần do Groq trả về: {"intent": "...", "reformulatedQuery": "..."}.
+ * Vẫn chấp nhận output dạng cụm từ khóa thuần của prompt cũ để tương thích ngược.
+ */
+function parseReformulationResponse(raw: string): { intent?: ReformulatedIntent; reformulatedQuery?: string } | null {
+  if (!raw) return null;
+  const text = raw.trim();
+  const candidate =
+    text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim() ||
+    text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
+
+  if (candidate.startsWith('{') && candidate.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(candidate) as Record<string, unknown>;
+      const query = typeof parsed.reformulatedQuery === 'string' ? parsed.reformulatedQuery.trim() : '';
+      const rawIntent = parsed.intent;
+      const intent: ReformulatedIntent | undefined =
+        rawIntent === 'student_progress' || rawIntent === 'curriculum_or_prereq' || rawIntent === 'off_topic'
+          ? rawIntent
+          : undefined;
+      if (query || intent) return { intent, reformulatedQuery: query || undefined };
+    } catch {
+      // fall through to plain-keyword parsing
+    }
+  }
+  return null;
 }
 
 /**
@@ -162,6 +196,7 @@ export async function reformulateQueryWithGroq(
       isReformulated: (fallbackCleaned || corefResolved) !== cleanRaw,
       source: 'rule_based',
       latencyMs: Date.now() - startTime,
+      intent: isStudentProgressQuery(cleanRaw) ? 'student_progress' : undefined,
     };
     saveToReformulationCache(cacheKey, result);
     return result;
@@ -170,7 +205,19 @@ export async function reformulateQueryWithGroq(
   // 4. Call Groq with ultra-compact intent extraction instructions
   const modelsToTry = [GROQ_MODEL, ...GROQ_BACKUP_MODELS];
   const systemPrompt = `Bạn là bộ lọc ngầm (Silent Intent Extractor & Query Reformulator) cho hệ thống RAG học tập LMS.
-Nhiệm vụ: Chuyển câu hỏi của người dùng thành 1 CỤM TỪ KHÓA TÌM KIẾM CỐT LÕI (Standalone Canonical Keywords) để đối chiếu tài liệu giáo trình.
+Phân tích câu hỏi của sinh viên trong môn học được cung cấp, rồi trả về THUẦN JSON (không markdown, không giải thích):
+
+{
+  "intent": "student_progress" | "curriculum_or_prereq" | "off_topic",
+  "reformulatedQuery": "Từ khóa tìm kiếm giáo trình ngắn gọn"
+}
+
+QUY TẮC PHÂN LOẠI "intent":
+- "student_progress": Hỏi về điểm số/bài kiểm tra của CHÍNH sinh viên, lỗ hổng kiến thức của bản thân, tình hình điểm danh/vắng học, bài tập quên nộp/chưa làm/sắp hết hạn, hoặc xin lời khuyên cải thiện kết quả môn này. Dù câu hỏi có vẻ lạc đề với giáo trình, VẪN chọn "student_progress", KHÔNG chọn "off_topic".
+- "curriculum_or_prereq": Hỏi về kiến thức chuyên môn của môn học hoặc kiến thức nền tảng liên quan.
+- "off_topic": Hỏi chuyện phiếm, giải trí, hoặc môn học khác không liên quan.
+
+"reformulatedQuery": Chuyển câu hỏi thành 1 CỤM TỪ KHÓA TÌM KIẾM CỐT LÕI (Standalone Canonical Keywords) để đối chiếu tài liệu giáo trình.
 
 ĐẶC BIỆT KHI CÂU HỎI LÀ CÂU TIẾP NỐI TRONG HỘI THOẠI (chứa đại từ "chúng", "nó", "những cái này", "loại nào"):
 - BẮT BUỘC phải thay thế các đại từ đó bằng ĐỐI TƯỢNG CỤ THỂ đang được nhắc đến trong lượt hội thoại trước đó.
@@ -183,8 +230,9 @@ QUY TẮC BẮT BUỘC:
 1. Loại bỏ 100% lời chào hỏi, thưa gửi, hoàn cảnh, cảm xúc (vd: "thầy ơi", "cho em hỏi").
 2. Giữ trọn vẹn thuật ngữ kỹ thuật, tên công nghệ, khái niệm chuyên môn cốt lõi.
 3. Nếu có thông tin chương/bài (vd: "chương 3", "lab 2"), hãy giữ lại trong cụm từ khóa.
-4. CHỈ xuất cụm từ khóa (tối đa 5-10 từ). TUYỆT ĐỐI KHÔNG giải thích, KHÔNG thêm dấu ngoặc kép, KHÔNG viết câu hoàn chỉnh.
-5. BẢO TOÀN NGÔN NGỮ: Giữ nguyên ngôn ngữ gốc của câu hỏi.`;
+4. Khóa "reformulatedQuery" là cụm từ khóa (tối đa 5-10 từ), KHÔNG giải thích, KHÔNG viết câu hoàn chỉnh.
+5. BẢO TOÀN NGÔN NGỮ: Giữ nguyên ngôn ngữ gốc của câu hỏi.
+6. CHỈ xuất đúng JSON ở trên, không kèm text thừa.`;
 
   let userPromptContent = `Câu hỏi của người dùng: ${cleanRaw}`;
   if (hasHistory) {
@@ -214,20 +262,31 @@ QUY TẮC BẮT BUỘC:
             },
           ],
           temperature: 0.1,
-          max_tokens: 35,
+          max_tokens: 120,
         });
       }, controller.signal);
 
       clearTimeout(timeoutId);
 
-      let extracted = completion.choices[0]?.message?.content?.trim() || '';
-      // Strip any accidental markdown formatting or surrounding quotes
-      extracted = extracted
-        .replace(/^["'`]+|["'`]+$/g, '')
-        .replace(/^Output:\s*/i, '')
-        .replace(/^Từ khóa:\s*/i, '')
-        .replace(/[\r\n][\s\S]*/, '') // keep only the first line
-        .trim();
+      const rawContent = completion.choices[0]?.message?.content?.trim() || '';
+      const parsed = parseReformulationResponse(rawContent);
+      let extracted = parsed?.reformulatedQuery || '';
+      let intent: ReformulatedIntent | undefined = parsed?.intent;
+
+      if (!parsed) {
+        // Legacy/plain keyword output: keep the old cleanup path intact.
+        extracted = rawContent
+          .replace(/^["'`]+|["'`]+$/g, '')
+          .replace(/^Output:\s*/i, '')
+          .replace(/^Từ khóa:\s*/i, '')
+          .replace(/[\r\n][\s\S]*/, '') // keep only the first line
+          .trim();
+      }
+
+      // Mẹo dự phòng: regex Tầng 0 áp dụng cả khi Groq lỗi/timeout hoặc trả sai nhãn.
+      if (isStudentProgressQuery(cleanRaw)) {
+        intent = 'student_progress';
+      }
 
       // Sanity checks: must not be empty and must be noticeably cleaner/shorter than raw query
       if (extracted && extracted.length >= 2 && extracted.length <= cleanRaw.length * 1.2) {
@@ -237,10 +296,11 @@ QUY TẮC BẮT BUỘC:
           isReformulated: extracted.toLowerCase() !== cleanRaw.toLowerCase(),
           source: 'groq',
           latencyMs: Date.now() - startTime,
+          intent,
         };
 
         console.log(
-          `[Query Reformulation - Groq] "${cleanRaw.slice(0, 45)}..." -> "${extracted}" (${result.latencyMs}ms)`
+          `[Query Reformulation - Groq] "${cleanRaw.slice(0, 45)}..." -> "${extracted}" (intent: ${intent || 'n/a'}, ${result.latencyMs}ms)`
         );
 
         saveToReformulationCache(cacheKey, result);
@@ -263,6 +323,7 @@ QUY TẮC BẮT BUỘC:
     isReformulated: fallbackCleaned !== cleanRaw,
     source: 'rule_based',
     latencyMs: Date.now() - startTime,
+    intent: isStudentProgressQuery(cleanRaw) ? 'student_progress' : undefined,
   };
 
   saveToReformulationCache(cacheKey, fallbackResult);

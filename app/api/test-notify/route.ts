@@ -11,17 +11,16 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const isDirectTest = searchParams.get('direct') === 'true';
     const rawUserId = searchParams.get('userId');
-    // Tuyệt đối không fallback vào teacher ID; mặc định tìm sinh viên đầu tiên (role = 'student')
+    // Mặc định chọn tài khoản đầu tiên nếu không truyền userId
     let targetUserId = rawUserId ? Number(rawUserId) : null;
     if (!targetUserId && supabaseAdmin) {
-      const { data: firstStudent } = await supabaseAdmin
+      const { data: firstUser } = await supabaseAdmin
         .from('users')
         .select('moodle_user_id')
-        .eq('role', 'student')
         .limit(1)
         .maybeSingle();
-      if (firstStudent?.moodle_user_id) {
-        targetUserId = Number(firstStudent.moodle_user_id);
+      if (firstUser?.moodle_user_id) {
+        targetUserId = Number(firstUser.moodle_user_id);
       }
     }
     if (!targetUserId) targetUserId = 8;

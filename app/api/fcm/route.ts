@@ -10,8 +10,6 @@ interface FcmRequestBody {
   deviceId?: string;
   /** Origin where the token was registered, e.g. http://localhost:3000. */
   url?: string;
-  /** 'student' | 'teacher' — stored only when creating a missing user row. */
-  role?: string;
 }
 
 /**
@@ -96,9 +94,9 @@ export async function POST(request: Request) {
     const token = body?.token?.trim();
     const deviceId = body?.deviceId?.trim() || 'web-browser';
     const registrationUrl = resolveRegistrationUrl(request, body?.url);
-    // Teachers can own device tokens too (artifact-ready notifications go to
-    // the creator). Scheduled cron reminders still target students only.
-    const role = body?.role === 'teacher' ? 'teacher' : 'student';
+    // LMS Assistant is student-only. Device tokens are used for both scheduled
+    // reminders and artifact-ready pushes, always under the student role.
+    const role = 'student';
 
     if (!userId || !token) {
       return NextResponse.json({ error: 'userId và token là bắt buộc' }, { status: 400 });

@@ -136,6 +136,8 @@ export async function POST(request: Request) {
       ragMode?: RagMode;
       allowExternalSource?: boolean;
       model?: string;
+      /** When true the manually selected model must generate alone, no cascade fallback. */
+      strictModel?: boolean;
     };
 
     requestId = body.requestId;
@@ -164,6 +166,14 @@ export async function POST(request: Request) {
     let documentContext = '';
     const docMap = new Map<string, string>();
     const moodleCourseId = Number(body.courseId) || undefined;
+    const docGatherStart = Date.now();
+    // Trần 20s cho toàn bộ khâu parse tài liệu (fetch + OCR), không phải 45s × 10 nguồn.
+    const docGatherSignal = AbortSignal.timeout(20_000);
+    const parseOptions = {
+      userKeys: studyToolsGeminiKeys,
+      signal: docGatherSignal,
+      skipVisionOcr: level !== 'complex',
+    };
 
     if (moodleCourseId) {
       try {
@@ -180,7 +190,7 @@ export async function POST(request: Request) {
               const text = await parseDocumentFromUrl(
                 String(mat.storage_url),
                 String(mat.title),
-                { userKeys: studyToolsGeminiKeys }
+                parseOptions
               );
               return { key: String(mat.title).toLowerCase(), text };
             } catch {
@@ -207,7 +217,7 @@ export async function POST(request: Request) {
         const extractedText = await parseDocumentFromUrl(
           src.url!,
           src.name,
-          { userKeys: studyToolsGeminiKeys }
+          parseOptions
         );
         return { key: src.name.toLowerCase(), text: extractedText || '' };
       } catch {
@@ -235,6 +245,7 @@ export async function POST(request: Request) {
         compiledDocs.push({ title: src.name, text });
       }
     }
+    console.log(`[study-tools] Document gathering: ${Date.now() - docGatherStart}ms for ${compiledDocs.length} doc(s)`);
 
     const ragMode: RagMode = body.ragMode || (body.allowExternalSource ? 'creative' : 'hybrid');
 
@@ -313,7 +324,7 @@ Sơ đồ tư duy 3-4 nhánh chính, mỗi nhánh gồm 2-3 từ khóa trọng t
         shapeDesc = '{ "root": "Chủ đề cốt lõi", "branches": [ { "title": "Nhánh chính 1", "items": ["Từ khóa 1", "Từ khóa 2"] } ] }';
       } else if (toolType === 'slides' || toolType === 'slide' || toolType === 'presentation') {
         levelInstruction = `CẤP ĐỘ CƠ BẢN (NHANH & TỐI ƯU CHI PHÍ):
-Tạo bộ slide tóm tắt nhanh gồm 4-5 trang slide trọng tâm. Mỗi slide tối đa 3 gạch đầu dòng ngắn gọn, đi thẳng vào ý chính, phần notes ngắn gọn 20-35 từ.`;
+Tạo bộ slide tóm tắt nhanh gồm 5-6 trang slide trọng tâm dùng layout "bullets" đơn giản để tiết kiệm token. Mỗi slide tối đa 3 gạch đầu dòng ngắn gọn, notes 1 câu ngắn.`;
         shapeDesc = `{
   "title": "Tiêu đề bài giảng",
   "topic": "${topic}",
@@ -321,12 +332,10 @@ Tạo bộ slide tóm tắt nhanh gồm 4-5 trang slide trọng tâm. Mỗi slid
     {
       "slideNumber": 1,
       "title": "Tên Slide",
-      "subtitle": "Phụ đề ngắn",
       "bullets": ["Ý chính 1", "Ý chính 2", "Ý chính 3"],
       "keyTakeaway": "Điểm cốt lõi cần nhớ",
       "notes": "Lời dẫn ngắn gọn...",
-      "layout": "comparison",
-      "visual": { "leftLabel": "Khía cạnh A", "leftPoints": ["Ý A1", "Ý A2"], "rightLabel": "Khía cạnh B", "rightPoints": ["Ý B1", "Ý B2"] }
+      "layout": "bullets"
     }
   ]
 }`;
@@ -400,7 +409,7 @@ Tạo một sơ đồ tư duy có chiều sâu và có chủ đích (6-9 nhánh 
         shapeDesc = '{ "root": "Tên chủ đề cụ thể", "branches": [ { "title": "Tên nhánh giàu nghĩa chuyên môn", "items": ["Ý cụ thể có quan hệ hoặc hệ quả", "Ví dụ hoặc đánh đổi thực tế liên quan"] } ] }';
       } else if (toolType === 'slides' || toolType === 'slide' || toolType === 'presentation') {
         levelInstruction = `CẤP ĐỘ CHUYÊN SÂU (TỰ NHIÊN & CON NGƯỜI):
-Tạo một bộ slide bài giảng chuyên sâu (10-14 trang slide).
+Tạo một bộ slide bài giảng chuyên sâu gồm ÍT NHẤT 15 trang slide (15-18 trang slide) với đa dạng layout (comparison, timeline, process, stat, quote, cards, quadrant, bullets).
 - Mạch lập luận tự nhiên: vấn đề/câu hỏi lớn → nguyên lý nền tảng → cơ chế hoạt động/đối chiếu → ví dụ, giới hạn & quyết định thực tế.
 - Trên mặt slide: Mỗi bullet tối đa 6 từ, đắt giá, dứt khoát.
 - Phần notes: Là lời giảng tâm huyết 60-100 từ như một giảng viên đại học đang say sưa giảng giải cho sinh viên năm cuối, chia sẻ kinh nghiệm thực chiến và câu hỏi gợi mở.`;
@@ -493,6 +502,7 @@ Không bao gồm bất kỳ văn bản ngoài hay markdown.`;
         system: systemInstruction,
         userPrompt: prompt,
         userId: body.userId ? Number(body.userId) : undefined,
+        strictModel: Boolean(body.strictModel) && Boolean(body.model && body.model !== 'auto'),
         signal: generationSignal,
         temperature: effectiveTemperature,
         topP: effectiveTopP,
@@ -573,6 +583,10 @@ Không bao gồm bất kỳ văn bản ngoài hay markdown.`;
           { error: 'Máy chủ xử lý quá thời gian cho phép. Hãy thử thu hẹp chủ đề hoặc chọn mức Cơ bản.' },
           { status: 504 }
         );
+      }
+      // Strict manual selection: surface the chosen model's error to the client.
+      if (body.strictModel && err instanceof Error) {
+        return NextResponse.json({ error: err.message }, { status: 502 });
       }
       console.warn('AI study-tools generation failed:', err);
     }

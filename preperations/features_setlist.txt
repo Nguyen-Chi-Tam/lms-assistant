@@ -1,0 +1,14 @@
+II. Tăng cường cá nhân hóa học tập
+Không dừng lại ở LLM, trở thành hệ thống sát cánh hỗ trợ học tập thật sự
+1. Dashboard
+Theo dõi tiến độ học tập qua bảng điểm (từng khóa học, trung bình tất cả khóa học)
+Từ đó đánh giá điểm mạnh, điểm yếu, điểm đã cải thiện hay thụt lùi
+=> Đề xuất lộ trình học tập phù hợp cho từng khóa học
+2. Playful elements
+a) 3 câu hỏi nhanh trước khi vào khóa học (learning_artifacts type: quick_test), đính kèm nhận xét ngắn gọn và đưa ra đề xuất cải thiện, cách nhau sau mỗi lần reload lại web thì khóa học đó lại hỏi 3 câu (Reload lại trang chủ và vào khoá học, không tính việc reload lại khoá học)
+b) Không gian học tập:
+• Trắc nghiệm thông thường (Đã có)
+• Nối cặp tốc độ (Speed Matching — Kiểu Duolingo Match Madness)
+•  "Bắt lỗi trong 1 chạm" (Spot the Bug — Kiểu Mimo / Sửa câu của Duolingo)
+• Thẻ quẹt Đúng / Sai 30 giây (Rapid Swipe Cards)
+Cứ mỗi hoạt động đều tạo nhận xét nhanh, từ đó đưa ra giải pháp để cải thiện

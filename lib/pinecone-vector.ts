@@ -34,20 +34,40 @@ function compactMetadata(metadata: Record<string, string | number | boolean | un
   ) as Record<string, string | number | boolean>;
 }
 
+let pineconeEgressBlockedUntil = 0;
+
+export function isPineconeEgressBlocked(): boolean {
+  return Date.now() < pineconeEgressBlockedUntil;
+}
+
 async function fetchStoredDocuments(filter: Record<string, unknown>) {
+  if (Date.now() < pineconeEgressBlockedUntil) {
+    return {};
+  }
+
   const documents: Record<string, Record<string, unknown>> = {};
   let paginationToken: string | undefined;
 
-  do {
-    const response = await getPineconeIndex().namespace(namespace()).documents.fetch({
-      filter,
-      ...(paginationToken ? { paginationToken } : {}),
-    });
-    Object.assign(documents, response.documents || {});
-    paginationToken = response.pagination?.next;
-  } while (paginationToken);
+  try {
+    do {
+      const response = await getPineconeIndex().namespace(namespace()).documents.fetch({
+        filter,
+        ...(paginationToken ? { paginationToken } : {}),
+      });
+      Object.assign(documents, response.documents || {});
+      paginationToken = response.pagination?.next;
+    } while (paginationToken);
 
-  return documents;
+    return documents;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('egress limit') || msg.includes('429')) {
+      pineconeEgressBlockedUntil = Date.now() + 10 * 60 * 1000;
+      console.warn('[Pinecone] Monthly egress limit reached (429). Bypassing Pinecone to read from LMS directly.');
+      return {};
+    }
+    throw err;
+  }
 }
 
 function documentToChunk(document: Record<string, unknown>, idx: number): DocumentChunk {
@@ -463,7 +483,7 @@ export async function queryCourseEmbeddings(params: {
     }
   }
 
-  if (qEmb) {
+  if (qEmb && !isPineconeEgressBlocked()) {
     try {
       const response = await getPineconeIndex().namespace(namespace()).documents.search({
         scoreBy: [{ type: 'embed', field: documentTextField(), query }],
@@ -478,8 +498,14 @@ export async function queryCourseEmbeddings(params: {
       }));
       if (docTitles?.length) chunks = chunks.filter(chunk => docTitles.some(title => chunk.docTitle.toLowerCase().includes(title.toLowerCase())));
       return hydrateChunksWithParentText(chunks);
-    } catch (err) {
-      console.warn('[Pinecone] queryCourseEmbeddings query failed:', err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('egress limit') || msg.includes('429')) {
+        pineconeEgressBlockedUntil = Date.now() + 10 * 60 * 1000;
+        console.warn('[Pinecone] Search hit egress limit (429). Bypassing Pinecone to read from LMS directly.');
+      } else {
+        console.warn('[Pinecone] queryCourseEmbeddings query failed:', err);
+      }
     }
   }
 
@@ -518,6 +544,7 @@ export async function saveDocumentTOC(params: {
 }): Promise<boolean> {
   const { moodleCourseId, moodleFileId, documentTitle, fullText } = params;
   if (!fullText || fullText.trim().length < 50) return false;
+  if (isPineconeEgressBlocked()) return false;
 
   try {
     const existing = await getPineconeIndex().namespace(namespace()).documents.fetch({
@@ -544,7 +571,13 @@ export async function saveDocumentTOC(params: {
 
     console.log(`[Pinecone TOC] Stored TOC for "${documentTitle}" (Course: ${moodleCourseId}, File: ${moodleFileId}, Length: ${tocText.length} chars)`);
     return true;
-  } catch (err) {
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('egress limit') || msg.includes('429')) {
+      pineconeEgressBlockedUntil = Date.now() + 10 * 60 * 1000;
+      console.warn('[Pinecone] Monthly egress limit reached (429). Bypassing Pinecone TOC save.');
+      return false;
+    }
     console.warn('[Pinecone TOC] saveDocumentTOC exception:', err);
     return false;
   }
