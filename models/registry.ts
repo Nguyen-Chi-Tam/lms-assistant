@@ -804,7 +804,7 @@ export function getCascadeLineup(
   // Đội hình AI sau khi thanh lọc APMIX & GonkaBroker (đều toàn model trả phí):
   // Cấp 1: Puter.js (client silent) → BYOK (Groq → Gemini) → Groq Pool (2 keys) → Cloudflare → Airforce.
   // Không dùng OrcaRouter / Gemini Pool ở cấp này để giữ quỹ ngữ cảnh lớn.
-  const quickChain: AIProvider[] = ['groq', 'cloudflare', 'airforce'];
+  const quickChain: AIProvider[] = ['groq', 'cloudflare', 'airforce', 'gemini'];
   // Cấp 2 Hybrid/Creative: Cloudflare → Groq Pool → Airforce → Aion Labs → Pollinations → OrcaRouter → OpenRouter (:free) → Gemini Pool → Cohere
   const basicHybrid: AIProvider[] = ['cloudflare', 'groq', 'airforce', 'aionlabs', 'pollinations', 'orcarouter', 'openrouter', 'gemini', 'cohere'];
   // Cấp 2 Strict RAG: Cloudflare → OrcaRouter → Groq Pool → Gemini Pool → OpenRouter (:free) → Aion Labs → Airforce → Cohere

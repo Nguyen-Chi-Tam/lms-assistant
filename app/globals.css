@@ -10726,12 +10726,13 @@ body {
 
 /* ── Grade Response Strategy Toolbar ────────────────────────── */
 .grade-strategy-toolbar {
+  position: relative !important;
   display: flex !important;
   flex-direction: row !important;
   justify-content: flex-start !important;
   align-items: center !important;
   gap: 10px !important;
-  padding: 8px 14px !important;
+  padding: 8px 40px 8px 14px !important;
   background: linear-gradient(135deg, rgba(28, 24, 58, 0.95) 0%, rgba(18, 15, 38, 0.98) 100%) !important;
   border-bottom: 1px solid rgba(185, 43, 71, 0.22) !important;
   border-top-left-radius: 14px;
@@ -10832,7 +10833,10 @@ body {
 }
 
 .grade-strategy-close-btn {
-  margin-left: auto !important;
+  position: absolute !important;
+  top: 8px !important;
+  right: 10px !important;
+  margin-left: 0 !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -10854,6 +10858,24 @@ body {
   border-color: rgba(239, 68, 68, 0.5) !important;
   color: #fca5a5 !important;
   transform: scale(1.1);
+}
+
+@media (max-width: 768px) {
+  .grade-strategy-toolbar {
+    padding-right: 48px !important;
+  }
+
+  .grade-strategy-close-btn {
+    width: 32px !important;
+    height: 32px !important;
+    top: 6px !important;
+    right: 8px !important;
+  }
+
+  .grade-strategy-close-btn svg {
+    width: 20px !important;
+    height: 20px !important;
+  }
 }
 
 /* ==============================================================================
@@ -14924,9 +14946,19 @@ body {
   flex-direction: column;
   gap: 12px;
   flex: 1 1 auto;
-  min-height: 440px;
+  min-height: 520px;
+  height: calc(100vh - 180px);
 }
-.advisor-chat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.advisor-chat-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; flex-shrink: 0; }
+.advisor-chat-toast {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #f7cbd4;
+  background: rgba(185, 43, 71, 0.16);
+  border: 1px solid rgba(185, 43, 71, 0.35);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
 .advisor-chat-title-wrap { display: flex; align-items: center; gap: 12px; }
 .advisor-chat-orb {
   width: 38px;
@@ -14951,7 +14983,7 @@ body {
   color: #cbd5e1;
   font-size: 11.5px;
 }
-.advisor-chat-prompts { display: flex; flex-wrap: wrap; gap: 7px; }
+.advisor-chat-prompts { display: flex; flex-wrap: wrap; gap: 7px; flex-shrink: 0; }
 .advisor-prompt-pill {
   display: inline-flex;
   align-items: center;
@@ -14966,18 +14998,29 @@ body {
 }
 .advisor-prompt-pill:hover:not(:disabled) { background: rgba(185, 43, 71, 0.22); color: #fff; }
 .advisor-chat-messages {
-  flex: 1 1 auto;
-  min-height: 280px;
-  max-height: 60vh;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   padding: 4px 6px 4px 2px;
 }
-.advisor-msg { display: flex; }
+.advisor-msg { display: flex; align-items: flex-start; gap: 10px; }
 .advisor-msg.user { justify-content: flex-end; }
 .advisor-msg.ai { justify-content: flex-start; }
+.advisor-msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, rgba(185, 43, 71, 0.28), rgba(136, 22, 44, 0.36));
+  border: 1px solid rgba(185, 43, 71, 0.4);
+  color: #f7cbd4;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
 .advisor-msg-bubble {
   max-width: 88%;
   padding: 10px 14px;
@@ -14996,39 +15039,24 @@ body {
   color: #e2e8f0;
 }
 .advisor-msg-bubble.loading { display: inline-flex; align-items: center; gap: 8px; color: #f7cbd4; }
-.advisor-chat-error { margin: 0; font-size: 12px; color: #fca5a5; }
-.advisor-chat-compose {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.advisor-chat-error { margin: 0; font-size: 12px; color: #fca5a5; flex-shrink: 0; }
+.advisor-chat-compose-box {
+  flex-shrink: 0;
+  margin: 0 !important;
+  width: 100% !important;
+  box-sizing: border-box;
+  padding: 10px 12px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  background: rgba(255, 255, 255, 0.03) !important;
 }
-.advisor-chat-compose input {
-  flex: 1;
-  min-width: 0;
-  height: 40px;
-  padding: 0 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.05);
-  color: #fff;
-  font-size: 13px;
-  outline: none;
+.advisor-chat-compose-box textarea {
+  min-height: 44px;
+  max-height: 140px;
 }
-.advisor-chat-compose input:focus { border-color: #b92b47; }
-.advisor-chat-compose button {
-  height: 40px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #b92b47, #88162c);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.advisor-chat-compose-footer {
+  justify-content: flex-end !important;
 }
-.advisor-chat-compose button:disabled { opacity: 0.5; cursor: default; }
 
 /* ==============================================================================
    MOBILE OPTIMIZATION FOR ACTIVITIES & GRADEBOOK
@@ -15099,11 +15127,11 @@ body {
   .home-learning-target-presets { width: 100%; }
   .home-learning-target-btn { flex: 1; justify-content: center; }
 
-  .advisor-chat-card { padding: 12px; min-height: 360px; }
+  .advisor-chat-card { padding: 12px; min-height: 400px; height: calc(100vh - 210px); }
   .advisor-chat-prompts { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
   .advisor-chat-prompts::-webkit-scrollbar { display: none; }
   .advisor-prompt-pill { white-space: nowrap; flex-shrink: 0; }
-  .advisor-chat-messages { min-height: 200px; max-height: 360px; }
+  .advisor-chat-messages { flex: 1 1 0; min-height: 0; max-height: none; }
   .advisor-msg-bubble { max-width: 94%; font-size: 12.5px; }
 }
 
@@ -16192,6 +16220,15 @@ body {
   }
 }
 
+.hero-quick-actions-mobile {
+  display: none !important;
+}
+@media (max-width: 768px) {
+  .hero-quick-actions-mobile {
+    display: inline-flex !important;
+  }
+}
+
 /* Standard Clean Buttons */
 .hero-quick-actions {
   display: flex;
@@ -16294,8 +16331,8 @@ body {
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .clean-course-cta:hover {
-  background: rgba(185, 43, 71, 0.14);
-  border-color: rgba(185, 43, 71, 0.35);
+  background: color-mix(in srgb, var(--course-color, #b92b47) 18%, transparent);
+  border-color: var(--course-color, #b92b47);
   color: #ffffff;
 }
 .course-card.clean-course-card .course-card-stats {
@@ -16376,4 +16413,84 @@ body {
 }
 .auth-submit:hover {
   background: #88162c;
+}
+
+/* Expanded textarea when pre-filled from grade analysis modal */
+.course-shell-layout .chat-compose.grade-draft-active textarea,
+.course-workspace .chat-panel .chat-compose.grade-draft-active textarea,
+.chat-compose.grade-draft-active textarea {
+  height: 220px !important;
+  min-height: 190px !important;
+  max-height: 380px !important;
+  resize: vertical !important;
+  line-height: 1.55 !important;
+  overflow-y: auto !important;
+}
+@media (max-width: 768px) {
+  .course-shell-layout .chat-compose.grade-draft-active textarea,
+  .course-workspace .chat-panel .chat-compose.grade-draft-active textarea,
+  .chat-compose.grade-draft-active textarea {
+    height: 160px !important;
+    min-height: 140px !important;
+  }
+
+  /* Mobile optimization for QuizAnalysisModal */
+  .quiz-analysis-overlay {
+    padding: 0.75rem !important;
+  }
+  .quiz-analysis-modal {
+    max-height: 92dvh !important;
+    border-radius: 16px !important;
+  }
+  .quiz-analysis-header {
+    padding: 0.75rem 0.9rem !important;
+    gap: 8px !important;
+  }
+  .quiz-analysis-header h3 {
+    font-size: 14px !important;
+    line-height: 1.3 !important;
+  }
+  .quiz-analysis-body {
+    padding: 0.85rem 0.9rem !important;
+    gap: 0.85rem !important;
+  }
+  .quiz-analysis-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+  .quiz-analysis-stats-grid > div {
+    padding: 0.6rem 0.7rem !important;
+    min-height: 58px !important;
+    gap: 8px !important;
+  }
+  .quiz-analysis-footer {
+    padding: 0.7rem 0.9rem !important;
+    flex-direction: column-reverse !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+  .quiz-analysis-footer-left {
+    width: 100% !important;
+    display: grid !important;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)) !important;
+    gap: 8px !important;
+  }
+  .quiz-analysis-footer-left button {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+  .quiz-analysis-improve-wrap {
+    width: 100% !important;
+  }
+  .quiz-analysis-improve-btn {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+  .quiz-analysis-improve-menu {
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    bottom: calc(100% + 8px) !important;
+  }
 }

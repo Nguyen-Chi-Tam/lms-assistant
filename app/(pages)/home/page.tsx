@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   BookOpen,
+  Bot,
   CheckSquare,
   GraduationCap,
   RotateCcw,
@@ -36,6 +37,7 @@ import { CourseTopBar, type NotificationItem } from '@/app/components/course/Cou
 import { SiteFooter } from '@/app/components/ui/SiteFooter';
 import { HomeSidebar } from '@/app/components/dashboard/HomeSidebar';
 import { HomeLearningDashboard } from '@/app/components/dashboard/HomeLearningDashboard';
+import { HomeAiHelperPanel } from '@/app/components/dashboard/HomeAiHelperPanel';
 import { HomeActivitiesPanel } from '@/app/components/dashboard/HomeActivitiesPanel';
 import { CoursesView } from '@/app/components/course/CoursesView';
 import {
@@ -239,7 +241,7 @@ function Dashboard({
   navigate: (tab: string, intent?: string) => void;
   openCalendar: () => void;
   openHomework: (item: DeadlineItem) => void;
-  view?: 'overview' | 'grades';
+  view?: 'overview' | 'grades' | 'ai-helper';
   moodle: MoodleData | null;
   user?: MoodleUser | null;
   onSync: () => void;
@@ -583,7 +585,6 @@ function Dashboard({
         <HomeLearningDashboard
           courses={courses}
           grades={allExamResults}
-          activities={moodle?.activities ?? []}
           userId={moodle?.user?.id}
           latestResult={latestResult}
           analyzedAttemptIds={analyzedAttemptIds}
@@ -592,6 +593,13 @@ function Dashboard({
           onOpenCourse={c =>
             router.push(`/course?code=${encodeURIComponent(c.code)}&name=${encodeURIComponent(c.name)}&id=${c.id ?? ''}`)
           }
+        />
+      ) : view === 'ai-helper' ? (
+        <HomeAiHelperPanel
+          courses={courses}
+          grades={allExamResults}
+          activities={moodle?.activities ?? []}
+          userId={moodle?.user?.id}
         />
       ) : (<>
       {/* Hero */}
@@ -607,7 +615,7 @@ function Dashboard({
             {courses.length} khóa học · {deadlines.length} hạn nộp sắp tới
           </p>
         </div>
-        <div className="hero-quick-actions">
+        <div className="hero-quick-actions hero-quick-actions-mobile">
           <a
             href={lmsHomeUrl}
             target="_blank"
@@ -1880,6 +1888,8 @@ function HomeContent() {
         overview: 'Tổng quan',
         activities: 'Hoạt động',
         grades: 'Bảng điểm',
+        'ai-helper': 'AI Helper',
+        advisor: 'AI Helper',
       };
       const resolved = map[tabParam.toLowerCase()] || tabParam;
       if (resolved === 'Luyện tập' || tabParam.toLowerCase() === 'practice') {
@@ -2165,8 +2175,8 @@ function HomeContent() {
         action: () => router.push('/quiz'),
       },
       {
-        title: 'Hỏi gia sư AI',
-        meta: 'Gia sư bám nguồn',
+        title: 'Hỏi AI',
+        meta: 'Hỏi đáp theo tài liệu môn học',
         action: () => {
           if (moodleCourses.length > 0) {
             const first = moodleCourses[0];
@@ -2196,9 +2206,9 @@ function HomeContent() {
   const mobileNavTabs = useMemo(
     () => [
       { key: 'Tổng quan', label: 'Tổng quan', icon: LayoutDashboard },
-      { key: 'Khóa học', label: 'Khóa học', icon: BookOpen },
       { key: 'Hoạt động', label: 'Hoạt động', icon: CalendarClock },
       { key: 'Bảng điểm', label: 'Bảng điểm', icon: BarChart3 },
+      { key: 'AI Helper', label: 'AI Helper', icon: Bot },
     ],
     []
   );
@@ -2233,6 +2243,7 @@ function HomeContent() {
         onOpenProfile={() => setProfile(true)}
         onOpenNotification={handleOpenNotification}
         courses={moodleCourses}
+        lmsUrl={(moodle?.moodleUrl || 'https://moodletvk.duckdns.org').replace(/\/$/, '')}
       />
       <div className="home-topbar-mobile">
         <CourseTopBar
@@ -2252,6 +2263,11 @@ function HomeContent() {
           onOpenProfile={() => setProfile(true)}
           onOpenNotification={handleOpenNotification}
           lmsUrl={moodle?.moodleUrl || 'http://moodle.test'}
+          onLogoClick={() => {
+            setActive('Tổng quan');
+            setSearch('');
+            window.scrollTo({ top: 0 });
+          }}
         />
         <nav className="home-mobile-tabs" aria-label="Điều hướng">
           <div
@@ -2301,6 +2317,16 @@ function HomeContent() {
         {active === 'Bảng điểm' && (
           <Dashboard
             view="grades"
+            navigate={navigate}
+            openCalendar={() => setCalendar(true)}
+            openHomework={openHomework}
+            moodle={moodle}
+            onSync={handleManualSync}
+          />
+        )}
+        {active === 'AI Helper' && (
+          <Dashboard
+            view="ai-helper"
             navigate={navigate}
             openCalendar={() => setCalendar(true)}
             openHomework={openHomework}

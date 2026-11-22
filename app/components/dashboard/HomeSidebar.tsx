@@ -6,10 +6,13 @@ import {
   BarChart3,
   Bell,
   BookOpen,
+  Bot,
   CalendarClock,
   CheckSquare,
   Clock,
+  ExternalLink,
   FileText,
+  GraduationCap,
   KeyRound,
   LayoutDashboard,
   Megaphone,
@@ -20,13 +23,14 @@ import type { NotificationItem } from '@/app/components/course/CourseTopBar';
 import { ByokSettingsModal } from '@/app/components/settings/ByokSettingsModal';
 import { useGlassSlider } from '@/app/lib/use-glass-slider';
 
-export type HomeSidebarTab = 'Tổng quan' | 'Khóa học' | 'Hoạt động' | 'Bảng điểm';
+export type HomeSidebarTab = 'Tổng quan' | 'Khóa học' | 'Hoạt động' | 'Bảng điểm' | 'AI Helper';
 
 const NAV_ITEMS: Array<{ tab: HomeSidebarTab; label: string; icon: typeof LayoutDashboard }> = [
   { tab: 'Tổng quan', label: 'Tổng quan', icon: LayoutDashboard },
   { tab: 'Khóa học', label: 'Khóa học', icon: BookOpen },
   { tab: 'Hoạt động', label: 'Hoạt động', icon: CalendarClock },
   { tab: 'Bảng điểm', label: 'Bảng điểm', icon: BarChart3 },
+  { tab: 'AI Helper', label: 'AI Helper', icon: Bot },
 ];
 
 export interface HomeSidebarProps {
@@ -39,6 +43,7 @@ export interface HomeSidebarProps {
   onOpenProfile: () => void;
   onOpenNotification?: (item: NotificationItem) => void;
   courses?: Array<{ id?: number | string; name: string }>;
+  lmsUrl?: string;
 }
 
 /** Desktop left navigation for the home dashboard. */
@@ -52,6 +57,7 @@ export function HomeSidebar({
   onOpenProfile,
   onOpenNotification,
   courses,
+  lmsUrl,
 }: HomeSidebarProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [events, setEvents] = useState<NotificationItem[]>([]);
@@ -126,7 +132,12 @@ export function HomeSidebar({
 
   return (
     <aside className="home-sidebar" aria-label="Điều hướng chính">
-      <Link href="/home" className="home-sidebar-brand" title="LMS Assistant">
+      <Link
+        href="/home"
+        className="home-sidebar-brand"
+        title="LMS Assistant"
+        onClick={() => onSelect('Tổng quan')}
+      >
         <img src="/lms-assistant-icon.png" alt="LMS Assistant" />
         <span>LMS Assistant</span>
       </Link>
@@ -159,6 +170,21 @@ export function HomeSidebar({
           </button>
         ))}
       </nav>
+
+      {lmsUrl && (
+        <a
+          href={lmsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="home-sidebar-item"
+          title="Mở Moodle LMS"
+          style={{ marginTop: 3, textDecoration: 'none' }}
+        >
+          <GraduationCap size={17} />
+          <span>Mở Moodle</span>
+          <ExternalLink size={13} style={{ marginLeft: 'auto', opacity: 0.6 }} />
+        </a>
+      )}
 
       <div className="home-sidebar-bottom">
         <p className="home-sidebar-label" style={{ marginTop: 4 }}>TIỆN ÍCH</p>

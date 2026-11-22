@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { generateText } from '@/models/registry';
+import { generateText, generateTextStream } from '@/models/registry';
+import { isPuterModelSelector, parsePuterModelSelector } from '@/app/lib/puter-models';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -16,60 +17,144 @@ export async function POST(request: Request) {
       history?: AdvisorChatMessage[];
       academicContext?: string;
       userId?: number;
+      model?: string;
+      stream?: boolean;
     };
 
     const question = (body.question || '').trim();
     if (!question) {
-      return NextResponse.json({ error: 'Vui lòng nhập câu hỏi cho Cố vấn AI.' }, { status: 400 });
+      return NextResponse.json({ error: 'Vui lòng nhập câu hỏi cho AI Helper.' }, { status: 400 });
     }
 
-    const historyText = (body.history || [])
-      .slice(-6)
-      .map(m => `${m.role === 'user' ? 'Sinh viên' : 'Cố vấn AI'}: ${m.text}`)
-      .join('\n\n');
+    const selectedModel = body.model && body.model !== 'auto' ? body.model : undefined;
+    const history = (body.history || []).slice(-8).map(m => ({
+      role: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: m.text,
+    }));
 
-    const system = `Bạn là Cố vấn Học tập AI cá nhân hóa của hệ thống LMS Assistant.
-Bạn nắm rõ toàn bộ bảng điểm trực tiếp từ Moodle LMS (GPA tổng, điểm từng môn, từng bài lab/bài tập/kiểm tra), điểm mạnh, điểm yếu, lịch sử điểm danh (vắng bao nhiêu buổi) và trạng thái nộp bài tập của sinh viên dưới đây.
+    const system = `Bạn là AI Helper của hệ thống LMS Assistant.
+Bạn nắm rõ toàn bộ bảng điểm trực tiếp từ Moodle LMS (điểm trung bình các môn, điểm từng bài lab/bài tập/kiểm tra), điểm mạnh, điểm yếu, lịch sử điểm danh và trạng thái nộp bài tập của sinh viên dưới đây.
 
 DỮ LIỆU HỌC VỤ THỰC TẾ CỦA SINH VIÊN:
 ${body.academicContext || 'Chưa có dữ liệu đồng bộ.'}
 
-NGUYÊN TẮC TƯ VẤN:
-1. Trả lời trực diện, cá nhân hóa 100% dựa trên số liệu thật ở trên (nêu rõ tên môn học, mã môn, tên bài kiểm tra/bài tập, điểm số cụ thể, số buổi vắng điểm danh hoặc bài tập chưa nộp nếu có).
-2. Khi sinh viên hỏi về điểm mạnh / điểm yếu / GPA mong muốn:
-   - Chỉ rõ môn nào đang đạt điểm cao (Điểm mạnh), môn nào điểm thấp hoặc chưa có điểm / thiếu bài tập (Điểm yếu).
-   - Tính toán cụ thể sinh viên cần cải thiện bao nhiêu điểm ở các môn yếu để đạt mức GPA mục tiêu.
-   - Đề xuất lộ trình ôn tập từng bước rõ ràng, kết hợp các công cụ trên LMS Assistant (như Không gian học tập, 3 câu hỏi Quick Test, Mini-games: Nối cặp tốc độ, Bắt lỗi 1 chạm, Thẻ quẹt Đúng/Sai 30s, Sơ đồ tư duy, Flashcards).
-3. Nếu sinh viên có môn vắng điểm danh >= 2 buổi hoặc có bài tập quá hạn chưa nộp, hãy nhắc nhở rõ ràng và hướng dẫn cách khắc phục ngay.
-4. Trình bày bằng tiếng Việt rõ ràng, dùng Markdown (in đậm, danh sách bullet, bảng nếu cần), thân thiện và khích lệ như một người thầy/cố vấn sát cánh cùng sinh viên.`;
+NGUYÊN TẮC TRẢ LỜI:
+1. ĐI THẲNG VÀO VẤN ĐỀ. Không chào hỏi rườm rà, không mở bài dài dòng, trả lời trực diện ngay từ câu đầu tiên.
+2. Dựa 100% trên số liệu thật ở trên (nêu rõ tên môn học, mã môn, tên bài kiểm tra/bài tập, điểm số cụ thể, số buổi vắng hoặc bài tập chưa nộp nếu có). Không bịa số liệu. Không dùng thuật ngữ "GPA" — gọi là "điểm trung bình" hoặc "điểm LMS".
+3. Khi sinh viên hỏi về điểm mạnh / điểm yếu / điểm mục tiêu:
+   - Chỉ rõ môn đạt điểm cao và môn thấp/thiếu bài.
+   - Tính cụ thể cần tăng bao nhiêu điểm ở môn nào để đạt điểm mục tiêu.
+   - Đề xuất bước hành động cụ thể, ngắn gọn.
+4. Nếu có môn vắng >= 2 buổi hoặc bài tập quá hạn chưa nộp, nhắc ngắn gọn và nêu cách xử lý.
+5. Dùng Markdown rõ ràng (in đậm, bullet, bảng khi cần), trả lời cùng ngôn ngữ với câu hỏi của sinh viên.`;
 
-    const userPrompt = historyText
-      ? `Lịch sử trò chuyện gần đây:\n${historyText}\n\nCâu hỏi mới của sinh viên: ${question}`
-      : question;
+    // Puter.js models run directly in the browser — return the prepared prompt payload.
+    if (selectedModel && isPuterModelSelector(selectedModel)) {
+      const modelId = parsePuterModelSelector(selectedModel);
+      if (!modelId) {
+        return NextResponse.json({ error: 'Model Puter không hợp lệ.' }, { status: 400 });
+      }
+      const historyText = history
+        .map(m => `${m.role === 'user' ? 'Sinh viên' : 'AI Helper'}: ${m.content}`)
+        .join('\n\n');
+      const userPrompt = historyText
+        ? `Lịch sử gần đây:\n${historyText}\n\nCâu hỏi: ${question}`
+        : question;
 
-    const result = await generateText(undefined, {
+      return NextResponse.json({
+        puterJob: {
+          modelId,
+          system,
+          userPrompt,
+        },
+      });
+    }
+
+    const commonOpts = {
       system,
-      userPrompt,
+      userPrompt: question,
+      history,
       userId: body.userId ? Number(body.userId) : undefined,
-      taskCategory: 'complex',
-      maxTokens: 2500,
+      strictModel: Boolean(selectedModel),
+      taskCategory: 'quick' as const,
+      temperature: 0.3,
+      maxTokens: 1400,
       signal: request.signal,
-    });
+    };
+
+    // Streaming SSE mode (matches course chat window)
+    if (body.stream !== false) {
+      const encoder = new TextEncoder();
+      const readable = new ReadableStream({
+        async start(controller) {
+          const send = (payload: Record<string, unknown>) => {
+            try {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+            } catch {
+              // stream closed
+            }
+          };
+
+          try {
+            const result = await generateTextStream(selectedModel, {
+              ...commonOpts,
+              onDelta: delta => {
+                send({ delta });
+              },
+            });
+
+            if (!result.text) {
+              send({ error: 'AI Helper chưa thể phản hồi lúc này.' });
+            } else {
+              send({
+                done: true,
+                model: result.modelId,
+                provider: result.provider,
+                finishReason: result.finishReason,
+              });
+            }
+          } catch (err) {
+            if (!request.signal.aborted) {
+              send({
+                error: err instanceof Error ? err.message : 'Không thể kết nối AI Helper.',
+              });
+            }
+          } finally {
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          }
+        },
+      });
+
+      return new Response(readable, {
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+        },
+      });
+    }
+
+    const result = await generateText(selectedModel, commonOpts);
 
     if (!result.text) {
-      return NextResponse.json({ error: 'Cố vấn AI chưa thể phản hồi lúc này.' }, { status: 502 });
+      return NextResponse.json({ error: 'AI Helper chưa thể phản hồi lúc này.' }, { status: 502 });
     }
 
     return NextResponse.json({
       answer: result.text.trim(),
       model: result.modelId,
       provider: result.provider,
+      finishReason: result.finishReason,
     });
   } catch (err) {
     if (request.signal.aborted) throw err;
     console.error('[dashboard/advisor] error:', err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Không thể kết nối Cố vấn AI.' },
+      { error: err instanceof Error ? err.message : 'Không thể kết nối AI Helper.' },
       { status: 500 }
     );
   }

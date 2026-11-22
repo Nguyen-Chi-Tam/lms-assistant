@@ -13,6 +13,8 @@ export async function GET(request: Request) {
     const moodleCourseIdStr = searchParams.get('moodleCourseId') || searchParams.get('courseId');
     const userIdStr = searchParams.get('userId') || searchParams.get('moodleUserId');
     const sessionId = searchParams.get('sessionId') || searchParams.get('id');
+    const scope = (searchParams.get('scope') || '').trim();
+    const isAiHelper = scope === 'ai_helper';
 
     if (!userIdStr && !sessionId) {
       return NextResponse.json(
@@ -22,15 +24,20 @@ export async function GET(request: Request) {
     }
 
     const userId = userIdStr ? parseInt(userIdStr, 10) : null;
-    const moodleCourseId = moodleCourseIdStr ? parseInt(moodleCourseIdStr, 10) : null;
+    const moodleCourseId = !isAiHelper && moodleCourseIdStr ? parseInt(moodleCourseIdStr, 10) : null;
 
-    const cacheKey = `chat_sessions:${userId || '0'}:${sessionId || 'none'}:${moodleCourseId || '0'}`;
+    const cacheKey = `chat_sessions:${userId || '0'}:${sessionId || 'none'}:${isAiHelper ? 'ai_helper' : moodleCourseId || '0'}`;
     const result = await fetchWithCache(cacheKey, 20_000, async () => {
       try {
-        const filterObj: Record<string, string | number | undefined> = {
-          user_id: userId || undefined,
-          moodle_course_id: moodleCourseId || undefined,
-        };
+        const filterObj: Record<string, string | number | undefined> = isAiHelper
+          ? {
+              user_id: userId || undefined,
+              session_type: 'ai_helper',
+            }
+          : {
+              user_id: userId || undefined,
+              moodle_course_id: moodleCourseId || undefined,
+            };
 
         const sessions = await getFirebaseRows('chat_sessions', filterObj);
         if (sessions) {
@@ -55,6 +62,14 @@ export async function GET(request: Request) {
         }
       } catch (firebaseError) {
         console.warn('Firebase GET chat_sessions warning:', firebaseError);
+      }
+
+      if (isAiHelper) {
+        return {
+          success: true,
+          sessions: [],
+          latest: null,
+        };
       }
 
       // Legacy fallback for local environments without Firebase credentials.
@@ -134,6 +149,7 @@ export async function POST(request: Request) {
       userId?: number;
       userName?: string;
       moodleCourseId?: number;
+      scope?: string;
       response_model?: string;
       responseModel?: string;
       messages: Array<{
@@ -147,9 +163,10 @@ export async function POST(request: Request) {
       }>;
     };
 
+    const isAiHelper = body.scope === 'ai_helper';
     const targetSessionId = body.sessionId || body.id;
     const userId = Number(body.userId) || 4; // default demo student ID
-    const moodleCourseId = Number(body.moodleCourseId) || 1;
+    const moodleCourseId = isAiHelper ? undefined : Number(body.moodleCourseId) || 1;
     const userRole = 'student';
     const rawMessages = Array.isArray(body.messages) ? body.messages : [];
     const messages = rawMessages.map(msg => {
@@ -174,12 +191,16 @@ export async function POST(request: Request) {
     try {
       let existingSessionId = targetSessionId;
       if (!existingSessionId) {
-        const filter: Record<string, string | number | undefined> = {
-          user_id: userId,
-          moodle_course_id: moodleCourseId,
-        };
-        const existingRows = await getFirebaseRows('chat_sessions', filter, 1);
-        existingSessionId = existingRows?.[0]?.id;
+        if (isAiHelper) {
+          existingSessionId = `ai_helper_${userId}`;
+        } else {
+          const filter: Record<string, string | number | undefined> = {
+            user_id: userId,
+            moodle_course_id: moodleCourseId,
+          };
+          const existingRows = await getFirebaseRows('chat_sessions', filter, 1);
+          existingSessionId = existingRows?.[0]?.id;
+        }
       }
 
       const sessionId = existingSessionId || crypto.randomUUID();
@@ -187,7 +208,7 @@ export async function POST(request: Request) {
         user_id: userId,
         user_name: body.userName || 'Sinh viên',
         role: userRole,
-        moodle_course_id: moodleCourseId,
+        ...(isAiHelper ? { session_type: 'ai_helper' } : { moodle_course_id: moodleCourseId }),
         messages,
         updated_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
@@ -202,6 +223,21 @@ export async function POST(request: Request) {
       }
     } catch (firebaseError) {
       console.warn('Firebase POST chat_sessions warning:', firebaseError);
+    }
+
+    if (isAiHelper || moodleCourseId === undefined) {
+      invalidateCache('chat_sessions:');
+      return NextResponse.json({
+        success: true,
+        mode: 'preview',
+        session: {
+          id: targetSessionId || `ai_helper_${userId}`,
+          userId,
+          session_type: 'ai_helper',
+          messages,
+          updatedAt: new Date().toISOString(),
+        },
+      });
     }
 
     // Legacy fallback for local environments without Firebase credentials.
@@ -364,8 +400,10 @@ export async function DELETE(request: Request) {
     const sessionId = searchParams.get('sessionId') || searchParams.get('id');
     const userId = Number(searchParams.get('userId')) || 0;
     const moodleCourseId = Number(searchParams.get('moodleCourseId') || searchParams.get('courseId')) || 0;
+    const scope = (searchParams.get('scope') || '').trim();
+    const isAiHelper = scope === 'ai_helper';
 
-    if (!sessionId && (!userId || !moodleCourseId)) {
+    if (!sessionId && !(isAiHelper && userId) && (!userId || !moodleCourseId)) {
       return NextResponse.json({ error: 'Cần cung cấp sessionId hoặc userId và courseId.' }, { status: 400 });
     }
 
@@ -375,6 +413,16 @@ export async function DELETE(request: Request) {
       let firebaseAvailable = false;
       if (sessionId) {
         firebaseAvailable = (await deleteFirebaseRow('chat_sessions', sessionId)) || false;
+      } else if (isAiHelper && userId) {
+        firebaseAvailable = (await deleteFirebaseRow('chat_sessions', `ai_helper_${userId}`)) || false;
+        const sessions = await getFirebaseRows('chat_sessions', {
+          user_id: userId,
+          session_type: 'ai_helper',
+        });
+        if (sessions && sessions.length > 0) {
+          firebaseAvailable = true;
+          await Promise.all(sessions.map((session) => deleteFirebaseRow('chat_sessions', session.id)));
+        }
       } else {
         const filter: Record<string, string | number | undefined> = {
           user_id: userId,
@@ -389,6 +437,10 @@ export async function DELETE(request: Request) {
       if (firebaseAvailable) return NextResponse.json({ success: true });
     } catch (firebaseError) {
       console.warn('Firebase DELETE chat_sessions warning:', firebaseError);
+    }
+
+    if (isAiHelper) {
+      return NextResponse.json({ success: true, mode: 'preview' });
     }
 
     if (supabaseAdmin) {

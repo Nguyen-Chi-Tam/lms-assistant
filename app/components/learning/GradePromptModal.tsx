@@ -193,7 +193,7 @@ export function GradePromptModal({
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <h3 style={{ margin: 0, fontSize: '15.5px', fontWeight: 700, letterSpacing: '-0.2px' }}>
-                  Tùy Chọn Phản Hồi Gia Sư AI
+                  Tùy Chọn Phản Hồi AI
                 </h3>
               </div>
               <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#94a3b8' }}>
@@ -551,7 +551,7 @@ export function GradePromptModal({
                 setIsEdited(true);
               }}
               rows={6}
-              placeholder="Nội dung câu lệnh gửi tới Gia sư AI..."
+              placeholder="Nội dung câu lệnh gửi tới AI..."
               style={{
                 width: '100%',
                 boxSizing: 'border-box',
@@ -666,7 +666,7 @@ export function GradePromptModal({
                 boxShadow: '0 4px 14px rgba(185, 43, 71, 0.4)',
                 transition: 'all 0.15s ease',
               }}
-              title="Gửi câu lệnh này tới Gia sư AI để bắt đầu phiên phân tích ngay"
+              title="Gửi câu lệnh này tới AI để bắt đầu phiên phân tích ngay"
             >
               <Send size={14} />
               <span>Bắt đầu trao đổi ngay</span>

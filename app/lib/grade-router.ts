@@ -41,10 +41,10 @@ export const GRADE_RESPONSE_STRATEGIES: StrategyOption[] = [
   },
   {
     id: 'socratic',
-    label: 'Gia sư gợi mở',
+    label: 'Gợi mở từng bước',
     iconName: 'HelpCircle',
     badge: 'Tương tác',
-    description: 'Đóng vai gia sư hỏi đáp từng bước, đặt câu hỏi gợi mở để tôi tự nhận ra chỗ bị kẹt.',
+    description: 'Hỏi đáp từng bước, đặt câu hỏi gợi mở để tôi tự nhận ra chỗ bị kẹt.',
   },
   {
     id: 'practice',
@@ -138,7 +138,7 @@ export function buildGradePrompt(
     rawStrategies.length > 0 ? rawStrategies : [defaultSingle];
 
   // Context Header
-  let intro = `Chào Gia sư AI! Tôi vừa hoàn thành bài kiểm tra "${res.name}" môn ${res.courseName}: đạt ${formatGrade(res.score)}/${formatGrade(res.maxScore)}đ.`;
+  let intro = `Tôi vừa hoàn thành bài kiểm tra "${res.name}" môn ${res.courseName}: đạt ${formatGrade(res.score)}/${formatGrade(res.maxScore)}đ.`;
   if (hasFeedback) {
     intro += `\nLời phê của giảng viên: "${rawFeedback}".`;
   }
@@ -186,7 +186,7 @@ export function buildGradePrompt(
 
       case 'socratic':
         return {
-          title: '💬 Gia sư gợi mở (Phương pháp hỏi đáp Socratic tương tác)',
+          title: '💬 Gợi mở từng bước (Phương pháp hỏi đáp Socratic tương tác)',
           body: hasMistakes
             ? `1. Chọn ngay 1 câu hỏi tôi đã làm sai ở trên (ưu tiên phần về ${weakTopics[0] || 'điểm mù lớn nhất'}).\n2. Đặt cho tôi 1-2 câu hỏi gợi mở để giúp tôi tự suy ngẫm và nhận ra lý do vì sao đáp án đúng lại khác với lựa chọn của tôi.\n3. Chờ tôi phản hồi rồi hãy cùng tôi giải quyết tiếp các câu sai còn lại!`
             : `1. Không đưa ra ngay bài giảng hay lời giải dài dòng.\n2. Nêu ngắn gọn các chuyên đề trọng tâm và phần lý thuyết dễ gây nhầm lẫn nhất của môn ${res.courseName}.\n3. Đặt cho tôi 2 câu hỏi gợi mở để giúp tôi tự nhớ lại xem mình đã bị lúng túng hoặc chưa chắc chắn ở phần nào nhất khi làm bài thi.\n4. Sau khi tôi phản hồi, hãy cùng tôi gỡ rối từng câu một nhé!`,
@@ -346,10 +346,10 @@ export function resolveGradeRoute(
       hasDetails: false,
       hasFeedback: false,
       mode: 'interviewer_blind',
-      modeName: 'Hỏi gia sư AI',
+      modeName: 'Hỏi AI',
       defaultStrategy: 'socratic',
       actionType: 'chat',
-      buttonLabel: 'Hỏi gia sư AI',
+      buttonLabel: 'Hỏi AI',
       buttonTooltip: 'Hệ thống chưa có chi tiết bài làm. AI sẽ chủ động gợi mở để cùng bạn làm rõ các khúc mắc.',
       badgeText: '',
       badgeColor: '#ec4899',

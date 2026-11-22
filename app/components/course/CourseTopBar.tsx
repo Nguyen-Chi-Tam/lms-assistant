@@ -43,6 +43,7 @@ export interface CourseTopBarProps {
   menuItems?: Array<{ key: string; label: string; icon?: React.ReactNode }>;
   activeMenuKey?: string;
   onSelectMenu?: (key: string) => void;
+  onLogoClick?: () => void;
 }
 
 export function CourseTopBar({
@@ -60,6 +61,7 @@ export function CourseTopBar({
   onOpenProfile,
   onOpenNotification,
   onOpenByok,
+  onLogoClick,
 }: CourseTopBarProps) {
   const pathname = usePathname();
   const notifRef = useRef<HTMLDivElement>(null);
@@ -158,7 +160,7 @@ export function CourseTopBar({
     <header className="course-topbar-root" aria-label="Thanh điều hướng">
       {/* Left: Brand Logo & Standard Top Navigation */}
       <div className="course-topbar-left">
-        <Link href="/home" className="course-topbar-brand" title="Về trang chủ">
+        <Link href="/home" className="course-topbar-brand" title="Về trang chủ" onClick={onLogoClick}>
           <img
             className="course-topbar-logo"
             src="/lms-assistant-icon.png"

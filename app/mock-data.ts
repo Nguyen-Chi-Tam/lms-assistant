@@ -4,7 +4,7 @@ import type { Course, CourseSourceItem, LibraryFile, QuizQuestion } from './type
 
 export const nav = [
   ['⌂', 'Tổng quan'],
-  ['✦', 'Gia sư AI'],
+  ['✦', 'AI Helper'],
   ['▤', 'Khóa học'],
   ['◫', 'Thư viện'],
   ['◎', 'Luyện tập'],

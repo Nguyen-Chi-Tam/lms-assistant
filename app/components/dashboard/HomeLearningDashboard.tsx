@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
   BarChart3,
@@ -16,17 +15,13 @@ import {
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
-import type { Course, CourseAnalyticsItem, DashboardGradesResponse, ExamResult, MoodleActivityItem } from '@/app/types';
+import type { Course, CourseAnalyticsItem, DashboardGradesResponse, ExamResult } from '@/app/types';
 import { useStoredTarget } from '@/app/lib/use-stored-target';
 import { resolveGradeRoute, formatGrade } from '@/app/lib/grade-router';
-import { askPuterJSON } from '@/app/lib/puter-client';
-import { appendFeedbackHistory } from '@/app/lib/feedback-history';
-import { AcademicAdvisorChat } from '@/app/components/dashboard/AcademicAdvisorChat';
 
 interface HomeLearningDashboardProps {
   courses: Course[];
   grades: ExamResult[];
-  activities?: MoodleActivityItem[];
   userId?: number;
   latestResult?: ExamResult | null;
   analyzedAttemptIds?: Set<number>;
@@ -42,10 +37,6 @@ type CoursePerformance = {
   first: number | null;
   latest: number | null;
   trend: number | null;
-};
-
-type Roadmap = {
-  steps: Array<{ title: string; actions: string[] }>;
 };
 
 type UnifiedCourse = {
@@ -73,7 +64,6 @@ function trendLabel(trend: CourseAnalyticsItem['grade_summary']['trend']) {
 export function HomeLearningDashboard({
   courses,
   grades,
-  activities = [],
   userId,
   latestResult,
   analyzedAttemptIds,
@@ -81,14 +71,10 @@ export function HomeLearningDashboard({
   onOpenGradeHistory,
   onOpenCourse,
 }: HomeLearningDashboardProps) {
-  const router = useRouter();
   const [target, saveTarget] = useStoredTarget(TARGET_STORAGE_KEY);
   const [liveData, setLiveData] = useState<DashboardGradesResponse | null>(null);
   const [liveLoading, setLiveLoading] = useState(true);
   const [liveError, setLiveError] = useState<string | null>(null);
-  const [roadmapFor, setRoadmapFor] = useState<number | null>(null);
-  const [roadmaps, setRoadmaps] = useState<Record<number, Roadmap>>({});
-  const [subTab, setSubTab] = useState<'overview' | 'advisor'>('overview');
 
   const loadLiveGrades = useCallback(async () => {
     setLiveLoading(true);
@@ -233,92 +219,6 @@ export function HomeLearningDashboard({
     return { strengthsList, weaknessesList };
   }, [rows, target]);
 
-  const academicContext = useMemo(() => {
-    const gpaStr = overallAverage !== null ? `${overallAverage.toFixed(2)}/10` : 'Chưa có GPA';
-    const courseLines = rows.map(row => {
-      const avg10 = row.perf?.average ?? (row.live?.grade_summary.average_pct != null ? row.live.grade_summary.average_pct / 10 : null);
-      const latestItem = [...(row.perf?.grades ?? [])].sort((a, b) => (b.gradedAt || 0) - (a.gradedAt || 0))[0];
-      const allItems = (row.perf?.grades ?? []).map(g => `${g.name}: ${g.score}/${g.maxScore}`).join(', ');
-      return `- ${row.course.name} (${row.course.code}): TB=${avg10 !== null ? avg10.toFixed(1) + '/10' : 'Chưa có điểm'}${latestItem ? `, Mới nhất: ${latestItem.name} (${latestItem.score}/${latestItem.maxScore})` : ''}${allItems ? ` | Chi tiết: ${allItems}` : ''}`;
-    });
-
-    const missedHw = activities.filter(a => a.type === 'homework' && a.status === 'missed');
-    const missedAtt = activities.filter(a => a.type === 'attendance' && a.status === 'missed');
-    const pendingAct = activities.filter(a => a.status === 'pending' || a.status === 'open_now');
-
-    return [
-      `GPA tổng hiện tại: ${gpaStr} | Mục tiêu: ${target.toFixed(1)}/10`,
-      `Khóa học nổi bật: ${strongest ? `${strongest.course.name} (${formatScore(strongest.average)}/10)` : 'Chưa có'}`,
-      `Khóa học cần ưu tiên cải thiện: ${weakest ? `${weakest.course.name} (${formatScore(weakest.average)}/10)` : 'Chưa có'}`,
-      `Danh sách môn học & điểm số:\n${courseLines.join('\n')}`,
-      `Hoạt động & Chuyên cần:`,
-      `- Bài tập quá hạn chưa nộp (${missedHw.length}): ${missedHw.map(h => `${h.courseCode}: ${h.name}`).join('; ') || 'Không có'}`,
-      `- Buổi điểm danh đã qua / có thể bỏ lỡ (${missedAtt.length}): ${missedAtt.map(a => `${a.courseCode}: ${a.name}`).join('; ') || 'Không có'}`,
-      `- Hoạt động sắp tới / đang mở (${pendingAct.length}): ${pendingAct.slice(0, 6).map(p => `${p.courseCode}: ${p.name}`).join('; ') || 'Không có'}`,
-    ].join('\n');
-  }, [overallAverage, target, strongest, weakest, rows, activities]);
-
-  const createRoadmap = useCallback(
-    async (course: CourseAnalyticsItem, navCourse?: Course) => {
-      let storedUserId = 0;
-      try {
-        const storedUser = JSON.parse(window.localStorage.getItem('moodleUser') || '{}') as { id?: number };
-        storedUserId = Number(storedUser.id) || 0;
-      } catch {
-        storedUserId = 0;
-      }
-      const resolvedUserId = userId || storedUserId;
-      if (!resolvedUserId) {
-        setLiveError('Vui lòng đăng nhập Moodle trước khi tạo lộ trình.');
-        return;
-      }
-      setRoadmapFor(course.courseId);
-      setLiveError(null);
-      try {
-        const roadmap = await askPuterJSON<Roadmap>(
-          `Tạo lộ trình học 3 bước bằng tiếng Việt cho khóa học "${course.courseName}".
-Điểm yếu: ${course.grade_summary.weaknesses.join(', ') || 'chưa xác định'}.
-Xu hướng: ${trendLabel(course.grade_summary.trend)}.
-Điểm mạnh: ${course.grade_summary.strengths.join(', ') || 'chưa xác định'}.
-Trả về JSON dạng {"steps":[{"title":"...","actions":["..."]}]} với đúng 3 steps.`
-        );
-        if (!Array.isArray(roadmap.steps) || roadmap.steps.length !== 3) {
-          throw new Error('Lộ trình phải có đúng 3 bước.');
-        }
-        // Lưu lộ trình vào lịch sử phản hồi trên localStorage (theo ngày).
-        appendFeedbackHistory(resolvedUserId, course.courseId, {
-          activity_type: 'roadmap',
-          score_label: `${course.grade_summary.average_pct ?? 0}%`,
-          ai_feedback: roadmap.steps.map(step => step.title).join(' → '),
-          improvement_plan: roadmap.steps
-            .map((step, index) => `${index + 1}. ${step.actions.join('; ')}`)
-            .join('\n'),
-        });
-
-        const stepsText = roadmap.steps
-          .map((step, index) => `${index + 1}. ${step.title}\n${step.actions.map(action => `• ${action}`).join('\n')}`)
-          .join('\n\n');
-        const recommendation = `Học tập ưu tiên: ${roadmap.steps[0]?.title || course.courseName}. Tập trung vào các điểm yếu đã xác định, ôn luyện đều đặn và kiểm tra lại điểm sau mỗi bước.`;
-        const intent = `Tôi muốn nhận lộ trình học và hướng dẫn cho khóa học "${course.courseName}".\n\nLộ trình đề xuất:\n${stepsText}\n\nHướng dẫn học tập:\n${recommendation}\n\nHãy hỗ trợ tôi chi tiết hơn cho từng bước và đề xuất bài tập tương ứng.`;
-
-        // Bypass quick-test gate so the chat opens without interruption.
-        window.localStorage.setItem(`quick-test:${course.courseId}`, String(Date.now()));
-
-        const code = navCourse?.code || course.courseCode || course.courseName.slice(0, 6).toUpperCase();
-        const name = navCourse?.name || course.courseName;
-        const id = navCourse?.id ?? course.courseId;
-        router.push(`/course?code=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}&id=${id}&intent=${encodeURIComponent(intent)}`);
-
-        setRoadmaps(current => ({ ...current, [course.courseId]: roadmap }));
-      } catch (roadmapError) {
-        setLiveError(roadmapError instanceof Error ? roadmapError.message : 'Không thể tạo lộ trình.');
-      } finally {
-        setRoadmapFor(null);
-      }
-    },
-    [userId, router]
-  );
-
   return (
     <section className="home-learning-dashboard" aria-labelledby="home-learning-dashboard-title">
       <div className="home-learning-dashboard-head">
@@ -330,42 +230,12 @@ Trả về JSON dạng {"steps":[{"title":"...","actions":["..."]}]} với đún
           </p>
         </div>
         <div className="home-learning-dashboard-head-actions">
-          <div className="dashboard-subtabs" role="tablist" aria-label="Chế độ xem bảng điểm">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={subTab === 'overview'}
-              className={subTab === 'overview' ? 'active' : ''}
-              onClick={() => setSubTab('overview')}
-            >
-              <BarChart3 size={14} />
-              <span>Tổng quan điểm</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={subTab === 'advisor'}
-              className={subTab === 'advisor' ? 'active' : ''}
-              onClick={() => setSubTab('advisor')}
-            >
-              <MessageSquare size={14} />
-              <span>Cố vấn AI</span>
-            </button>
-          </div>
           <button type="button" className="home-learning-dashboard-history" onClick={onOpenGradeHistory}>
             <BarChart3 size={14} /> Chi tiết điểm
           </button>
         </div>
       </div>
 
-      {subTab === 'advisor' ? (
-        <AcademicAdvisorChat
-          academicContext={academicContext}
-          userId={userId}
-          targetGpa={target}
-        />
-      ) : (
-      <>
       <div className="home-learning-dashboard-summary">
         <div className="home-learning-score-card primary">
           <span>Điểm trung bình</span>
@@ -468,7 +338,7 @@ Trả về JSON dạng {"steps":[{"title":"...","actions":["..."]}]} với đún
       <div className="home-learning-target">
         <div>
           <div className="home-learning-panel-title">
-            <Target size={16} /> Mục tiêu GPA
+            <Target size={16} /> Mục tiêu điểm trung bình
             <span style={{ marginLeft: '6px', color: target <= 6.0 ? '#34d399' : '#e06c82', fontWeight: 600 }}>
               ({target <= 6.0 ? '> 5.0' : '> 8.0'})
             </span>
@@ -531,8 +401,6 @@ Trả về JSON dạng {"steps":[{"title":"...","actions":["..."]}]} với đún
                 : liveSummary
                   ? `${trendLabel(liveSummary.trend)}${liveSummary.delta != null ? ` (${liveSummary.delta > 0 ? '+' : ''}${liveSummary.delta}%)` : ''}`
                   : 'Chưa đủ dữ liệu';
-            const roadmap = item.live ? roadmaps[item.live.courseId] : undefined;
-            const creatingRoadmap = Boolean(item.live && roadmapFor === item.live.courseId);
 
             return (
               <div className="home-learning-course-item" key={item.key}>
@@ -558,30 +426,7 @@ Trả về JSON dạng {"steps":[{"title":"...","actions":["..."]}]} với đún
                     {isImproving ? <TrendingUp size={13} /> : isDeclining ? <TrendingDown size={13} /> : <CheckCircle2 size={13} />}
                     {signalText}
                   </div>
-                  <div className="home-learning-course-actions">
-                    {item.live && (
-                      <button
-                        type="button"
-                        className="home-learning-course-action"
-                        onClick={() => void createRoadmap(item.live!, item.course)}
-                        disabled={creatingRoadmap}
-                        title="Tạo lộ trình 3 bước bằng AI từ điểm mạnh / điểm yếu của khóa học"
-                      >
-                        <Sparkles size={14} /> {creatingRoadmap ? 'Đang tạo…' : 'Tạo lộ trình'}
-                      </button>
-                    )}
-                  </div>
                 </div>
-                {roadmap && (
-                  <div className="home-learning-roadmap">
-                    {roadmap.steps.map((step, index) => (
-                      <div key={`${item.key}-step-${index}`}>
-                        <strong>{index + 1}. {step.title}</strong>
-                        <p>{step.actions.join(' · ')}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             );
           })
@@ -638,8 +483,6 @@ Trả về JSON dạng {"steps":[{"title":"...","actions":["..."]}]} với đún
         </div>
         {weakest && <button type="button" onClick={() => onOpenCourse(weakest.course)}>Ôn tập <ArrowRight size={14} /></button>}
       </div>
-      </>
-      )}
     </section>
   );
 }

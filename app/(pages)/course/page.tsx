@@ -1086,9 +1086,10 @@ function CourseDetailContent() {
     setArtifactsMap({});
     if (!initialIntent || !draftMode) {
       setInput('');
+      setShowGradeStrategyBar(false);
     } else {
       setInput(initialIntent);
-      setHideStrategyBar(false);
+      setShowGradeStrategyBar(true);
     }
   }, [activeCourse.id, activeCourse.code, activeCourse.name, courseSources.length]);
 
@@ -1590,7 +1591,9 @@ function CourseDetailContent() {
   const [quizInitialMode, setQuizInitialMode] = useState<'comprehensive' | 'targeted'>('comprehensive');
   const [quizInitialTopics, setQuizInitialTopics] = useState<string[]>([]);
   const [selectedStrategies, setSelectedStrategies] = useState<GradeResponseStrategy[]>(['roadmap']);
-  const [hideStrategyBar, setHideStrategyBar] = useState<boolean>(false);
+  const [showGradeStrategyBar, setShowGradeStrategyBar] = useState<boolean>(
+    () => draftMode && Boolean(initialIntent)
+  );
   const analysisAbortRef = useRef<AbortController | null>(null);
   const analysisLoadingAttemptRef = useRef<number | null>(null);
   const autoOpenedAnalysisRef = useRef<string | null>(null);
@@ -1610,15 +1613,15 @@ function CourseDetailContent() {
     }
   };
 
-  // Auto-restore selectedExamResult when navigating via URL with prompt intent
+  // Auto-restore selectedExamResult only when opened from grade analysis draft mode
   useEffect(() => {
-    if (!selectedExamResult && courseExamResults.length > 0 && (input.includes('Chào Gia sư AI!') || input.includes('bài kiểm tra'))) {
+    if (showGradeStrategyBar && !selectedExamResult && courseExamResults.length > 0 && input) {
       const matched = courseExamResults.find(r => input.includes(`"${r.name}"`) || input.includes(r.name));
       if (matched) {
         setSelectedExamResult(matched);
       }
     }
-  }, [courseExamResults, input, selectedExamResult]);
+  }, [courseExamResults, input, selectedExamResult, showGradeStrategyBar]);
 
   // Sync analyzed status with database source of truth
   useEffect(() => {
@@ -1689,7 +1692,7 @@ function CourseDetailContent() {
     // Directly place prompt into input of course chat
     if (route.actionType === 'chat') {
       setShowGradeHistory(false);
-      setHideStrategyBar(false);
+      setShowGradeStrategyBar(true);
       const defaultSt = route.defaultStrategy || 'roadmap';
       setSelectedStrategies([defaultSt]);
       const prompt =
@@ -2049,7 +2052,10 @@ function CourseDetailContent() {
     const currentBaseChat = baseChat ?? chat;
     const nextChat: ChatMessage[] = [...currentBaseChat, { role: 'user', text: q }];
     setChat(nextChat);
-    if (!customPrompt) setInput('');
+    if (!customPrompt) {
+      setInput('');
+      setShowGradeStrategyBar(false);
+    }
     setLoading(true);
 
     const selectedSources = sources.filter((_, i) => checked[i]);
@@ -2411,13 +2417,13 @@ function CourseDetailContent() {
         if (updated.length > 0 && updated[updated.length - 1].role === 'ai') {
           updated[updated.length - 1] = {
             role: 'ai',
-            text: e instanceof Error ? e.message : 'Không thể kết nối gia sư lúc này.',
+            text: e instanceof Error ? e.message : 'Không thể kết nối AI lúc này.',
             sources: [],
           };
         } else {
           updated.push({
             role: 'ai',
-            text: e instanceof Error ? e.message : 'Không thể kết nối gia sư lúc này.',
+            text: e instanceof Error ? e.message : 'Không thể kết nối AI lúc này.',
             sources: [],
           });
         }
@@ -3896,9 +3902,9 @@ function CourseDetailContent() {
                     <div ref={messagesEndRef} />
                   </div>
 
-                  <div className="chat-compose">
-                    {/* Strategy Multi-Select Quick Chooser Bar */}
-                    {!hideStrategyBar && (selectedExamResult || input.includes('kết quả bài') || input.includes('Chào Gia sư AI') || input.includes('bài kiểm tra')) && (
+                  <div className={`chat-compose ${showGradeStrategyBar ? 'grade-draft-active' : ''}`}>
+                    {/* Strategy Multi-Select Quick Chooser Bar — only when opened from grade analysis */}
+                    {showGradeStrategyBar && (
                       <div className="grade-strategy-toolbar">
                         <div className="grade-strategy-label-wrap">
                           <span className="grade-strategy-title">
@@ -3983,12 +3989,12 @@ function CourseDetailContent() {
 
                         <button
                           type="button"
-                          onClick={() => setHideStrategyBar(true)}
+                          onClick={() => setShowGradeStrategyBar(false)}
                           className="grade-strategy-close-btn"
                           title="Đóng thanh phương pháp phản hồi"
                           aria-label="Đóng thanh phương pháp"
                         >
-                          <X size={13} />
+                          <X size={17} strokeWidth={2.2} />
                         </button>
                       </div>
                     )}
@@ -4109,7 +4115,7 @@ function CourseDetailContent() {
                           }
                         }}
                         className="model-selector-chip"
-                        title="Chọn model AI cho gia sư — model thủ công chỉ dùng đúng model đó, không tự fallback"
+                        title="Chọn model AI — model thủ công chỉ dùng đúng model đó, không tự fallback"
                         style={{
                           height: '32px',
                           fontSize: '11px',
@@ -5286,7 +5292,7 @@ function CourseDetailContent() {
                     Thêm Nguồn Tài Liệu Học Tập
                   </h3>
                   <p style={{ margin: '0.15rem 0 0', fontSize: '0.8rem', color: '#9894ad' }}>
-                    Nạp tài liệu môn học để Gia sư AI và các công cụ học tập hỗ trợ phân tích
+                    Nạp tài liệu môn học để AI và các công cụ học tập hỗ trợ phân tích
                   </p>
                 </div>
               </div>
@@ -5711,7 +5717,7 @@ function CourseDetailContent() {
           setAnalysisModalOpen(false);
           if (selectedExamResult) {
             setSelectedStrategies(['roadmap']);
-            setHideStrategyBar(false);
+            setShowGradeStrategyBar(true);
             const prompt = buildGradePrompt(
               selectedExamResult,
               ['roadmap'],

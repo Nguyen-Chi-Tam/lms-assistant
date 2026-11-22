@@ -89,7 +89,7 @@ export function QuizAnalysisModal({
 
   return createPortal(
     <div
-      className="grade-history-overlay"
+      className="grade-history-overlay quiz-analysis-overlay"
       style={{
         position: 'fixed',
         inset: 0,
@@ -111,7 +111,7 @@ export function QuizAnalysisModal({
       }}
     >
       <div
-        className="grade-history-modal"
+        className="grade-history-modal quiz-analysis-modal"
         style={{
           background: 'linear-gradient(145deg, #1d0f17, #0e070c)',
           border: '1px solid rgba(185, 43, 71, 0.35)',
@@ -129,6 +129,7 @@ export function QuizAnalysisModal({
       >
         {/* Modal Header */}
         <div
+          className="quiz-analysis-header"
           style={{
             padding: '0.9rem 1.4rem',
             borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
@@ -210,6 +211,7 @@ export function QuizAnalysisModal({
 
         {/* Modal Body */}
         <div
+          className="quiz-analysis-body"
           style={{
             padding: '1.1rem 1.35rem',
             overflowY: 'auto',
@@ -360,6 +362,7 @@ export function QuizAnalysisModal({
               )}
               {/* Score & Key Stats Row */}
               <div
+                className="quiz-analysis-stats-grid"
                 style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
@@ -580,7 +583,7 @@ export function QuizAnalysisModal({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <Lightbulb size={15} color="#fbbf24" />
                   <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#fde68a', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Đánh giá sư phạm từ AI Tutor
+                    Đánh giá tổng quan từ AI
                   </span>
                 </div>
                 <div style={{ fontSize: '12.5px', lineHeight: 1.55, color: '#cbd5e1' }}>
@@ -606,7 +609,7 @@ export function QuizAnalysisModal({
               {/* Mistake Questions Detailed Breakdown */}
               {analysis.questionsAnalysis && analysis.questionsAnalysis.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
                     <h4 style={{ margin: 0, fontSize: '13.5px', fontWeight: 700, color: '#f3f2f8' }}>
                       Chi tiết {analysis.questionsAnalysis.length} câu hỏi bị trừ điểm:
                     </h4>
@@ -676,7 +679,7 @@ export function QuizAnalysisModal({
                           <div
                             style={{
                               display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))',
                               gap: '6px',
                               marginTop: '2px',
                             }}
@@ -767,6 +770,7 @@ export function QuizAnalysisModal({
 
         {/* Modal Footer */}
         <div
+          className="quiz-analysis-footer"
           style={{
             padding: '0.75rem 1.4rem',
             borderTop: '1px solid rgba(255, 255, 255, 0.08)',
@@ -779,7 +783,7 @@ export function QuizAnalysisModal({
             gap: '10px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="quiz-analysis-footer-left" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
 
             {analysis && onReanalyze && (
               <button
@@ -847,10 +851,10 @@ export function QuizAnalysisModal({
           </div>
 
           {/* Merged Single Action Button for Improvement */}
-          <div style={{ position: 'relative' }}>
+          <div className="quiz-analysis-improve-wrap" style={{ position: 'relative' }}>
             <button
               type="button"
-              className="generate-tool-btn"
+              className="generate-tool-btn quiz-analysis-improve-btn"
               onClick={() => setShowImproveMenu(prev => !prev)}
               style={{
                 margin: 0,
@@ -880,6 +884,7 @@ export function QuizAnalysisModal({
             {/* Dropdown Menu when clicked */}
             {showImproveMenu && (
               <div
+                className="quiz-analysis-improve-menu"
                 style={{
                   position: 'absolute',
                   bottom: 'calc(100% + 10px)',

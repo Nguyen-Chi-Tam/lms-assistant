@@ -134,7 +134,6 @@ Trả về JSON dạng {"steps":[{"title":"...","actions":["..."]}]} với đún
                 <div className="home-learning-course-main"><BookOpen size={16} /><div><strong>{course.courseName}</strong><small>{summary.strengths.length} điểm mạnh · {summary.weaknesses.length} điểm cần củng cố</small></div></div>
                 <div className="home-learning-course-average"><strong>{summary.average_pct ?? '—'}<small>%</small></strong><i><u style={{ width: `${summary.average_pct || 0}%` }} /></i></div>
                 <div className={`home-learning-course-signal ${summary.trend === 'improving' ? 'improving' : summary.trend === 'declining' ? 'declining' : ''}`}>{summary.delta !== null && trendIcon}{trendLabel(summary.trend)}{summary.delta !== null ? ` (${summary.delta > 0 ? '+' : ''}${summary.delta}%)` : ''}</div>
-                <button type="button" className="home-learning-course-action" onClick={() => void createRoadmap(course)} disabled={roadmapFor === course.courseId}><Sparkles size={14} /> {roadmapFor === course.courseId ? 'Đang tạo…' : 'Tạo lộ trình'}</button>
                 {roadmap && <div style={{ gridColumn: '1 / -1', marginTop: '0.5rem', padding: '0.75rem', borderRadius: '12px', background: 'rgba(185, 43, 71,0.08)' }}>{roadmap.steps.map((step, index) => <div key={`${course.courseId}-${index}`}><strong>{index + 1}. {step.title}</strong><p style={{ margin: '0.25rem 0 0.5rem', color: 'var(--muted)' }}>{step.actions.join(' · ')}</p></div>)}</div>}
               </article>
             );
