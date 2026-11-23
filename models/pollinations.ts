@@ -6,7 +6,7 @@ import type {
   GenerateTextResult,
 } from './registry';
 import { blockProviderUntilTomorrow, isQuotaExhaustedError, setLastProviderError } from './registry';
-import { stripFluff } from '@/lib/anti-fluff';
+import { stripFluff } from '@/lib/ai/anti-fluff';
 
 let client: OpenAI | null = null;
 let cachedKey = '';
@@ -16,13 +16,6 @@ export const POLLINATIONS_DEFAULT_BASE_URL = 'https://gen.pollinations.ai/v1';
 export const POLLINATIONS_DEFAULT_MODEL = process.env.POLLINATIONS_MODEL || 'stealth/glyph-cluster';
 export const POLLINATIONS_BACKUP_MODELS: string[] = [];
 export const POLLINATIONS_TIMEOUT_MS = 30_000;
-
-function isFatalUpstreamError(err: unknown): boolean {
-  const status = (err as { status?: number })?.status;
-  if (!status) return false;
-  // Lỗi gateway/SSL (502, 503, 504, 520-526), rate limit (429) hoặc auth (401, 403)
-  return status === 401 || status === 403 || status === 429 || (status >= 500 && status <= 526);
-}
 
 function getConfig(): { apiKey: string; baseUrl: string } {
   const env = runtimeEnv() as Record<string, string | undefined>;
@@ -175,34 +168,15 @@ export async function callPollinationsStream(
 
     const trimmed = accumulatedText.trim();
     if (!trimmed) {
-      // Some models (e.g. moderation-only) may not support streaming well; fallback to non-stream
-      const fallback = await callPollinations(modelId, opts);
-      if (fallback?.text) {
-        opts.onDelta(fallback.text);
-        return fallback;
-      }
       return null;
     }
     return { text: trimmed, finishReason };
-} catch (err) {
-      if (opts.signal?.aborted) throw err;
-      setLastProviderError('pollinations', String(err));
-      if (isQuotaExhaustedError(err)) blockProviderUntilTomorrow('pollinations', String(err));
-      console.warn(`[Pollinations Stream] Request failed (${modelId}):`, err);
-      // Thoát ngay để registry chuyển sang provider khác, KHÔNG fallback sang non-stream
-      if (isFatalUpstreamError(err)) {
-        return null;
-      }
-      // Try non-stream fallback only for non-fatal errors
-      try {
-        const fallback = await callPollinations(modelId, opts);
-        if (fallback?.text) {
-          opts.onDelta(fallback.text);
-          return fallback;
-        }
-      } catch (fallbackErr) {
-        console.warn(`[Pollinations] Non-stream fallback (${modelId}) failed:`, fallbackErr);
-      }
-      return null;
-    }
+  } catch (err) {
+    if (opts.signal?.aborted) throw err;
+    setLastProviderError('pollinations', String(err));
+    if (isQuotaExhaustedError(err)) blockProviderUntilTomorrow('pollinations', String(err));
+    console.warn(`[Pollinations Stream] Request failed (${modelId}):`, err);
+    // 1 provider = 1 call: exit immediately without stream -> non-stream fallback
+    return null;
+  }
 }

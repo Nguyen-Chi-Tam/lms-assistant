@@ -4,7 +4,7 @@ import {
   saveUserApiKey,
   deleteUserApiKey,
   normalizeProvider,
-} from '@/lib/key-manager';
+} from '@/lib/security/key-manager';
 import { GoogleGenAI } from '@google/genai';
 import Groq from 'groq-sdk';
 import OpenAI from 'openai';

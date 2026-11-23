@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { processNotificationEvents } from '@/lib/event-notification-service';
+import { processNotificationEvents } from '@/lib/notifications/event-notification-service';
 import { runtimeEnv } from '@/db/runtime';
 
 export const maxDuration = 60; // Nới lỏng thời gian chạy tối đa lên 60 giây (tối đa của Vercel Hobby)

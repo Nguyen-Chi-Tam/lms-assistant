@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import { generateText } from '@/models/registry';
-import { parseDocumentFromUrl } from '@/lib/document-parser';
-import { retrieveRelevantChunks, formatChunksForPrompt, scoreAndSelectChunks, type DocumentChunk } from '@/lib/rag';
-import { getStoredCourseEmbeddings, getExistingCourseFileIds, hydrateChunksWithParentText, vectorizeAndStoreLmsSource, isPineconeEgressBlocked } from '@/lib/pinecone-vector';
-import { getLatestQuizAnalysis } from '@/lib/learning-artifacts';
-import { getPersonalMaterials } from '@/lib/firebase-data';
-import { stripFluff } from '@/lib/anti-fluff';
-import { getUserApiKeys } from '@/lib/key-manager';
+import { parseDocumentFromUrl } from '@/lib/rag/document-parser';
+import { retrieveRelevantChunks, formatChunksForPrompt, scoreAndSelectChunks, type DocumentChunk } from '@/lib/rag/rag';
+import { getStoredCourseEmbeddings, getExistingCourseFileIds, hydrateChunksWithParentText, vectorizeAndStoreLmsSource, isPineconeEgressBlocked } from '@/lib/rag/pinecone-vector';
+import { getLatestQuizAnalysis } from '@/lib/learning/learning-artifacts';
+import { getPersonalMaterials } from '@/lib/database/firebase-data';
+import { stripFluff } from '@/lib/ai/anti-fluff';
+import { getUserApiKeys } from '@/lib/security/key-manager';
 import { parseQuizJson, normalizeQuizQuestions, type MatchingPair, type QuizQuestion } from '@/app/lib/quiz-parser';
 
 interface SourceItem {

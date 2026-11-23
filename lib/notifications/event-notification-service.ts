@@ -1,8 +1,8 @@
-import { adminMessaging } from '@/lib/firebase-admin';
-import { supabaseAdmin } from '@/lib/supabase';
+import { adminMessaging } from '@/lib/database/firebase-admin';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import { runtimeEnv } from '@/db/runtime';
-import { getSubmittedUserIdsForEvent, getEnrolledUserIdsFromMoodleDb } from '@/lib/moodle-db';
-import { deleteCompletedEvent } from '@/lib/event-completion';
+import { getSubmittedUserIdsForEvent, getEnrolledUserIdsFromMoodleDb } from '@/lib/database/moodle-db';
+import { deleteCompletedEvent } from '@/lib/notifications/event-completion';
 
 export interface ProcessEventsResult {
   success: boolean;

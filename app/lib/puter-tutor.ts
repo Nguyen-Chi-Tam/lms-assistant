@@ -1,5 +1,5 @@
 import type { CitationSource, RagMode } from '@/app/types';
-import { stripCitationMarkers } from '@/lib/anti-fluff';
+import { stripCitationMarkers } from '@/lib/ai/anti-fluff';
 
 /**
  * Payload returned by `/api/tutor` when a Puter.js model is selected.
@@ -45,38 +45,48 @@ export function finalizePuterTutorAnswer(
   const sources: CitationSource[] = [];
   const seen = new Set<string>();
 
-  for (const candidate of job.sourceCandidates || []) {
-    const name = candidate.name?.trim();
-    if (!name) continue;
-    const key = name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    sources.push({
-      name,
-      type: 'course_material',
-      isExternal: false,
-      chapter: candidate.chapter,
-      score: candidate.score,
-    });
-  }
+  if (job.ragMode !== 'creative') {
+    for (const candidate of job.sourceCandidates || []) {
+      const name = candidate.name?.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sources.push({
+        name,
+        type: 'course_material',
+        isExternal: false,
+        chapter: candidate.chapter,
+        score: candidate.score,
+      });
+    }
 
-  if (!isOutOfContext && (job.isParametricFallback || (job.ragMode === 'hybrid' && sources.length === 0))) {
-    sources.push({
-      name: 'Kiến thức tham khảo ngoài giáo trình',
-      type: 'extended_knowledge',
-      isExternal: true,
-      isFallback: true,
-    });
-  }
+    const usedExtendedInHybrid =
+      job.ragMode === 'hybrid' &&
+      (job.isParametricFallback ||
+        sources.length === 0 ||
+        /(?:tài\s*liệu|giáo\s*trình|bài\s*giảng)[^.?!\n]{0,60}(?:không|chưa)\s*(?:đề\s*cập|liệt\s*kê|nêu|có\s*thông\s*tin|nói\s*tới|nhắc\s*tới)/iu.test(
+          text
+        ));
 
-  const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
-  let match: RegExpExecArray | null;
-  while ((match = linkRegex.exec(text)) !== null) {
-    const name = match[1].trim();
-    const url = match[2].trim();
-    if (!url) continue;
-    if (sources.some(source => source.url === url || source.name === name)) continue;
-    sources.push({ name, type: 'external_web', isExternal: true, url });
+    if (!isOutOfContext && usedExtendedInHybrid) {
+      sources.push({
+        name: 'Kiến thức tham khảo ngoài giáo trình',
+        type: 'extended_knowledge',
+        isExternal: true,
+        isFallback: true,
+      });
+    }
+
+    const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+    let match: RegExpExecArray | null;
+    while ((match = linkRegex.exec(text)) !== null) {
+      const name = match[1].trim();
+      const url = match[2].trim();
+      if (!url) continue;
+      if (sources.some(source => source.url === url || source.name === name)) continue;
+      sources.push({ name, type: 'external_web', isExternal: true, url });
+    }
   }
 
   return { text, sources };

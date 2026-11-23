@@ -1,5 +1,5 @@
-import { adminMessaging } from '@/lib/firebase-admin';
-import { supabaseAdmin } from '@/lib/supabase';
+import { adminMessaging } from '@/lib/database/firebase-admin';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import { getDb } from '@/db';
 import { fcmTokens } from '@/db/schema';
 import { eq } from 'drizzle-orm';

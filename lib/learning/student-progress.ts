@@ -1,7 +1,7 @@
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import { runtimeEnv } from '@/db/runtime';
-import { getMoodlePool, getSubmittedEventIdsForUser, isMoodleDbAvailable } from '@/lib/moodle-db';
-import { getLatestQuizAnalysis } from '@/lib/learning-artifacts';
+import { getMoodlePool, getSubmittedEventIdsForUser, isMoodleDbAvailable } from '@/lib/database/moodle-db';
+import { getLatestQuizAnalysis } from '@/lib/learning/learning-artifacts';
 import type { ExamResult } from '@/app/types';
 
 /**

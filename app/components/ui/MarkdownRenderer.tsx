@@ -7,7 +7,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import { Globe, ExternalLink, BookmarkPlus, Check } from 'lucide-react';
-import { PERFORMATIVE_SOURCE_FLUFF_REGEX, stripCitationMarkers } from '@/lib/anti-fluff';
+import { PERFORMATIVE_SOURCE_FLUFF_REGEX, stripCitationMarkers } from '@/lib/ai/anti-fluff';
 import 'katex/dist/katex.min.css';
 
 interface MarkdownRendererProps {

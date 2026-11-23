@@ -1,2 +1,2 @@
-// lib/crossword-layout.ts
+// lib/playable/crossword-layout.ts
 export * from '@/app/lib/crossword-layout';

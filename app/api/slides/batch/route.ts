@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { generateText } from '@/models/registry';
-import type { SlideItem, SlideLayoutKind } from '@/lib/pptx-export';
+import type { SlideItem, SlideLayoutKind } from '@/lib/export/pptx-export';
 import type { SlideOutlineItem } from '@/app/api/slides/outline/route';
 
 export const maxDuration = 60;

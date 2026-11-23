@@ -17,7 +17,7 @@ import {
   Sparkles,
   Zap,
 } from 'lucide-react';
-import type { UserKeySummary } from '@/lib/key-manager';
+import type { UserKeySummary } from '@/lib/security/key-manager';
 
 interface ByokSettingsModalProps {
   isOpen: boolean;

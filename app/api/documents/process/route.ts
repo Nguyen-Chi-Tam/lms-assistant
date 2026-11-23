@@ -2,15 +2,15 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/db';
 import { personalMaterials, users } from '@/db/schema';
 import { eq, and, or, desc } from 'drizzle-orm';
-import { uploadMaterialFile, deleteMaterialFile } from '@/lib/cloudinary';
-import { supabaseAdmin } from '@/lib/supabase';
-import { indexDocuments } from '@/lib/rag';
-import { parseDocumentFromUrl, parseDocumentBuffer, getLastVisionOcrStatus } from '@/lib/document-parser';
-import { getUserApiKeys } from '@/lib/key-manager';
-import { getPersonalMaterials } from '@/lib/firebase-data';
-import { setFirebaseRow, getFirebaseRow, deleteFirebaseRow } from '@/lib/firebase-admin';
-import { invalidateCourseCache } from '@/lib/semantic-cache';
-import { fetchWithCache, invalidateCache } from '@/lib/server-cache';
+import { uploadMaterialFile, deleteMaterialFile } from '@/lib/media/cloudinary';
+import { supabaseAdmin } from '@/lib/database/supabase';
+import { indexDocuments } from '@/lib/rag/rag';
+import { parseDocumentFromUrl, parseDocumentBuffer, getLastVisionOcrStatus } from '@/lib/rag/document-parser';
+import { getUserApiKeys } from '@/lib/security/key-manager';
+import { getPersonalMaterials } from '@/lib/database/firebase-data';
+import { setFirebaseRow, getFirebaseRow, deleteFirebaseRow } from '@/lib/database/firebase-admin';
+import { invalidateCourseCache } from '@/lib/rag/semantic-cache';
+import { fetchWithCache, invalidateCache } from '@/lib/utils/server-cache';
 
 export async function POST(request: Request) {
   try {

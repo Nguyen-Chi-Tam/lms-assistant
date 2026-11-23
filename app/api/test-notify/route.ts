@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { processNotificationEvents } from '@/lib/event-notification-service';
-import { adminMessaging } from '@/lib/firebase-admin';
+import { processNotificationEvents } from '@/lib/notifications/event-notification-service';
+import { adminMessaging } from '@/lib/database/firebase-admin';
 import { getDb } from '@/db';
 import { fcmTokens } from '@/db/schema';
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import { eq } from 'drizzle-orm';
 
 export async function GET(request: Request) {

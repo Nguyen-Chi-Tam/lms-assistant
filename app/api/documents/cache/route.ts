@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { clearRagCache } from '@/lib/rag';
-import { clearDocumentCache } from '@/lib/document-parser';
+import { clearRagCache } from '@/lib/rag/rag';
+import { clearDocumentCache } from '@/lib/rag/document-parser';
 
 export async function POST(request: Request) {
   try {

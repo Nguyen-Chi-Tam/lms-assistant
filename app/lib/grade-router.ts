@@ -1,6 +1,6 @@
 import type { ExamResult, QuizAnalysisData } from '@/app/types';
 import { getStoredAnalysis } from '@/app/lib/quiz-client-cache';
-import { cleanAnswerText } from '@/lib/moodle-quiz-parser';
+import { cleanAnswerText } from '@/lib/learning/moodle-quiz-parser';
 
 export { cleanAnswerText };
 

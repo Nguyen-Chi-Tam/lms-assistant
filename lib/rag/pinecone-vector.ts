@@ -1,18 +1,18 @@
-import { extractDocumentTOC } from '@/lib/document-parser';
-import { getPineconeIndex } from '@/lib/pinecone';
+import { extractDocumentTOC } from '@/lib/rag/document-parser';
+import { getPineconeIndex } from '@/lib/rag/pinecone';
 import {
   generateEmbeddings,
   chunkDocument,
   cosineSimilarity,
   type DocumentChunk,
   type DocumentMetadata,
-} from '@/lib/rag';
-import { invalidateCourseCache } from '@/lib/semantic-cache';
+} from '@/lib/rag/rag';
+import { invalidateCourseCache } from '@/lib/rag/semantic-cache';
 import {
   saveMoodleDocumentParent,
   getMoodleDocumentParent,
   deleteMoodleDocumentParent,
-} from '@/lib/firebase-data';
+} from '@/lib/database/firebase-data';
 
 export interface DocumentEmbeddingRow {
   id?: string;

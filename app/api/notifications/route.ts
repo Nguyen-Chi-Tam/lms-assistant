@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import { runtimeEnv } from '@/db/runtime';
-import { getSubmittedEventIdsForUser, getMoodlePool } from '@/lib/moodle-db';
-import { fetchWithCache, invalidateCache } from '@/lib/server-cache';
+import { getSubmittedEventIdsForUser, getMoodlePool } from '@/lib/database/moodle-db';
+import { fetchWithCache, invalidateCache } from '@/lib/utils/server-cache';
 
 export interface NotificationEventResponse {
   id: string;

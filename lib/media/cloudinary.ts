@@ -1,5 +1,5 @@
 import { v2 as cloudinary } from 'cloudinary';
-import { supabaseAdmin } from './supabase';
+import { supabaseAdmin } from '@/lib/database/supabase';
 
 export function isCloudinaryConfigured(): boolean {
   const url = process.env.CLOUDINARY_URL || '';

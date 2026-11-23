@@ -28,7 +28,7 @@ import {
   exportSlidesToPptx,
   exportSlidesToHtml,
   formatSlideDeckText,
-} from '@/lib/pptx-export';
+} from '@/lib/export/pptx-export';
 
 interface SlidePresentationProps {
   initialDeck: SlideDeckData;

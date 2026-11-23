@@ -1,5 +1,5 @@
 import type { QuizAnalysisData } from '@/app/types';
-import { cleanAnswerText } from '@/lib/moodle-quiz-parser';
+import { cleanAnswerText } from '@/lib/learning/moodle-quiz-parser';
 
 const PREFIX = 'lms_quiz_analysis_';
 const INDEX_KEY = 'lms_quiz_analysis_index';

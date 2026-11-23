@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { generateText } from '@/models/registry';
-import type { SlideLayoutKind } from '@/lib/pptx-export';
+import type { SlideLayoutKind } from '@/lib/export/pptx-export';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';

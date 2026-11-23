@@ -1,4 +1,4 @@
-import { chunkDocument } from '@/lib/rag';
+import { chunkDocument } from '@/lib/rag/rag';
 
 export interface StratifiedContextDoc {
   title: string;

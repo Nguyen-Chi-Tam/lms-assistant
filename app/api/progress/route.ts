@@ -3,8 +3,8 @@ import { currentUserId } from '../../../db/runtime';
 import { getDb } from '../../../db';
 import { learningArtifacts, users } from '../../../db/schema';
 import { eq, and, desc } from 'drizzle-orm';
-import { supabaseAdmin } from '../../../lib/supabase';
-import { getFirebaseRows, setFirebaseRow } from '@/lib/firebase-admin';
+import { supabaseAdmin } from '../../../lib/database/supabase';
+import { getFirebaseRows, setFirebaseRow } from '@/lib/database/firebase-admin';
 
 export async function GET() {
   const currentId = await currentUserId();

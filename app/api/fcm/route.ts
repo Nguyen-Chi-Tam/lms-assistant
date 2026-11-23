@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import { getDb } from '@/db';
 import { fcmTokens, users } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';

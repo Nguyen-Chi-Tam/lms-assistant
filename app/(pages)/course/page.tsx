@@ -99,13 +99,13 @@ import {
   GRADE_RESPONSE_STRATEGIES,
   type GradeResponseStrategy,
 } from '@/app/lib/grade-router';
-import type { SlideDeckData } from '@/lib/pptx-export';
-import { cleanSummaryData } from '@/lib/summary-cleaner';
+import type { SlideDeckData } from '@/lib/export/pptx-export';
+import { cleanSummaryData } from '@/lib/ai/summary-cleaner';
 import { ensureFcmTokenRegistered, registerFcmToken, unregisterFcmToken } from '@/app/lib/notification-client';
 import { askPuterStream, checkPuterHealth, checkIsPuterSignedIn, isPuterSignedIn, signInPuter } from '@/app/lib/puter-client';
 import { isPuterModelSelector, parsePuterModelSelector } from '@/app/lib/puter-models';
 import { finalizePuterTutorAnswer, type PuterTutorJob } from '@/app/lib/puter-tutor';
-import { stripCitationMarkers } from '@/lib/anti-fluff';
+import { stripCitationMarkers } from '@/lib/ai/anti-fluff';
 import { ErrorBoundary } from '@/app/components/ui/ErrorBoundary';
 import { QuickTestGate } from '@/app/components/playable/QuickTestGate';
 import { LearningSpace } from '@/app/components/learning/LearningSpace';
@@ -583,7 +583,7 @@ function StudyArtifact({
     try {
       notify('Đang xuất tài liệu Word (.docx)…');
       // Lazy-load docx only when the user actually exports, keeping it out of the route's first load.
-      const { exportSummaryToDocx } = await import('@/lib/export-utils');
+      const { exportSummaryToDocx } = await import('@/lib/export/export-utils');
       await exportSummaryToDocx(summary, courseTitle);
       notify('Đã tải tệp Word (.docx) thành công');
     } catch {
@@ -3863,7 +3863,7 @@ function CourseDetailContent() {
                                     onClick={async () => {
                                       const el = document.getElementById(`chat-msg-${i}`);
                                       if (el) {
-                                        const { copyRichHtmlForWord } = await import('@/lib/export-utils');
+                                        const { copyRichHtmlForWord } = await import('@/lib/export/export-utils');
                                         await copyRichHtmlForWord(el, m.text);
                                       } else {
                                         await navigator.clipboard.writeText(m.text);

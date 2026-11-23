@@ -1,4 +1,4 @@
-import { getFirebaseRows, getFirebaseRow, setFirebaseRow, deleteFirebaseRow } from '@/lib/firebase-admin';
+import { getFirebaseRows, getFirebaseRow, setFirebaseRow, deleteFirebaseRow } from '@/lib/database/firebase-admin';
 
 export function getPersonalMaterials(params: {
   userId?: number;

@@ -6,7 +6,7 @@ import type {
   GenerateTextResult,
 } from './registry';
 import { blockProviderUntilTomorrow, isQuotaExhaustedError, setLastProviderError } from './registry';
-import { stripFluff } from '@/lib/anti-fluff';
+import { stripFluff } from '@/lib/ai/anti-fluff';
 
 let client: OpenAI | null = null;
 let cachedKey = '';

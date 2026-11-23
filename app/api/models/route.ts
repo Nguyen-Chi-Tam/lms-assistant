@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAvailableModels } from '@/models/registry';
-import { getUserApiKeysMap } from '@/lib/key-manager';
+import { getUserApiKeysMap } from '@/lib/security/key-manager';
 import { PUTER_MODELS, buildPuterModelSelector } from '@/app/lib/puter-models';
 
 export async function GET(request: NextRequest) {

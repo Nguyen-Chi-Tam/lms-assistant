@@ -1,12 +1,12 @@
 import { NextResponse, after } from 'next/server';
 import { runtimeEnv } from '@/db/runtime';
 import { generateText } from '@/models/registry';
-import { parseMoodleQuestion, ParsedMoodleQuestion, cleanAnswerText } from '@/lib/moodle-quiz-parser';
-import { getLearningArtifacts, getQuizAnalysisByAttempt, saveLearningArtifact } from '@/lib/learning-artifacts';
-import { sendArtifactReadyNotification } from '@/lib/artifact-notifications';
-import { getPersonalMaterials } from '@/lib/firebase-data';
+import { parseMoodleQuestion, ParsedMoodleQuestion, cleanAnswerText } from '@/lib/learning/moodle-quiz-parser';
+import { getLearningArtifacts, getQuizAnalysisByAttempt, saveLearningArtifact } from '@/lib/learning/learning-artifacts';
+import { sendArtifactReadyNotification } from '@/lib/notifications/artifact-notifications';
+import { getPersonalMaterials } from '@/lib/database/firebase-data';
 import type { QuizAnalysisData } from '@/app/types';
-import { fetchWithCache, invalidateCache } from '@/lib/server-cache';
+import { fetchWithCache, invalidateCache } from '@/lib/utils/server-cache';
 
 // AI diagnosis can be slow; give the serverless function room to finish.
 export const maxDuration = 60;

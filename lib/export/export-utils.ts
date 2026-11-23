@@ -1,6 +1,6 @@
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx';
 import { toPng } from 'html-to-image';
-import { cleanSummaryData } from '@/lib/summary-cleaner';
+import { cleanSummaryData } from '@/lib/ai/summary-cleaner';
 
 export async function exportSummaryToDocx(
   rawSummary: { title: string; overview: string; points: string[] },
@@ -300,7 +300,7 @@ export async function exportChatMessageToDocx(text: string, courseTitle: string)
   URL.revokeObjectURL(url);
 }
 
-export * from './pptx-export';
+export * from '@/lib/export/pptx-export';
 
 
 

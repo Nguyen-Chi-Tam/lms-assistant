@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { runtimeEnv } from '../../../db/runtime';
-import { getStudentFeedback } from '@/lib/feedback-store';
-import { fetchWithCache, invalidateCache } from '@/lib/server-cache';
-import { supabaseAdmin } from '@/lib/supabase';
+import { getStudentFeedback } from '@/lib/learning/feedback-store';
+import { fetchWithCache, invalidateCache } from '@/lib/utils/server-cache';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import type { MoodleActivityItem } from '@/app/types';
 
 export const maxDuration = 60;

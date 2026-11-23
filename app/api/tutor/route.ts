@@ -1,9 +1,9 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { generateText, generateTextStream, detectTaskCategory } from '@/models/registry';
-import { supabaseAdmin } from '@/lib/supabase';
-import { parseDocumentFromUrl } from '@/lib/document-parser';
+import { supabaseAdmin } from '@/lib/database/supabase';
+import { parseDocumentFromUrl } from '@/lib/rag/document-parser';
 import {
-  retrieveRelevantChunks,
+  generateEmbeddings,
   formatChunksForPrompt,
   extractChapterNumber,
   scoreAndSelectChunks,
@@ -12,7 +12,7 @@ import {
   reformulateQueryWithGroq,
   type RawDocument,
   type DocumentChunk,
-} from '@/lib/rag';
+} from '@/lib/rag/rag';
 import {
   getStoredCourseEmbeddings,
   getExistingCourseFileIds,
@@ -20,23 +20,79 @@ import {
   getDocumentTOC,
   hydrateChunksWithParentText,
   isWebOrTransientSource,
-} from '@/lib/pinecone-vector';
+} from '@/lib/rag/pinecone-vector';
 import { rerankChunksWithCohere } from '@/models/cohere';
-import { getLearningArtifacts } from '@/lib/learning-artifacts';
-import { getStudentCourseProgressContext } from '@/lib/student-progress';
-import { getPersonalMaterials } from '@/lib/firebase-data';
-import { getUserApiKeys } from '@/lib/key-manager';
+import { getLearningArtifacts } from '@/lib/learning/learning-artifacts';
+import { getStudentCourseProgressContext } from '@/lib/learning/student-progress';
+import { getPersonalMaterials } from '@/lib/database/firebase-data';
+import { getLatestUserApiKey } from '@/lib/security/key-manager';
 import type { ExamResult, RagMode, CitationSource } from '@/app/types';
-import { findCachedAnswer, storeCachedAnswer, isPersonalQuery } from '@/lib/semantic-cache';
-import { stripFluff, stripCitationMarkers, COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
-import { getCircuitBreakerNotice, buildUniversalLanguageDirective } from '@/lib/language-detector';
+import {
+  findCachedAnswer,
+  storeCachedAnswer,
+  purgeExpiredSemanticCache,
+  isPersonalQuery,
+} from '@/lib/rag/semantic-cache';
+import { stripFluff, stripCitationMarkers, COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/ai/anti-fluff';
+import { getCircuitBreakerNotice } from '@/lib/ai/language-detector';
 import {
   checkQueryScope,
-  buildStrictTutorPrompt,
   filterValidHistory,
+  isStudentProgressQuery,
   REFUSAL_MESSAGE,
-  type AllowedIntent,
-} from '@/lib/scope-guard';
+} from '@/lib/ai/scope-guard';
+
+// In-memory RAM cache for parsed transient documents / Web links (0ms on subsequent turns)
+const PARSED_DOC_CACHE_MAX = 80;
+const PARSED_DOC_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const parsedDocRamCache = new Map<string, { text: string; expiresAt: number }>();
+
+async function parseDocumentCached(
+  url: string,
+  name: string,
+  userKeys: string[]
+): Promise<string> {
+  const cacheKey = `${url}::${name.toLowerCase()}`;
+  const cached = parsedDocRamCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.text;
+  }
+  const text = await parseDocumentFromUrl(url, name, { userKeys });
+  if (text && text.trim().length > 20) {
+    if (parsedDocRamCache.size >= PARSED_DOC_CACHE_MAX) {
+      const firstKey = parsedDocRamCache.keys().next().value;
+      if (firstKey) parsedDocRamCache.delete(firstKey);
+    }
+    parsedDocRamCache.set(cacheKey, { text, expiresAt: Date.now() + PARSED_DOC_CACHE_TTL_MS });
+  }
+  return text || '';
+}
+
+// Throttle background semantic cache LRU eviction to at most once every 30 minutes per instance
+let lastCachePurgeAt = 0;
+const CACHE_PURGE_INTERVAL_MS = 30 * 60 * 1000;
+
+function scheduleBackgroundCacheWrite(params: {
+  question: string;
+  canonicalQuery: string;
+  answer: string;
+  courseId: string;
+  embedding?: number[];
+}): void {
+  const runMaintenance = async () => {
+    await storeCachedAnswer(params).catch(() => {});
+    const now = Date.now();
+    if (now - lastCachePurgeAt > CACHE_PURGE_INTERVAL_MS) {
+      lastCachePurgeAt = now;
+      await purgeExpiredSemanticCache(30).catch(() => {});
+    }
+  };
+  try {
+    after(runMaintenance);
+  } catch {
+    void runMaintenance();
+  }
+}
 
 interface ChatHistoryItem {
   role: 'user' | 'ai' | 'model' | 'assistant';
@@ -136,47 +192,48 @@ export async function POST(request: Request) {
 
     const effectiveSourceNames = effectiveSources.map(s => s.name);
 
-    // BYOK: prioritize the acting user's own Gemini key for OCR/embeddings when available.
-    const userGeminiKeys = typeof userId === 'number' ? await getUserApiKeys(userId, 'gemini').catch(() => []) : [];
-    if (userGeminiKeys.length > 0) {
-      const maskedUserKeys = userGeminiKeys.map(k => `${k.slice(0, 6)}...${k.slice(-4)}`);
-      console.log(`[Gemini Pool] BYOK: user ${userId} personal Gemini key(s) in use: ${maskedUserKeys.join(', ')} (${userGeminiKeys.length} key(s)) - tried before the system pool.`);
+    // 1-Key BYOK Frontline Policy: load only the single latest BYOK key (if Gemini, reuse for OCR/embeddings).
+    const latestByokKey = typeof userId === 'number' ? await getLatestUserApiKey(userId).catch(() => null) : null;
+    const userGeminiKeys = latestByokKey?.provider === 'gemini' ? [latestByokKey.apiKey] : [];
+    if (latestByokKey) {
+      const masked = `${latestByokKey.apiKey.slice(0, 6)}...${latestByokKey.apiKey.slice(-4)}`;
+      console.log(`[AI Orchestrator] 1-Key BYOK active for user ${userId}: ${latestByokKey.provider} (${masked})`);
     }
 
     // ── Layer 4: History Hygiene (Filter out refused/blocked turns) ──
     const sanitizedHistory = filterValidHistory(history);
     const hasHistory = sanitizedHistory.length > 0;
 
-    // ── RAG Stage 1: Intent Extraction & Query Reformulation via Groq (Silent Gatekeeper) ──
-    // Convert verbose, rambling, or emotional student prompts into compact canonical search keywords
-    // to dramatically boost Semantic Cache hit rate and vector similarity while saving input tokens.
-    // Skip Groq call entirely for short standalone queries (<= 4 words, no coreference pronouns)
-    // to avoid unnecessary LLM round-trip on simple definition questions.
-    const wordCount = question.trim().split(/\s+/).length;
-    const hasCoreferencePronoun = /\b(nó|cái này|phần này|những cái này|chúng|chúng nó|đó|này)\b/i.test(question);
-    const isShortStandalone = !hasHistory && wordCount <= 4 && !hasCoreferencePronoun && question.trim().length <= 30;
+    // ── Pha A: Conditional Query Reformulation (#15) ──
+    // Chỉ gọi Groq viết lại câu hỏi khi prompt quá ngắn (< 5 từ), chứa đại từ mơ hồ ("nó", "cái này", "phần trên"...)
+    // hoặc hỏi về Tiến độ học tập cá nhân (Tầng 0). Câu hỏi đầy đủ chủ ngữ đi thẳng sang tạo embedding (tiết kiệm ~900ms).
+    const trimmedQuestion = question.trim();
+    const wordCount = trimmedQuestion.split(/\s+/).length;
+    const hasAmbiguousPronoun =
+      /\b(nó|cái này|phần trên|phần này|những cái này|chúng|chúng nó|hai cái đó|cái đó|điều đó|ở trên|như trên|they|them|it|these|those)\b/i.test(
+        trimmedQuestion
+      );
+    const isLikelyProgressQuery = isStudentProgressQuery(trimmedQuestion);
+    const needsReformulation = wordCount < 5 || (hasHistory && hasAmbiguousPronoun) || hasAmbiguousPronoun || isLikelyProgressQuery;
 
-    let searchQuery: string;
+    let searchQuery: string = trimmedQuestion;
     /** Intent Tầng 0/3 được Groq trả về trong CÙNG request với cụm từ khóa (0ms thêm). */
     let reformulatedIntent: 'student_progress' | 'curriculum_or_prereq' | 'off_topic' | undefined;
-    if (isShortStandalone) {
-      searchQuery = question.trim();
-    } else {
-      const queryReformulation = await reformulateQueryWithGroq(question, {
+    if (needsReformulation) {
+      const queryReformulation = await reformulateQueryWithGroq(trimmedQuestion, {
         courseContext: course ? `${course} (${courseCode})` : undefined,
         history: hasHistory ? sanitizedHistory.slice(-4) : undefined,
       });
-      searchQuery = queryReformulation.reformulatedQuery || question;
+      searchQuery = queryReformulation.reformulatedQuery || trimmedQuestion;
       reformulatedIntent = queryReformulation.intent;
     }
     const isStream = Boolean(stream || request.headers.get('accept')?.includes('text/event-stream'));
     const moodleCourseId = Number(courseId) || undefined;
 
-    // ── Layer 1: Scope Gatekeeper (4 tầng: 0 = tiến độ cá nhân, 1/2/3 như cũ) ──
-    // Phân loại trên CÂU GỐC (không phải từ khóa RAG) để không mất dấu hiệu "của tôi/bài mới đây".
-    // Khi Groq đã trả intent ở bước trên, Gatekeeper dùng luôn -> không gọi LLM lần 2.
+    // ── Layer 1: Scope Gatekeeper (0ms fast-path khi câu hỏi rõ nghĩa đã bỏ qua Reformulation) ──
+    // OUT_OF_SCOPE_REGEX luôn chạy đầu tiên bên trong checkQueryScope nên prompt injection vẫn bị chặn ở 0ms.
     const scopeCheck = await checkQueryScope({
-      standaloneQuery: question,
+      standaloneQuery: trimmedQuestion,
       courseName: course ? `${course} (${courseCode})` : 'Môn học hiện tại',
       courseSummary: courseCode ? `Môn học mã ${courseCode}` : undefined,
       uploadedFileNames: effectiveSources.map(s => s.name),
@@ -186,7 +243,9 @@ export async function POST(request: Request) {
           ? 'STUDENT_PROGRESS'
           : reformulatedIntent === 'off_topic'
             ? 'OUT_OF_SCOPE'
-            : undefined,
+            : !needsReformulation
+              ? 'COURSE_DOCS'
+              : undefined,
     });
 
     const isStudentProgress = scopeCheck.intent === 'STUDENT_PROGRESS';
@@ -303,80 +362,16 @@ export async function POST(request: Request) {
     ].join('::');
     const effectiveCourseId = `${baseCourseId}::${retrievalFingerprint}`;
 
-    // Strict manual model selection must always hit the chosen model, never a cached answer.
-    if (!strictModel && !isPersonal && !isMultiTurn && ragMode !== 'creative') {
-      try {
-        const cachedHit = await findCachedAnswer({
-          question,
-          canonicalQuery: searchQuery,
-          courseId: effectiveCourseId,
-          threshold: 0.92,
-        });
+    // ── Pha A: Parallel Pre-LLM Phase (Semantic Cache + Vector RAG + Context Harvesting) ──
+    const canCheckSemanticCache = !strictModel && !isPersonal && !isMultiTurn && ragMode !== 'creative';
 
-        if (cachedHit) {
-          const citedSources = compileAllSources({
-            aiText: cachedHit.answer,
-            ragMode,
-            relevantChunks: [],
-            isParametricFallback: false,
-            isStudentProgress,
-            groundingMetadata: null,
-            course,
-            question,
-          });
+    // Prompt-Aware Metadata Filtering ("Judge the book by its cover") runs locally (<1ms) BEFORE any I/O
+    const preFilteredSources = filterSourcesByPromptMetadata(effectiveSources, question);
+    const studentSources = preFilteredSources.filter(isWebOrTransientSource);
+    const lmsSources = preFilteredSources.filter(s => !isWebOrTransientSource(s));
+    const isSubset = preFilteredSources.length < effectiveSources.length;
 
-          if (isStream) {
-            const encoder = new TextEncoder();
-            const readableStream = new ReadableStream({
-              start(controller) {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify({ delta: cachedHit.answer })}\n\n`)
-                );
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({
-                      done: true,
-                      sources: citedSources,
-                      model: 'Bộ nhớ đệm (Semantic Cache - 0 token)',
-                      modelId: 'cache:semantic',
-                      provider: 'cache',
-                      cached: true,
-                      ragMode,
-                      isFallback: false,
-                    })}\n\n`
-                  )
-                );
-                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-                controller.close();
-              },
-            });
-
-            return new Response(readableStream, {
-              headers: {
-                'Content-Type': 'text/event-stream; charset=utf-8',
-                'Cache-Control': 'no-cache, no-transform',
-                'Connection': 'keep-alive',
-                'X-Accel-Buffering': 'no',
-              },
-            });
-          }
-
-          return NextResponse.json({
-            answer: cachedHit.answer,
-            sources: citedSources,
-            model: 'Bộ nhớ đệm (Semantic Cache - 0 token)',
-            provider: 'cache',
-            cached: true,
-            ragMode,
-            isFallback: false,
-          });
-        }
-      } catch (cacheErr) {
-        console.warn('[Semantic Cache] Top-level cache interception error:', cacheErr);
-      }
-    }
-
-    // 1. Retrieve or extract course documents from personal_materials / Moodle
+    // Prepare gradebook & client-supplied deadlines locally (<1ms)
     let documentContext = '';
     let artifactContext = '';
     let gradebookContext = '';
@@ -392,7 +387,6 @@ export async function POST(request: Request) {
         .join('\n\n');
     }
 
-    // 1b. Retrieve upcoming assignments & deadlines for this course (LMS Context Harvesting)
     let deadlineContext = '';
     const nowTimestamp = Date.now();
     let courseDeadlines: Array<{ name: string; due: string; type?: string }> = [];
@@ -414,33 +408,136 @@ export async function POST(request: Request) {
         }));
     }
 
-    if (courseDeadlines.length === 0 && moodleCourseId) {
-      if (supabaseAdmin) {
-        try {
-          const { data: dbEvts } = await supabaseAdmin
+    // Generate 1 shared query embedding when Semantic Cache is enabled so Cache lookup & later persistence reuse it
+    let sharedQueryEmbedding: number[] | undefined;
+    const textToEmbed = searchQuery && searchQuery.length >= 3 ? searchQuery : trimmedQuestion;
+
+    const [
+      cacheResult,
+      dbEventsResult,
+      artifactsResult,
+      matsResult,
+      existingLmsFileIdsResult,
+      storedRetrievedChunksResult,
+    ] = await Promise.allSettled([
+      canCheckSemanticCache
+        ? (async () => {
+            try {
+              const [embed] = await generateEmbeddings([textToEmbed]);
+              if (embed && embed.length > 0) sharedQueryEmbedding = embed;
+            } catch {
+              // Proceed with findCachedAnswer memory/fallback path
+            }
+            return findCachedAnswer({
+              question,
+              canonicalQuery: searchQuery,
+              courseId: effectiveCourseId,
+              threshold: 0.92,
+              precomputedEmbedding: sharedQueryEmbedding,
+            });
+          })()
+        : Promise.resolve(null),
+      courseDeadlines.length === 0 && moodleCourseId && supabaseAdmin
+        ? supabaseAdmin
             .from('events')
             .select('title, deliver_time, event_type')
             .eq('moodle_course_id', moodleCourseId)
             .gte('deliver_time', new Date().toISOString())
             .order('deliver_time', { ascending: true })
-            .limit(6);
+            .limit(6)
+        : Promise.resolve({ data: null }),
+      moodleCourseId
+        ? getLearningArtifacts({ userId: Number(userId) || 4, moodleCourseId, limit: 10 })
+        : Promise.resolve([]),
+      moodleCourseId && studentSources.length > 0
+        ? getPersonalMaterials({ moodleCourseId, limit: 10 })
+        : Promise.resolve([]),
+      moodleCourseId && lmsSources.length > 0
+        ? getExistingCourseFileIds(moodleCourseId)
+        : Promise.resolve(new Set<number>()),
+      moodleCourseId && lmsSources.length > 0
+        ? getStoredCourseEmbeddings(moodleCourseId, {
+            docTitles: isSubset ? lmsSources.map(s => s.name) : undefined,
+          })
+        : Promise.resolve([] as DocumentChunk[]),
+    ]);
 
-          if (dbEvts && dbEvts.length > 0) {
-            courseDeadlines = dbEvts.map(e => ({
-              name: e.title,
-              due: new Date(e.deliver_time).toLocaleString('vi-VN', {
-                hour: '2-digit',
-                minute: '2-digit',
-                day: '2-digit',
-                month: '2-digit',
-                year: 'numeric',
-              }),
-              type: e.event_type,
-            }));
-          }
-        } catch (evtErr) {
-          console.warn('Could not query events via Supabase in tutor:', evtErr);
-        }
+    // Fast Return on Semantic Cache Hit (0 LLM tokens)
+    const cachedHit = cacheResult.status === 'fulfilled' ? cacheResult.value : null;
+    if (cachedHit) {
+      const citedSources = compileAllSources({
+        aiText: cachedHit.answer,
+        ragMode,
+        relevantChunks: [],
+        isParametricFallback: false,
+        isStudentProgress,
+        groundingMetadata: null,
+        course,
+        question,
+      });
+
+      if (isStream) {
+        const encoder = new TextEncoder();
+        const readableStream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ delta: cachedHit.answer })}\n\n`)
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  done: true,
+                  sources: citedSources,
+                  model: 'Bộ nhớ đệm (Semantic Cache - 0 token)',
+                  modelId: 'cache:semantic',
+                  provider: 'cache',
+                  cached: true,
+                  ragMode,
+                  isFallback: false,
+                })}\n\n`
+              )
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+
+        return new Response(readableStream, {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        });
+      }
+
+      return NextResponse.json({
+        answer: cachedHit.answer,
+        sources: citedSources,
+        model: 'Bộ nhớ đệm (Semantic Cache - 0 token)',
+        provider: 'cache',
+        cached: true,
+        ragMode,
+        isFallback: false,
+      });
+    }
+
+    // Unpack parallel DB events
+    if (courseDeadlines.length === 0 && dbEventsResult.status === 'fulfilled') {
+      const dbEvts = (dbEventsResult.value as { data?: Array<{ title: string; deliver_time: string; event_type?: string }> | null })?.data;
+      if (dbEvts && dbEvts.length > 0) {
+        courseDeadlines = dbEvts.map(e => ({
+          name: e.title,
+          due: new Date(e.deliver_time).toLocaleString('vi-VN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+          }),
+          type: e.event_type,
+        }));
       }
     }
 
@@ -453,129 +550,93 @@ export async function POST(request: Request) {
         .join('\n');
     }
 
-    if (moodleCourseId) {
-      // PARALLEL CONTEXT HARVESTING: gọi song song learning artifacts + personal materials (Promise.allSettled) thay vì tuần tự await.
-      const [artifactsResult, matsResult] = await Promise.allSettled([
-        getLearningArtifacts({
-          userId: Number(userId) || 4,
-          moodleCourseId,
-          limit: 10,
-        }),
-        getPersonalMaterials({ moodleCourseId, limit: 10 }),
-      ]);
-
-      if (artifactsResult.status === 'fulfilled') {
-        const artifacts = artifactsResult.value;
-        if (artifacts && artifacts.length > 0) {
-          artifactContext = artifacts
-            .slice(0, 5)
-            .map((artifact, index) => {
-              const title = artifact.title || artifact.artifact_type || 'Học liệu';
-              return `- [Học liệu ${index + 1}] ${artifact.artifact_type.toUpperCase()}: "${title}"`;
-            })
-            .join('\n');
-        }
-      } else {
-        console.warn('Could not query learning artifacts in tutor:', artifactsResult.reason);
+    // Unpack parallel learning artifacts
+    if (artifactsResult.status === 'fulfilled') {
+      const artifacts = artifactsResult.value;
+      if (artifacts && artifacts.length > 0) {
+        artifactContext = artifacts
+          .slice(0, 5)
+          .map((artifact, index) => {
+            const title = artifact.title || artifact.artifact_type || 'Học liệu';
+            return `- [Học liệu ${index + 1}] ${artifact.artifact_type.toUpperCase()}: "${title}"`;
+          })
+          .join('\n');
       }
+    } else {
+      console.warn('Could not query learning artifacts in tutor:', artifactsResult.reason);
+    }
 
-      if (matsResult.status === 'fulfilled') {
-        const mats = matsResult.value;
-        if (mats) {
-          for (const mat of mats) {
-            if (mat.storage_url && mat.title && !docMap.has(String(mat.title).toLowerCase())) {
+    // Only parse personal materials that match the user's selected transient sources (in parallel + RAM cached)
+    if (matsResult.status === 'fulfilled' && studentSources.length > 0) {
+      const mats = matsResult.value;
+      if (mats && mats.length > 0) {
+        const selectedTransientNames = new Set(studentSources.map(s => s.name.toLowerCase()));
+        const matchedMats = mats.filter(
+          mat =>
+            mat.storage_url &&
+            mat.title &&
+            selectedTransientNames.has(String(mat.title).toLowerCase()) &&
+            !docMap.has(String(mat.title).toLowerCase())
+        );
+        if (matchedMats.length > 0) {
+          await Promise.allSettled(
+            matchedMats.map(async mat => {
               try {
-                const text = await parseDocumentFromUrl(String(mat.storage_url), String(mat.title), { userKeys: userGeminiKeys });
+                const text = await parseDocumentCached(String(mat.storage_url), String(mat.title), userGeminiKeys);
                 if (text && text.length > 50) docMap.set(String(mat.title).toLowerCase(), text);
               } catch {
                 // ignore unavailable material
               }
-            }
-          }
-        }
-      } else {
-        console.warn('Firebase personal_materials query in tutor:', matsResult.reason);
-      }
-    }
-
-    // 1c. Prompt-Aware Metadata Filtering ("Judge the book by its cover")
-    // Pre-filters candidate sources by matching prompt keywords against document titles,
-    // URL slugs, section names, and chapter numbers BEFORE full-text fetching, chunking,
-    // or requesting embeddings from Gemini.
-    // This saves 80-90% of Gemini embedding quota and keeps Gemini (the team captain) protected from rate limits.
-    const preFilteredSources = filterSourcesByPromptMetadata(effectiveSources, question);
-
-    // Separate LMS Course Documents vs On-The-Fly In-Memory Sources (Web Links, Personal Uploads)
-    // Rule (Enterprise RAG): Web links, external articles, and student uploads are transient.
-    // They are parsed and chunked purely in-memory (On-The-Fly RAG) and filtered via Cohere Rerank.
-    const studentSources = preFilteredSources.filter(isWebOrTransientSource);
-    const lmsSources = preFilteredSources.filter(s => !isWebOrTransientSource(s));
-
-    // A. For LMS sources in Pinecone:
-    let storedLmsChunks: DocumentChunk[] = [];
-    if (moodleCourseId && lmsSources.length > 0) {
-      try {
-        const isSubset = preFilteredSources.length < effectiveSources.length;
-
-        // PARALLEL RETRIEVAL: chạy song song 2 lệnh Pinecone độc lập (kiểm tra fileId đã có vector chưa + lấy toàn bộ stored vectors) để bỏ một full course-corpus round trip khỏi critical path trước khi ranking chunk / gọi LLM.
-        const [existingLmsFileIds, storedRetrievedChunks] = await Promise.all([
-          getExistingCourseFileIds(moodleCourseId),
-          getStoredCourseEmbeddings(moodleCourseId, {
-            docTitles: isSubset ? lmsSources.map(s => s.name) : undefined,
-          }),
-        ]);
-        storedLmsChunks = storedRetrievedChunks;
-
-        // Files that need extraction and vectorization into Pinecone
-        const lmsToIngest = lmsSources.filter(src => {
-          const fid = Number(src.fileId || src.moduleId);
-          return fid && !existingLmsFileIds.has(fid);
-        });
-
-        if (lmsToIngest.length > 0) {
-          await Promise.allSettled(
-            lmsToIngest.map(async src => {
-              if (!src.url) return;
-              try {
-                const extractedText = await parseDocumentFromUrl(src.url, src.name, { userKeys: userGeminiKeys });
-                if (extractedText && extractedText.trim().length > 20) {
-                  const fid = Number(src.fileId || src.moduleId) || 1;
-                  await vectorizeAndStoreLmsSource({
-                    moodleCourseId,
-                    moodleFileId: fid,
-                    documentTitle: src.name,
-                    text: extractedText,
-                    metadata: {
-                      sectionId: src.sectionId,
-                      sectionName: src.sectionName,
-                      chapter: src.chapter || extractChapterNumber(src.name) || undefined,
-                      courseId: moodleCourseId,
-                      courseCode,
-                    },
-                  });
-                  docMap.set(src.name.toLowerCase(), extractedText);
-                }
-              } catch (parseErr) {
-                console.warn(`Could not vectorize LMS document ${src.name}:`, parseErr);
-              }
             })
           );
         }
-
-        // NOTE: Do NOT sweep orphaned vectors here.
-        // This request only carries the sources the student selected for one question,
-        // not the full course file list. Sweeping against that partial list deletes
-        // embeddings of every other course document (and their parent texts).
-        // Garbage collection runs in the scheduled sync-moodle cron, which knows
-        // the complete Moodle course contents.
-
-        // NOTE: Stored chunks were already retrieved concurrently above via Promise.all.
-      } catch (lmsVecErr) {
-        console.warn('LMS Pinecone retrieval note:', lmsVecErr);
       }
     }
 
-    // B. For Student personal uploads: Traditional in-memory RAG
+    // A. For LMS sources in Pinecone (already fetched in parallel above):
+    const storedLmsChunks: DocumentChunk[] =
+      storedRetrievedChunksResult.status === 'fulfilled' ? storedRetrievedChunksResult.value : [];
+    const existingLmsFileIds: Set<number> =
+      existingLmsFileIdsResult.status === 'fulfilled' ? existingLmsFileIdsResult.value : new Set<number>();
+
+    if (moodleCourseId && lmsSources.length > 0) {
+      const lmsToIngest = lmsSources.filter(src => {
+        const fid = Number(src.fileId || src.moduleId);
+        return fid && !existingLmsFileIds.has(fid);
+      });
+
+      if (lmsToIngest.length > 0) {
+        await Promise.allSettled(
+          lmsToIngest.map(async src => {
+            if (!src.url) return;
+            try {
+              const extractedText = await parseDocumentCached(src.url, src.name, userGeminiKeys);
+              if (extractedText && extractedText.trim().length > 20) {
+                const fid = Number(src.fileId || src.moduleId) || 1;
+                await vectorizeAndStoreLmsSource({
+                  moodleCourseId,
+                  moodleFileId: fid,
+                  documentTitle: src.name,
+                  text: extractedText,
+                  metadata: {
+                    sectionId: src.sectionId,
+                    sectionName: src.sectionName,
+                    chapter: src.chapter || extractChapterNumber(src.name) || undefined,
+                    courseId: moodleCourseId,
+                    courseCode,
+                  },
+                });
+                docMap.set(src.name.toLowerCase(), extractedText);
+              }
+            } catch (parseErr) {
+              console.warn(`Could not vectorize LMS document ${src.name}:`, parseErr);
+            }
+          })
+        );
+      }
+    }
+
+    // B. For Student personal uploads / transient sources: RAM-cached parse (0ms on repeat turns)
     const studentUrlsToFetch = studentSources.filter(
       src => src.url && !docMap.has(src.name.toLowerCase())
     );
@@ -583,7 +644,7 @@ export async function POST(request: Request) {
       await Promise.allSettled(
         studentUrlsToFetch.map(async src => {
           try {
-            const extractedText = await parseDocumentFromUrl(src.url!, src.name, { userKeys: userGeminiKeys });
+            const extractedText = await parseDocumentCached(src.url!, src.name, userGeminiKeys);
             if (extractedText && extractedText.trim()) {
               docMap.set(src.name.toLowerCase(), extractedText);
             }
@@ -633,7 +694,7 @@ export async function POST(request: Request) {
       await Promise.allSettled(
         missingLmsSources.map(async src => {
           try {
-            const extractedText = await parseDocumentFromUrl(src.url!, src.name, { userKeys: userGeminiKeys });
+            const extractedText = await parseDocumentCached(src.url!, src.name, userGeminiKeys);
             if (extractedText && extractedText.trim()) {
               docMap.set(src.name.toLowerCase(), extractedText);
             }
@@ -705,7 +766,12 @@ export async function POST(request: Request) {
     let relevantChunks: DocumentChunk[] = [];
     let isParametricFallback = false;
 
-    if (allCandidateChunks.length > 0) {
+    if (ragMode === 'creative') {
+      // Creative mode: answer freely from general/professional knowledge without restricting or comparing to course sources
+      documentContext = '';
+      ragDocuments = [];
+      relevantChunks = [];
+    } else if (allCandidateChunks.length > 0) {
       try {
         if (isDocOverviewQuery) {
           // ── Issue 2 Fix: TOC Metadata Bypass ──
@@ -777,8 +843,7 @@ export async function POST(request: Request) {
           const queryChapter = extractChapterNumber(searchQuery) || extractChapterNumber(question);
           const targetChapter = chapter ? String(chapter).toLowerCase() : queryChapter;
 
-          // Only restrict by metadata if NOT in external creative mode
-          if (ragMode !== 'creative' && (targetSectionId !== undefined || targetSectionName || targetChapter)) {
+          if (targetSectionId !== undefined || targetSectionName || targetChapter) {
             const filtered = allCandidateChunks.filter(chunk => {
               const meta = chunk.metadata;
               if (targetSectionId !== undefined && meta?.sectionId !== undefined) {
@@ -819,23 +884,28 @@ export async function POST(request: Request) {
             // Tầng 0 chỉ cần 1-2 tài liệu gợi ý ôn lại -> limiting topK saves tokens.
             topK: isStudentProgress ? 2 : 4,
             maxTotalChars: isStudentProgress ? 3000 : 6000,
-            minSimilarity: ragMode === 'creative' ? 0.20 : 0.30,
+            minSimilarity: 0.30,
             dynamicTopK: true,
           });
 
-          // Stage 2: Cross-Encoder Scanning via Cohere Rerank API (Dedicated Quota, Zero Chat Quota Burn)
-          // Fast-path: skip cross-encoder rerank when the top vector candidate is already
-          // highly confident (top score >= threshold) — saves a full Cohere API round trip +
-          // tokens for obvious queries without hurting answer quality.
+          // Stage 2: Cross-Encoder Scanning via Cohere Rerank API (#6 Strict Gatekeeper)
+          // Bỏ qua Cohere ngay lập tức khi:
+          // - Tầng 0 (student_progress)
+          // - topScore >= 0.85
+          // - Metadata Filtering đã khoanh vùng còn đúng 1 tài liệu duy nhất
+          // - Số chunk lấy về <= 3 đoạn
           const topCandidateScore = broadCandidates[0]?.similarityScore ?? 0;
-          // Tầng 0: bỏ qua Cohere Rerank để tiết kiệm quota (dữ liệu tiến độ là nguồn chính).
+          const uniqueCandidateDocs = new Set(broadCandidates.map(c => c.docTitle.toLowerCase())).size;
           const shouldSkipRerank =
-            isStudentProgress || topCandidateScore >= (ragMode === 'creative' ? 0.85 : 0.90);
+            isStudentProgress ||
+            topCandidateScore >= 0.85 ||
+            uniqueCandidateDocs <= 1 ||
+            broadCandidates.length <= 3;
           if (broadCandidates.length > 1 && !shouldSkipRerank) {
             try {
               const reranked = await rerankChunksWithCohere(searchQuery, broadCandidates, {
                 topN: 3,
-                minScore: ragMode === 'creative' ? 0.0005 : 0.001,
+                minScore: 0.001,
               });
               if (reranked && reranked.length > 0) {
                 relevantChunks = reranked;
@@ -847,8 +917,9 @@ export async function POST(request: Request) {
               console.warn('[IELTS Scanning Gatekeeper] Cohere rerank skipped/error, using vector scoring:', rerankErr);
             }
           } else if (broadCandidates.length > 0) {
-            // Fast-path: top vector candidate already highly confident -> skip rerank, use top chunks directly
-            console.log(`[IELTS Scanning Gatekeeper] Skipped Cohere rerank: topScore=${topCandidateScore.toFixed(3)} >= threshold (ragMode: ${ragMode})`);
+            console.log(
+              `[IELTS Scanning Gatekeeper] Skipped Cohere rerank (topScore=${topCandidateScore.toFixed(3)}, docs=${uniqueCandidateDocs}, chunks=${broadCandidates.length})`
+            );
             relevantChunks = broadCandidates.slice(0, 3);
           }
 
@@ -857,7 +928,7 @@ export async function POST(request: Request) {
             relevantChunks = scoreAndSelectChunks(candidateChunks, searchQuery, {
               topK: isStudentProgress ? 2 : 5,
               maxTotalChars: isStudentProgress ? 3000 : 8000,
-              minSimilarity: ragMode === 'creative' ? 0.25 : 0.38,
+              minSimilarity: 0.38,
               dynamicTopK: true,
             });
           }
@@ -871,12 +942,6 @@ export async function POST(request: Request) {
               title: c.docTitle,
               text: c.text,
             }));
-          } else if (ragMode === 'creative') {
-            const firstChunk = allCandidateChunks[0];
-            if (firstChunk) {
-              documentContext = `--- TRÍCH ĐOẠN TỔNG QUAN: "${firstChunk.docTitle}" ---\n${firstChunk.text.slice(0, 1200)}`;
-              ragDocuments = [{ id: 'doc_1', title: firstChunk.docTitle, text: firstChunk.text }];
-            }
           } else if (ragMode === 'hybrid') {
             // Hybrid Mode Fallback: Chunks empty -> enable parametric pre-trained knowledge with transparency
             isParametricFallback = true;
@@ -890,13 +955,7 @@ export async function POST(request: Request) {
         }
       } catch (ragErr) {
         console.warn('Semantic RAG retrieval error, fallback to basic context:', ragErr);
-        if (ragMode === 'creative') {
-          const firstChunk = allCandidateChunks[0];
-          if (firstChunk) {
-            documentContext = `--- TRÍCH ĐOẠN: "${firstChunk.docTitle}" ---\n${firstChunk.text.slice(0, 1500)}`;
-            ragDocuments = [{ id: 'doc_1', title: firstChunk.docTitle, text: firstChunk.text }];
-          }
-        } else if (ragMode === 'hybrid') {
+        if (ragMode === 'hybrid') {
           isParametricFallback = true;
           documentContext = '';
           ragDocuments = [];
@@ -993,15 +1052,19 @@ export async function POST(request: Request) {
 - TUYỆT ĐỐI KHÔNG chèn bất kỳ marker trích dẫn dạng [n] (ví dụ [1], [2], [3], [10]) vào câu trả lời; nguồn tài liệu được hệ thống hiển thị tự động ở chân trang.
 - TRIỆT TIÊU VĂN MẪU & TIẾT KIỆM TOKEN: Cấm chào hỏi đầu câu, cấm kết luận thừa thãi cuối câu. Đi thẳng vào nội dung từ ký tự đầu tiên.`;
     } else if (ragMode === 'hybrid') {
-      domainGuardrail = `Bạn là trợ lý học tập. Hãy ưu tiên tối đa việc sử dụng thông tin trong thẻ <document> để trả lời. Nếu thẻ <document> trống hoặc thiếu dữ kiện, bạn ĐƯỢC PHÉP dùng kiến thức nền tảng và tri thức chuyên ngành để giải thích đầy đủ, chính xác.
+      domainGuardrail = `Bạn là trợ lý học tập ở CHẾ ĐỘ KẾT HỢP (HYBRID RAG - ƯU TIÊN TÀI LIỆU & TƯ DUY MỞ RỘNG KHI TÀI LIỆU KHÔNG CÓ):
+- NGUYÊN TẮC CỐT LÕI: Ưu tiên sử dụng thông tin trong thẻ <document> nếu tài liệu có đề cập trực tiếp đến đúng câu hỏi của người dùng.
+- BẮT BUỘC TƯ DUY MỞ RỘNG (THINK OUTSIDE THE SOURCES) KHI TÀI LIỆU THIẾU HOẶC CHỈ ĐỀ CẬP KHÍA CẠNH KHÁC: Nếu thẻ <document> trống, hoặc các đoạn trích trong <document> KHÔNG chứa câu trả lời cho điều người dùng hỏi (ví dụ: người dùng hỏi về framework frontend của Rust nhưng tài liệu chỉ nói về backend như Actix/Axum/Rocket), bạn BẮT BUỘC PHẢI chủ động dùng kiến thức chuyên ngành rộng lớn bên ngoài tài liệu để TRẢ LỜI ĐẦY ĐỦ, TRỰC TIẾP và CHÍNH XÁC câu hỏi đó (ví dụ: giới thiệu ngay Yew, Leptos, Dioxus...).
+- TUYỆT ĐỐI CẤM TỪ CHỐI HOẶC DỪNG LẠI Ở VIỆC BÁO "TÀI LIỆU KHÔNG ĐỀ CẬP": Trong chế độ Hybrid, khi tài liệu không có thông tin người dùng cần, bạn KHÔNG ĐƯỢC PHÉP chỉ nói "tài liệu không đề cập" rồi dừng lại; bạn BẮT BUỘC phải giải đáp trọn vẹn câu hỏi bằng kiến thức mở rộng ngay lập tức để người dùng không bao giờ phải chuyển sang chế độ Mở rộng (Creative).
 - QUY TẮC ANTI-FLUFF (TUYỆT ĐỐI KHÔNG PERFORMATIVE / KHÔNG MÀU MÈ NÓI VỀ NGUỒN):
   + TUYỆT ĐỐI KHÔNG BAO GIỜ nói các câu như: "Dựa trên các tài liệu bạn cung cấp...", "Dựa trên tài liệu được cung cấp...", "Dựa trên kiến thức mở rộng ngoài khóa học...", "Dựa trên các nguồn bên ngoài tôi tìm được...", "Based on the sources provided...", "Based on the external sources I found...".
   + ĐI THẲNG TRỰC TIẾP VÀO BẢN CHẤT VẤN ĐỀ TỪ TỪ ĐẦU TIÊN (Jump straight to the problem). Tuyệt đối không tạo banner, không tạo callout phân bua về nguồn gốc kiến thức.
 - TUYỆT ĐỐI KHÔNG chèn bất kỳ marker trích dẫn dạng [n] (ví dụ [1], [2], [3], [10]) vào câu trả lời; nguồn tài liệu đã có huy hiệu tự động ở chân trang. Cấm chào hỏi xã giao, cấm kết bài thừa thãi.`;
     } else {
       // ragMode === 'creative'
-      domainGuardrail = `Bạn là một giảng viên AI uyên bác. Hãy giải thích chi tiết, cặn kẽ và mở rộng vấn đề bằng các ví dụ thực tế, code mẫu hoặc xu hướng công nghệ mới nhất. Bạn được toàn quyền sử dụng kiến thức chuyên môn của mình.
-- Dữ liệu trong thẻ <document> (nếu có) đóng vai trò tham khảo nhẹ, bạn không bị giới hạn trong thẻ này.
+      domainGuardrail = `Bạn là một giảng viên AI uyên bác ở CHẾ ĐỘ MỞ RỘNG (CREATIVE MODE). Hãy giải thích trực tiếp, chi tiết, cặn kẽ và mở rộng vấn đề bằng kiến thức chuyên môn, các ví dụ thực tế, code mẫu hoặc xu hướng công nghệ mới nhất.
+- TUYỆT ĐỐI KHÔNG BẬN TÂM ĐẾN TÀI LIỆU MÔN HỌC: Ở chế độ Mở rộng (Creative), người dùng KHÔNG quan tâm thông tin có trong tài liệu môn học hay không.
+- TUYỆT ĐỐI CẤM nhắc đến tài liệu môn học hay giáo trình dưới mọi hình thức (CẤM TUYỆT ĐỐI các câu như: "Tài liệu môn không liệt kê...", "Tài liệu không đề cập...", "Trong giáo trình chỉ nói tới...", "Ngoài tài liệu môn học..."). Hãy trả lời thẳng vào câu hỏi như một chuyên gia thực thụ ngay từ chữ đầu tiên.
 - TRIỆT TIÊU VĂN MẪU & TIẾT KIỆM TOKEN (ANTI-FLUFF - LỆNH CỨNG BẮT BUỘC): Cấm chào hỏi đầu câu, cấm chúc tụng sáo rỗng cuối câu. Đi thẳng vào nội dung từ từ đầu tiên.`;
     }
 
@@ -1017,14 +1080,14 @@ export async function POST(request: Request) {
     let externalInstruction =
       ragMode === 'creative'
         ? `HƯỚNG DẪN MỞ RỘNG TRI THỨC (CREATIVE MODE - SÁNG TẠO & ANTI-FLUFF):
-- Ưu tiên tính sáng tạo, linh hoạt sư phạm và liên hệ thực tiễn mở rộng dựa trên tri thức chuyên môn thực tế và tra cứu hiện đại thay vì bị bó hẹp trong tài liệu.
+- Trả lời trực tiếp từ tri thức chuyên môn thực tế và công nghệ hiện đại. Tuyệt đối KHÔNG đối chiếu, KHÔNG nhắc tới việc tài liệu môn học có hay không có nội dung này.
 - CẤM VĂN MẪU GIAO TIẾP: Cấm chào hỏi đầu câu, cấm chúc tụng hay kết luận sáo rỗng cuối câu ("Hy vọng thông tin này giúp ích...", "Hy vọng câu trả lời..."). Đi thẳng vào nội dung chuyên môn ngay từ từ đầu tiên.
 - LIÊN KẾT NGUỒN NGOÀI: Khi nhắc đến công cụ, tài liệu học thuật hoặc trang web chính thức, hãy dùng định dạng liên kết Markdown [Tên](https://...).`
         : ragMode === 'hybrid'
-          ? `HƯỚNG DẪN CHẾ ĐỘ RAG LAI:
-- Phân tích và giải thích dựa trên nội dung tài liệu và các chủ đề chuyên môn của môn học ${subjectName} đã chọn ("${selectedTopicsStr}").
-- Bám sát giáo trình đã chọn. Không chèn marker trích dẫn dạng [n] (ví dụ [1], [2], [3], [10]) vào câu trả lời; nguồn được hiển thị tự động ở chân trang.
-- Nếu câu hỏi có khía cạnh mở rộng ngoài giáo trình: Minh bạch ranh giới giữa tài liệu học phần và phân tích bổ trợ.`
+          ? `HƯỚNG DẪN CHẾ ĐỘ KẾT HỢP (HYBRID RAG):
+- Ưu tiên khai thác nội dung tài liệu môn học ${subjectName} đã chọn ("${selectedTopicsStr}") nếu tài liệu có thông tin trả lời đúng câu hỏi.
+- NẾU tài liệu không có thông tin hoặc chỉ đề cập khía cạnh khác (ví dụ: hỏi frontend nhưng tài liệu chỉ có backend), BẮT BUỘC phải chủ động dùng kiến thức chuyên ngành bên ngoài để trả lời đầy đủ, cụ thể ngay lập tức; TUYỆT ĐỐI KHÔNG dừng lại ở việc báo thiếu tài liệu.
+- Không chèn marker trích dẫn dạng [n] (ví dụ [1], [2], [3], [10]) vào câu trả lời; nguồn được hiển thị tự động ở chân trang.`
           : `HƯỚNG DẪN BÁM SÁT TÀI LIỆU (STRICT RAG):
 - Phân tích và giải thích nghiêm ngặt dựa trên nội dung tài liệu của môn học ${subjectName} đã chọn ("${selectedTopicsStr}").
 - Không suy đoán hay chêm xen kiến thức ngoài phạm vi các đoạn trích.`;
@@ -1056,19 +1119,26 @@ ${progressRules.map((rule, idx) => `${idx + 1}. ${rule}`).join('\n')}`;
 
     const scopeTierInstruction = isStudentProgress
       ? `PHÂN TẦNG 0 - HỒ SƠ & TIẾN ĐỘ HỌC TẬP CÁ NHÂN (student_progress):\n${progressSystemInstruction}`
-      : scopeCheck.intent === 'FOUNDATION_KNOWLEDGE'
-        ? answerStyle === 'concise'
-          ? `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
+      : ragMode === 'creative'
+        ? `CHẾ ĐỘ MỞ RỘNG (CREATIVE MODE):
+- Giải đáp trực diện, tự do và đầy đủ nhất bằng toàn bộ kiến thức chuyên môn của bạn.
+- TUYỆT ĐỐI KHÔNG nói "Tài liệu môn không liệt kê/đề cập..." hay so sánh với tài liệu môn học. Đi thẳng vào câu trả lời.`
+        : ragMode === 'hybrid'
+          ? `CHẾ ĐỘ KẾT HỢP (HYBRID MODE - ƯU TIÊN TÀI LIỆU, TỰ ĐỘNG MỞ RỘNG KHI THIẾU):
+- Nếu các đoạn trích trong <document> trả lời được câu hỏi: Hãy ưu tiên tổng hợp từ <document> và bổ sung góc nhìn thực tế nếu cần.
+- Nếu <document> trống HOẶC các đoạn trích chỉ nói về phần khác mà KHÔNG chứa câu trả lời cho khía cạnh người dùng hỏi: Bạn BẮT BUỘC phải "think outside the box" — chủ động sử dụng kiến thức chuyên môn bên ngoài tài liệu để trả lời trực tiếp, đầy đủ và cụ thể câu hỏi của người dùng. TUYỆT ĐỐI KHÔNG từ chối và KHÔNG dừng lại ở việc nhận xét tài liệu thiếu gì.`
+          : scopeCheck.intent === 'FOUNDATION_KNOWLEDGE'
+            ? answerStyle === 'concise'
+              ? `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
 - Câu hỏi là kiến thức tiên quyết trực tiếp cho môn "${subjectName}", nên được phép trả lời dù không có chunk tài liệu phù hợp.
 - Mở đầu đúng bằng: "> 💡 *Kiến thức nền tảng bổ trợ (ngoài giáo trình trực tiếp):*"
 - Chế độ Nhanh / Trọng tâm: chỉ giải thích ngắn gọn trong 3-4 gạch đầu dòng, sau đó liên hệ 1 câu với môn học hiện tại.`
-          : `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
+              : `PHÂN TẦNG 2 - KIẾN THỨC NỀN TẢNG BỔ TRỢ:
 - Câu hỏi là kiến thức tiên quyết trực tiếp cho môn "${subjectName}", nên được phép trả lời bằng kiến thức chuyên môn dù không có chunk tài liệu phù hợp.
 - Mở đầu đúng bằng: "> 💡 *Kiến thức nền tảng bổ trợ (ngoài giáo trình trực tiếp):*"
 - Chế độ Creative / Mở rộng: được phân tích sâu, đưa ví dụ minh họa và luôn kết nối ngược với môn học hiện tại.`
-        : `PHÂN TẦNG 1 - GIÁO TRÌNH:
-- Ưu tiên các đoạn trích đã truy hồi, nhưng không chèn marker trích dẫn dạng [n] (ví dụ [1], [2], [3], [10]) vào câu trả lời.
-- Nếu không có đoạn trích, chỉ sử dụng kiến thức nền tảng khi câu hỏi thực sự là tiên quyết trực tiếp của môn học.`;
+            : `PHÂN TẦNG 1 - GIÁO TRÌNH (STRICT):
+- Chỉ sử dụng các đoạn trích đã truy hồi, không chèn marker trích dẫn dạng [n] (ví dụ [1], [2], [3], [10]) vào câu trả lời.`;
 
     const factualGuardrail = `QUY TẮC BẢO ĐẢM TÍNH XÁC THỰC LỊCH SỬ & SỰ KIỆN (ANTI-HALLUCINATION & FACTUAL ACCURACY - BẮT BUỘC):
 - TUYỆT ĐỐI KHÔNG BỊA ĐẶT hay suy diễn sai lệch về: Mốc thời gian (năm/tháng/ngày), địa điểm tổ chức, nhân vật, số liệu và nội dung các kỳ Đại hội/sự kiện lịch sử (Ví dụ: Đại hội I họp 1935 tại Ma Cao, Đại hội II họp 1951 tại Chiêm Hóa - Tuyên Quang, Đại hội III họp 1960 tại Hà Nội, Đại hội IV họp 1976 tại Hà Nội, Đại hội VI Đổi mới họp 1986 tại Hà Nội, Đại hội XIV họp 1/2026 tại Hà Nội).
@@ -1123,7 +1193,22 @@ ${deadlineContext && questionWantsDeadlines ? `- HẠN CHÓT SẮP TỚI CỦA M
         ? `PHONG CÁCH PHẢN HỒI: Chi tiết & Chuyên sâu (Phân tích toàn diện, cặn kẽ nguyên lý, dẫn chứng và ví dụ trực quan).`
         : `PHONG CÁCH PHẢN HỒI: Nhanh & Trọng tâm (Trình bày súc tích trong 1-2 đoạn văn ngắn, đi thẳng vào bản chất và giải pháp then chốt).`;
 
-    const systemInstruction = `Bạn là Trợ lý Học tập AI chuyên trách môn "${subjectName}" trên hệ thống LMS Assistant.
+    // ── Pha B: Phân tầng Prompt theo chế độ (#9–#14) ──
+    // Chế độ Cơ bản / Chat nhanh (concise): giữ Input Token tối giản (ranh giới Strict/Hybrid + 2 dòng Anti-Fluff/Anti-Placeholder),
+    // TẮT Zero-Shot Roleplay (#12) dài dòng để TTFT dưới 500ms.
+    // Chế độ Chuyên sâu (detailed): kích hoạt đầy đủ Zero-Shot Roleplay (#12), factualGuardrail và phân tích đa chiều.
+    const isLeanConciseMode = answerStyle === 'concise' && !isStudentProgress && !isDocOverviewQuery;
+
+    const systemInstruction = isLeanConciseMode
+      ? `Bạn là Trợ lý Học tập AI môn "${subjectName}".
+${lmsGroundingContext}
+${domainGuardrail}
+${scopeTierInstruction}
+${styleInstruction}${feedbackInstruction}${remediationInstruction}
+QUY TẮC TỐI GIẢN (BẮT BUỘC):
+1. ANTI-FLUFF & ANTI-PLACEHOLDER: Cấm chào hỏi đầu câu, cấm nói "Dựa trên tài liệu...", cấm kết bài thừa ("Hy vọng...", "Tóm lại..."), cấm thẻ giữ chỗ [Tên bạn]/[Chèn ví dụ]. Đi thẳng vào nội dung từ từ đầu tiên.
+2. ĐỊNH DẠNG & NGÔN NGỮ: Đặt thuật ngữ/code trong \`code\`, công thức toán dùng $LaTeX$, phản hồi đúng ngôn ngữ câu hỏi (mặc định Tiếng Việt). Không chèn marker [1], [2], không tự nhắc deadline ngoài câu hỏi.`
+      : `Bạn là Trợ lý Học tập AI chuyên trách môn "${subjectName}" trên hệ thống LMS Assistant.
 
 ${lmsGroundingContext}
 
@@ -1181,20 +1266,21 @@ ${isStudentProgress
     if (artifactContext.trim()) {
       contextSection += `=== HỌC LIỆU ĐÃ TẠO VÀ LƯU CHO MÔN HỌC ===\n${artifactContext}\n\n`;
     }
-    contextSection += `=== CÁC TÀI LIỆU BÀI GIẢNG / HỌC TẬP ĐƯỢC CHỌN TỪ CỘT TRÁI ===\n<document>\n`;
-    if (documentContext.trim()) {
-      contextSection += `${documentContext}\n</document>\n\n`;
-    } else {
-      contextSection +=
-        ragMode === 'creative'
-          ? `(Chế độ Sáng tạo đang BẬT: Trả lời tự nhiên dựa trên tri thức chuyên môn và thông tin mở rộng)\n</document>\n\n`
-          : isParametricFallback
-            ? `(Tài liệu giáo trình chưa có dữ kiện về câu hỏi này: Sử dụng tri thức mở rộng có thông báo minh bạch)\n</document>\n\n`
-            : `(Không có tài liệu nào được tích chọn hoặc không tìm thấy thông tin phù hợp trong các tài liệu đã chọn)\n</document>\n\n`;
+    if (ragMode !== 'creative') {
+      contextSection += `=== CÁC TÀI LIỆU BÀI GIẢNG / HỌC TẬP ĐƯỢC CHỌN TỪ CỘT TRÁI ===\n<document>\n`;
+      if (documentContext.trim()) {
+        contextSection += `${documentContext}\n</document>\n\n`;
+      } else {
+        contextSection += isParametricFallback
+          ? `(Tài liệu giáo trình chưa có dữ kiện về câu hỏi này: Hãy BẮT BUỘC dùng kiến thức chuyên môn mở rộng của bạn để giải đáp trực tiếp và đầy đủ câu hỏi cho người dùng)\n</document>\n\n`
+          : `(Không có tài liệu nào được tích chọn hoặc không tìm thấy thông tin phù hợp trong các tài liệu đã chọn)\n</document>\n\n`;
+      }
     }
 
-    // ── Layer 3: System Prompt Sandwich Defense ──
-    const promptAnchor = `\n\n[LỆNH BỔ TRỢ BẮT BUỘC - ANTI-FLUFF, ANTI-PLACEHOLDER & TIẾT KIỆM TOKEN]:
+    // ── Layer 3: System Prompt Sandwich Defense (tinh gọn ở chế độ Cơ bản) ──
+    const promptAnchor = isLeanConciseMode
+      ? `\n\n[NHẮC NHANH]: Đi thẳng vào nội dung trọng tâm trong 1-2 đoạn ngắn, không chào hỏi, không văn mẫu kết bài, không thẻ giữ chỗ, không chèn marker [1]/[2], đúng ngôn ngữ câu hỏi.`
+      : `\n\n[LỆNH BỔ TRỢ BẮT BUỘC - ANTI-FLUFF, ANTI-PLACEHOLDER & TIẾT KIỆM TOKEN]:
 1. TUYỆT ĐỐI CẤM CHÀO HỎI VÀ CẤM THÔNG BÁO NGUỒN (CẤM: "Chào bạn", "Dựa trên tài liệu bạn cung cấp...", "Dựa trên kiến thức mở rộng...", "Based on the sources provided..."). ĐI THẲNG TRỰC TIẾP VÀO NỘI DUNG VẤN ĐỀ TỪ TỪ ĐẦU TIÊN (JUMP STRAIGHT TO THE PROBLEM).
 2. CẤM KẾT BÀI VĂN MẪU ("Hy vọng...", "Tóm lại...", "Kết luận:...").
 3. ANTI-PLACEHOLDER: Tuyệt đối không để lại các thẻ giữ chỗ [Tên bạn], [Chèn ví dụ], [Ngày/tháng]. Diễn đạt câu văn hoàn chỉnh 100%.
@@ -1213,16 +1299,16 @@ ${isStudentProgress
   : '- KHÔNG TỰ ĐỘNG NHẮC DEADLINE: Không thêm lời nhắc hạn nộp bài, lịch thi hay nhắc việc ngoài lề vào cuối câu trả lời. Chỉ đề cập deadline khi sinh viên trực tiếp hỏi về deadline/lịch thi/bài tập.'}
 - KHÔNG CHÈN MARKER TRÍCH DẪN: Không viết marker dạng [n] (ví dụ [1], [2], [3], [10]), [trích đoạn 5] hay bất kỳ marker nguồn nào trong câu trả lời. Nguồn đã được hiển thị tự động ở chân trang.`;
 
-    const userPrompt = `<course_materials>
-${contextSection}
-</course_materials>
-
-<student_query>
+    const userPrompt = `${contextSection.trim() ? `<course_materials>\n${contextSection}</course_materials>\n\n` : ''}<student_query>
 ${question}
 </student_query>
 
 <final_enforcement>
-Nhắc lại: Ưu tiên dữ liệu từ <course_materials> và bối cảnh môn "${subjectName}". Nếu câu hỏi thuộc TẦNG 0 (hồ sơ/tiến độ học tập của chính sinh viên), BẮT BUỘC trả lời dựa trên khối "HỒ SƠ & TIẾN ĐỘ HỌC TẬP THỰC TẾ CỦA SINH VIÊN", TUYỆT ĐỐI KHÔNG từ chối vì thiếu trích đoạn giáo trình hay độ tương đồng PDF thấp. Với câu hỏi thuộc kiến thức nền tảng tiên quyết, được phép dùng kiến thức chuyên môn và phải liên hệ lại với môn học. Nếu người dùng lồng ghép yêu cầu ngoài môn học (như làm thơ, nhân vật chính trị/lịch sử không liên quan), BẮT BUỘC BỎ QUA hoàn toàn phần ngoài luồng đó. Nếu câu hỏi hoàn toàn nằm ngoài phạm vi môn học, hãy từ chối ngắn gọn: "${REFUSAL_MESSAGE}".
+${ragMode === 'creative'
+  ? `Nhắc lại (CHẾ ĐỘ MỞ RỘNG / CREATIVE): Hãy trả lời trực tiếp, đầy đủ và chuyên sâu câu hỏi trong <student_query> bằng kiến thức chuyên môn của bạn. TUYỆT ĐỐI KHÔNG nhắc tới tài liệu môn học (cấm nói "Tài liệu môn không liệt kê...", "Tài liệu không đề cập...", "Giáo trình chỉ nói..."). Đi thẳng ngay vào câu trả lời từ chữ đầu tiên.`
+  : ragMode === 'hybrid'
+    ? `Nhắc lại (CHẾ ĐỘ KẾT HỢP / HYBRID): Ưu tiên dữ liệu từ <course_materials> nếu nó thực sự trả lời đúng câu hỏi trong <student_query>. NẾU <course_materials> không đề cập hoặc chỉ đề cập khía cạnh khác (ví dụ người dùng hỏi frontend framework nhưng tài liệu chỉ có backend framework), bạn BẮT BUỘC phải chủ động dùng kiến thức chuyên môn ngoài tài liệu để trả lời đầy đủ, cụ thể cho <student_query> ngay lập tức — TUYỆT ĐỐI KHÔNG dừng lại ở việc nói "tài liệu không đề cập" mà bỏ trống câu trả lời.`
+    : `Nhắc lại (CHẾ ĐỘ CHỈ TÀI LIỆU / STRICT): Chỉ sử dụng dữ liệu từ <course_materials> và bối cảnh môn "${subjectName}".`} Nếu câu hỏi thuộc TẦNG 0 (hồ sơ/tiến độ học tập của chính sinh viên), BẮT BUỘC trả lời dựa trên khối "HỒ SƠ & TIẾN ĐỘ HỌC TẬP THỰC TẾ CỦA SINH VIÊN", TUYỆT ĐỐI KHÔNG từ chối vì thiếu trích đoạn giáo trình hay độ tương đồng PDF thấp. Nếu người dùng lồng ghép yêu cầu ngoài môn học (như làm thơ, nhân vật chính trị/lịch sử không liên quan), BẮT BUỘC BỎ QUA hoàn toàn phần ngoài luồng đó. Nếu câu hỏi hoàn toàn nằm ngoài phạm vi môn học, hãy từ chối ngắn gọn: "${REFUSAL_MESSAGE}".
 ${promptAnchor}
 </final_enforcement>`;
 
@@ -1417,12 +1503,13 @@ ${promptAnchor}
             }
 
             if (accumulatedText && !isPersonal && !isOutOfContext && ragMode !== 'creative') {
-              storeCachedAnswer({
+              scheduleBackgroundCacheWrite({
                 question,
                 canonicalQuery: searchQuery,
                 answer: accumulatedText,
                 courseId: effectiveCourseId,
-              }).catch(() => {});
+                embedding: sharedQueryEmbedding,
+              });
             }
 
             const citedSources = isOutOfContext
@@ -1580,12 +1667,13 @@ ${promptAnchor}
     }
 
     if (!isPersonal && !isOutOfContext && !isParametricFallback && ragMode !== 'creative') {
-      storeCachedAnswer({
+      scheduleBackgroundCacheWrite({
         question,
         canonicalQuery: searchQuery,
         answer: aiText,
         courseId: effectiveCourseId,
-      }).catch(() => {});
+        embedding: sharedQueryEmbedding,
+      });
     }
 
     const citedSources = isOutOfContext
@@ -1644,8 +1732,8 @@ function compileAllSources({
 }): Array<CitationSource> {
   const sources: CitationSource[] = [];
 
-  // 1. Add course document sources from retrieved chunks (Green pills)
-  if (relevantChunks && relevantChunks.length > 0) {
+  // 1. Add course document sources from retrieved chunks (Green pills) — skip in creative mode
+  if (ragMode !== 'creative' && relevantChunks && relevantChunks.length > 0) {
     const seenDocs = new Set<string>();
     for (const chunk of relevantChunks) {
       const title = chunk.docTitle?.trim();
@@ -1662,8 +1750,17 @@ function compileAllSources({
     }
   }
 
-  // 2. Add fallback badge if parametric fallback was triggered in hybrid mode (Orange warning pill)
-  if (!isStudentProgress && (isParametricFallback || (ragMode === 'hybrid' && relevantChunks.length === 0))) {
+  // 2. Detect when Hybrid mode answered using outside-the-box knowledge (either no chunks or AI noted course docs lacked the specific topic)
+  const usedExtendedKnowledgeInHybrid =
+    ragMode === 'hybrid' &&
+    (isParametricFallback ||
+      relevantChunks.length === 0 ||
+      /(?:tài\s*liệu|giáo\s*trình|bài\s*giảng)[^.?!\n]{0,60}(?:không|chưa)\s*(?:đề\s*cập|liệt\s*kê|nêu|có\s*thông\s*tin|nói\s*tới|nhắc\s*tới)/iu.test(
+        aiText
+      ));
+
+  // Add fallback badge if parametric fallback / extended knowledge was used in hybrid mode (Orange warning pill)
+  if (!isStudentProgress && usedExtendedKnowledgeInHybrid) {
     sources.push({
       name: 'Kiến thức tham khảo ngoài giáo trình',
       type: 'extended_knowledge',
@@ -1672,17 +1769,18 @@ function compileAllSources({
     });
   }
 
-  // 3. Extract external citations (web links, Google Search Grounding) (Blue pills)
-  const isExternalSearchActive = ragMode === 'creative';
-  const extractedExt = extractCitedSources(aiText, isExternalSearchActive, question, course, groundingMetadata);
-  for (const ext of extractedExt) {
-    if (!sources.some(s => s.url === ext.url || s.name === ext.name)) {
-      sources.push({
-        name: ext.name,
-        type: 'external_web',
-        isExternal: true,
-        url: ext.url,
-      });
+  // 3. Extract external citations (web links, Google Search Grounding) (Blue pills) — skip in creative mode so we don't show source/verification badges
+  if (ragMode !== 'creative') {
+    const extractedExt = extractCitedSources(aiText, false, question, course, groundingMetadata);
+    for (const ext of extractedExt) {
+      if (!sources.some(s => s.url === ext.url || s.name === ext.name)) {
+        sources.push({
+          name: ext.name,
+          type: 'external_web',
+          isExternal: true,
+          url: ext.url,
+        });
+      }
     }
   }
 

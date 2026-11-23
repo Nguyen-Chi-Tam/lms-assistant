@@ -1426,7 +1426,7 @@ export function InteractiveMindmap({
     try {
       notify('Đang xuất ảnh PNG sơ đồ tư duy full văn bản…');
       // Lazy-load html-to-image only on export so it stays out of the initial bundle.
-      const { exportElementToPng } = await import('@/lib/export-utils');
+      const { exportElementToPng } = await import('@/lib/export/export-utils');
       const sanitizedName = (rootText || courseTitle || 'Mindmap')
         .replace(/[^a-zA-Z0-9_\u00C0-\u024F\u1E00-\u1EFF]/g, '_')
         .slice(0, 35);

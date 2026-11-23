@@ -1,5 +1,5 @@
-import { getSupabaseAdmin } from '@/lib/supabase';
-import { getFirebaseRows, getFirebaseRow, setFirebaseRow, deleteFirebaseRow } from '@/lib/firebase-admin';
+import { getSupabaseAdmin } from '@/lib/database/supabase';
+import { getFirebaseRows, getFirebaseRow, setFirebaseRow, deleteFirebaseRow } from '@/lib/database/firebase-admin';
 import type { QuizAnalysisData } from '@/app/types';
 
 export interface SaveArtifactParams {

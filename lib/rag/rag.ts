@@ -1,8 +1,8 @@
 import { getGeminiClient, executeWithGeminiPool } from '@/models/gemini';
 import { isProviderBlocked, blockProviderUntilTomorrow, isQuotaExhaustedError } from '@/models/registry';
 import { generateCloudflareEmbeddings, isCloudflareAvailable } from '@/models/cloudflare';
-import { reformulateQueryWithGroq, cleanQueryRuleBased, type QueryReformulationResult } from './query-reformulation';
-import { getUserApiKeys } from './key-manager';
+import { reformulateQueryWithGroq, cleanQueryRuleBased, type QueryReformulationResult } from '@/lib/ai/query-reformulation';
+import { getUserApiKeys } from '@/lib/security/key-manager';
 
 export interface DocumentMetadata {
   sectionId?: string | number;
@@ -53,7 +53,7 @@ export interface RetrievalOptions {
   autoReformulate?: boolean;
 }
 
-export { reformulateQueryWithGroq, cleanQueryRuleBased, type QueryReformulationResult } from './query-reformulation';
+export { reformulateQueryWithGroq, cleanQueryRuleBased, type QueryReformulationResult } from '@/lib/ai/query-reformulation';
 
 // In-memory document chunk & embedding cache: hash -> DocumentChunk[]
 const MAX_CACHED_DOCS = 50;

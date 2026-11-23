@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { runtimeEnv } from '@/db/runtime';
-import { supabaseAdmin } from '@/lib/supabase';
-import { getMoodlePool, isMoodleDbAvailable, getSubmittedUserIdsForEvent } from '@/lib/moodle-db';
-import { deleteCompletedEvent } from '@/lib/event-completion';
-import { sweepOrphanedCourseEmbeddings } from '@/lib/pinecone-vector';
-import { purgeExpiredSemanticCache } from '@/lib/semantic-cache';
+import { supabaseAdmin } from '@/lib/database/supabase';
+import { getMoodlePool, isMoodleDbAvailable, getSubmittedUserIdsForEvent } from '@/lib/database/moodle-db';
+import { deleteCompletedEvent } from '@/lib/notifications/event-completion';
+import { sweepOrphanedCourseEmbeddings } from '@/lib/rag/pinecone-vector';
+import { purgeExpiredSemanticCache } from '@/lib/rag/semantic-cache';
 
 export const maxDuration = 60; // Nới lỏng thời gian chạy tối đa lên 60 giây (tối đa của Vercel Hobby)
 export const dynamic = 'force-dynamic';

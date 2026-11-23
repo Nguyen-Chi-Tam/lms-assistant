@@ -1,4 +1,4 @@
-import { supabaseAdmin } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/database/supabase';
 
 /**
  * Xóa sớm một sự kiện đã hoàn thành (cả lớp đã nộp bài / đã điểm danh).

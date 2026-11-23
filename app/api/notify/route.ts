@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
-import { adminMessaging } from '@/lib/firebase-admin';
-import { getSubmittedUserIdsForEvent, getEnrolledUserIdsFromMoodleDb, closeMoodlePool } from '@/lib/moodle-db';
+import { supabaseAdmin } from '@/lib/database/supabase';
+import { adminMessaging } from '@/lib/database/firebase-admin';
+import { getSubmittedUserIdsForEvent, getEnrolledUserIdsFromMoodleDb, closeMoodlePool } from '@/lib/database/moodle-db';
 
 function parseAssignId(eventDetails?: string | null): number | null {
   if (!eventDetails) return null;

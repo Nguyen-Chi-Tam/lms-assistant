@@ -1,14 +1,14 @@
 import { NextResponse, after } from 'next/server';
 import { generateText } from '@/models/registry';
 import { GEMINI_MODEL } from '@/models/gemini';
-import { saveLearningArtifact } from '@/lib/learning-artifacts';
-import { sendArtifactReadyNotification } from '@/lib/artifact-notifications';
-import { parseDocumentFromUrl } from '@/lib/document-parser';
-import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag';
-import { getPersonalMaterials } from '@/lib/firebase-data';
-import { cleanSummaryData } from '@/lib/summary-cleaner';
-import { COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/anti-fluff';
-import { getUserApiKeys } from '@/lib/key-manager';
+import { saveLearningArtifact } from '@/lib/learning/learning-artifacts';
+import { sendArtifactReadyNotification } from '@/lib/notifications/artifact-notifications';
+import { parseDocumentFromUrl } from '@/lib/rag/document-parser';
+import { retrieveRelevantChunks, formatChunksForPrompt } from '@/lib/rag/rag';
+import { getPersonalMaterials } from '@/lib/database/firebase-data';
+import { cleanSummaryData } from '@/lib/ai/summary-cleaner';
+import { COMMON_FLUFF_STOP_SEQUENCES } from '@/lib/ai/anti-fluff';
+import { getUserApiKeys } from '@/lib/security/key-manager';
 import type { RagMode } from '@/app/types';
 
 // AI study-tool generation can be slow; give the serverless function room to finish.

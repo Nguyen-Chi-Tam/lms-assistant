@@ -6,7 +6,7 @@ import type {
   GenerateTextResult,
 } from './registry';
 import { blockProviderUntilTomorrow, isQuotaExhaustedError, setLastProviderError } from './registry';
-import { stripFluff } from '@/lib/anti-fluff';
+import { stripFluff } from '@/lib/ai/anti-fluff';
 
 let client: OpenAI | null = null;
 let cachedKey = '';
@@ -75,34 +75,23 @@ export async function callAionlabs(
 ): Promise<GenerateTextResult | null> {
   const aionClient = getClient();
   if (!aionClient) return null;
-  const candidates = getAionCandidates(modelId);
-  let lastErr: unknown = null;
-  for (const candidate of candidates) {
-    try {
-      opts.signal?.throwIfAborted();
-      const completion = await aionClient.chat.completions.create(buildParams(candidate, opts) as never, {
-        signal: opts.signal,
-      });
-      const text = completion.choices[0]?.message?.content?.trim();
-      if (text) return { text: stripFluff(text) };
-    } catch (err: unknown) {
-      if (opts.signal?.aborted) throw err;
-      lastErr = err;
-      const status = (err as { status?: number })?.status;
-      console.warn(`[AionLabs] Request failed (${candidate}):`, err);
-      // Hết credit Tier 0 (402/429) hoặc sai xác thực (401/403): dừng thử candidate khác
-      // để models/registry.ts có thể trượt sang provider kế tiếp.
-      if (status === 401 || status === 402 || status === 403 || status === 429) {
-        break;
-      }
-    }
+  // 1 provider = 1 call = 1 model ID (no internal fallback model loop)
+  const targetModel = normalizeAionModelId(modelId);
+  try {
+    opts.signal?.throwIfAborted();
+    const completion = await aionClient.chat.completions.create(buildParams(targetModel, opts) as never, {
+      signal: opts.signal,
+    });
+    const text = completion.choices[0]?.message?.content?.trim();
+    if (text) return { text: stripFluff(text) };
+    return null;
+  } catch (err: unknown) {
+    if (opts.signal?.aborted) throw err;
+    setLastProviderError('aionlabs', String(err));
+    if (isQuotaExhaustedError(err)) blockProviderUntilTomorrow('aionlabs', String(err));
+    console.warn(`[AionLabs] Request failed (${targetModel}):`, err);
+    return null;
   }
-  if (lastErr) {
-    setLastProviderError('aionlabs', String(lastErr));
-    if (isQuotaExhaustedError(lastErr)) blockProviderUntilTomorrow('aionlabs', String(lastErr));
-  }
-  console.warn(`[AionLabs] All candidates failed (${modelId}):`, lastErr);
-  return null;
 }
 
 export async function callAionlabsStream(
@@ -111,57 +100,42 @@ export async function callAionlabsStream(
 ): Promise<GenerateTextResult | null> {
   const aionClient = getClient();
   if (!aionClient) return null;
-  const candidates = getAionCandidates(modelId);
-  let lastErr: unknown = null;
-  for (const candidate of candidates) {
-    try {
+  // 1 provider = 1 call = 1 model ID (no internal fallback model loop)
+  const targetModel = normalizeAionModelId(modelId);
+  try {
+    opts.signal?.throwIfAborted();
+    const stream = await aionClient.chat.completions.create(
+      { ...buildParams(targetModel, opts), stream: true } as never,
+      { signal: opts.signal }
+    );
+    let text = '';
+    let finishReason: string | undefined;
+    for await (const chunk of stream as unknown as AsyncIterable<{
+      choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
+    }>) {
       opts.signal?.throwIfAborted();
-      const stream = await aionClient.chat.completions.create(
-        { ...buildParams(candidate, opts), stream: true } as never,
-        { signal: opts.signal }
-      );
-      let text = '';
-      let finishReason: string | undefined;
-      for await (const chunk of stream as unknown as AsyncIterable<{
-        choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
-      }>) {
-        opts.signal?.throwIfAborted();
-        const delta = chunk.choices?.[0]?.delta?.content || '';
-        if (delta) {
-          text += delta;
-          opts.onDelta(delta);
-        }
-        finishReason = chunk.choices?.[0]?.finish_reason || finishReason;
+      const delta = chunk.choices?.[0]?.delta?.content || '';
+      if (delta) {
+        text += delta;
+        opts.onDelta(delta);
       }
-      if (text.trim()) return { text: text.trim(), finishReason };
-    } catch (err: unknown) {
-      if (opts.signal?.aborted) throw err;
-      lastErr = err;
-      const status = (err as { status?: number })?.status;
-      console.warn(`[AionLabs Stream] Request failed (${candidate}):`, err);
-      if (status === 401 || status === 402 || status === 403 || status === 429) {
-        break;
-      }
+      finishReason = chunk.choices?.[0]?.finish_reason || finishReason;
     }
+    if (text.trim()) return { text: text.trim(), finishReason };
+    return null;
+  } catch (err: unknown) {
+    if (opts.signal?.aborted) throw err;
+    setLastProviderError('aionlabs', String(err));
+    if (isQuotaExhaustedError(err)) blockProviderUntilTomorrow('aionlabs', String(err));
+    console.warn(`[AionLabs Stream] Request failed (${targetModel}):`, err);
+    return null;
   }
-  if (lastErr) {
-    setLastProviderError('aionlabs', String(lastErr));
-    if (isQuotaExhaustedError(lastErr)) blockProviderUntilTomorrow('aionlabs', String(lastErr));
-  }
-  console.warn(`[AionLabs Stream] All candidates failed (${modelId}):`, lastErr);
-  return null;
 }
 
 function normalizeAionModelId(modelId?: string): string {
-  const raw = (modelId || "aion-labs/aion-2.0").trim();
-  if (!raw.includes("/")) {
+  const raw = (modelId || 'aion-labs/aion-2.0').trim();
+  if (!raw.includes('/')) {
     return `aion-labs/${raw}`;
   }
   return raw;
-}
-
-function getAionCandidates(requestedModel?: string): string[] {
-  const primary = normalizeAionModelId(requestedModel);
-  const fallbacks = ["aion-labs/aion-2.0", "aion-labs/aion-rp-llama-3.1-8b"];
-  return Array.from(new Set([primary, ...fallbacks]));
 }

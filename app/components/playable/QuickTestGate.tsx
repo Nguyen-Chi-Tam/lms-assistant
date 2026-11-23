@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Brain, CheckCircle2, ChevronRight, Clock3, Lightbulb, LoaderCircle, X } from 'lucide-react';
+import { Brain, CheckCircle2, ChevronRight, Clock3, Lightbulb, LoaderCircle } from 'lucide-react';
 import type { CourseSourceItem, QuizQuestion } from '@/app/types';
 import {
   QUICK_TEST_QUESTION_COUNT,
@@ -326,9 +326,6 @@ export function QuickTestGate({ courseId, courseName, userId, sources, onComplet
   return (
     <div className="quick-test-overlay">
       <section className="quick-test-card" role="dialog" aria-modal="true" aria-labelledby="quick-test-title">
-        <button type="button" className="quick-test-close" onClick={close} aria-label="Đóng câu hỏi nhanh">
-          <X size={16} />
-        </button>
         {!result ? (
           <>
             <div className="quick-test-header">

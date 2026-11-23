@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { runtimeEnv } from '../../../../db/runtime';
-import { fetchWithCache } from '@/lib/server-cache';
+import { fetchWithCache } from '@/lib/utils/server-cache';
 
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';

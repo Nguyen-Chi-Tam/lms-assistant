@@ -445,7 +445,7 @@ export function AcademicAdvisorChat({
                         onClick={async () => {
                           const el = document.getElementById(`advisor-msg-${idx}`);
                           if (el) {
-                            const { copyRichHtmlForWord } = await import('@/lib/export-utils');
+                            const { copyRichHtmlForWord } = await import('@/lib/export/export-utils');
                             await copyRichHtmlForWord(el, msg.text);
                           } else {
                             await navigator.clipboard.writeText(msg.text);

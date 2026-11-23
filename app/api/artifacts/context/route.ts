@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getPersonalMaterials } from '@/lib/firebase-data';
-import { parseDocumentFromUrl } from '@/lib/document-parser';
-import { buildStratifiedContext, HYBRID_CONTEXT_GUIDANCE } from '@/lib/stratified-context';
+import { getPersonalMaterials } from '@/lib/database/firebase-data';
+import { parseDocumentFromUrl } from '@/lib/rag/document-parser';
+import { buildStratifiedContext, HYBRID_CONTEXT_GUIDANCE } from '@/lib/rag/stratified-context';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';

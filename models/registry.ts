@@ -56,15 +56,15 @@ import {
   callPollinations,
   callPollinationsStream,
   POLLINATIONS_DEFAULT_MODEL,
-  POLLINATIONS_BACKUP_MODELS,
 } from './pollinations';
 import {
   isAionlabsAvailable,
   callAionlabs,
   callAionlabsStream,
 } from './aionlabs';
-import { buildUniversalLanguageDirective } from '@/lib/language-detector';
-import { getUserApiKeysMap, getUserApiKeys, type ByokProvider } from '@/lib/key-manager';
+import { buildUniversalLanguageDirective } from '@/lib/ai/language-detector';
+import { getUserApiKeys, getLatestUserApiKey, type ByokProvider } from '@/lib/security/key-manager';
+import { getPrunedSystemChain, mapTaskCategoryToWeight } from '@/lib/ai/ai-orchestrator';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -225,6 +225,9 @@ export function unblockProvider(provider: AIProvider) {
   providerBlockedUntil.delete(provider);
 }
 
+const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1000; // 5-minute RAM circuit breaker
+const TTFT_TIMEOUT_MS = 4_000; // 4-second Time-To-First-Token ceiling for auto-cascade
+
 export function blockProviderUntilTomorrow(provider: AIProvider, reason?: string) {
   const str = (reason || '').toLowerCase();
   const isCreditZero = str.includes('credit balance') || str.includes('credit is too low') || str.includes('plans & billing');
@@ -233,20 +236,35 @@ export function blockProviderUntilTomorrow(provider: AIProvider, reason?: string
   if (isCreditZero) {
     unblockTime = getNextDayMidnight();
   } else if (provider === 'gemini') {
-    // Only block gemini if all keys in the pool are exhausted
-    if (!isAllGeminiKeysBlocked()) {
+    // Only block gemini if all keys in the pool are exhausted or on 5xx/timeout circuit trip
+    const isTransientCircuitTrip =
+      str.includes('ttft') || str.includes('timeout') || /\b5\d{2}\b/.test(str);
+    if (!isTransientCircuitTrip && !isAllGeminiKeysBlocked()) {
       return;
     }
     const earliest = getGeminiEarliestUnblockTime();
-    unblockTime = Math.max(earliest, Date.now() + 30000);
+    unblockTime = Math.max(earliest, Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS);
   } else {
-    // Groq, Cohere, and standard rate limits are 60s windows
-    unblockTime = Date.now() + 60 * 1000;
+    // 5-minute Circuit Breaker window for 429 / 5xx / timeout
+    unblockTime = Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS;
   }
 
   providerBlockedUntil.set(provider, unblockTime);
   const resetStr = new Date(unblockTime).toLocaleTimeString();
-  console.warn(`[AI Circuit Breaker] Provider "${provider}" reached limit (${reason || '429 / Rate limit'}). Pausing "${provider}" until ${resetStr}.`);
+  console.warn(`[AI Circuit Breaker] Provider "${provider}" tripped (${reason || '429 / 5xx / timeout'}). Skipping for 5m until ${resetStr}.`);
+}
+
+export function isCircuitBreakerError(err: unknown): boolean {
+  if (!err) return false;
+  if (isQuotaExhaustedError(err)) return true;
+  const status = (err as { status?: number })?.status;
+  if (typeof status === 'number' && status >= 500 && status <= 526) return true;
+  const name = (err as { name?: string })?.name || '';
+  const msg = String((err as { message?: string })?.message || err).toLowerCase();
+  if (name === 'TimeoutError' || msg.includes('ttft_timeout') || msg.includes('timed out') || msg.includes('timeout')) {
+    return true;
+  }
+  return /\b(500|502|503|504|520|522|524)\b/.test(msg);
 }
 
 export function isQuotaExhaustedError(err: unknown): boolean {
@@ -760,70 +778,44 @@ export function getCascadeLineup(
     mode = modeOrExternal ? 'creative' : 'hybrid';
   }
 
+  // Quy ước cứng: 1 provider = 1 lần gọi = 1 model ID trong luồng tự động (không lặp backup models).
   const providerModels: Record<AIProvider, string[]> = {
-    cohere: [COHERE_MODEL, ...COHERE_BACKUP_MODELS],
-    gemini: [GEMINI_MODEL, ...GEMINI_BACKUP_MODELS],
-    // Cấp 4 / Slide / Mindmap: ưu tiên Llama 3.3 70B để xuất cấu trúc chuẩn xác.
+    cohere: [COHERE_MODEL],
+    gemini: [GEMINI_MODEL],
+    // Cấp 3-4 / Heavy / Playable / Slide / Mindmap: dùng Llama 3.3 70B trên Groq.
     groq: groqModel
       ? [groqModel]
-      : taskCategory === 'playable'
+      : taskCategory === 'playable' || taskCategory === 'complex'
         ? ['llama-3.3-70b-versatile']
-        : [GROQ_MODEL, ...GROQ_BACKUP_MODELS],
-    anthropic: ANTHROPIC_MODELS.map(model => model.id),
-    datacurso: [GROQ_MODEL, ...GROQ_BACKUP_MODELS],
+        : [GROQ_MODEL],
+    anthropic: ANTHROPIC_MODELS.slice(0, 1).map(model => model.id),
+    datacurso: [GROQ_MODEL],
     cache: [],
-    openrouter: [OPENROUTER_MODEL, ...OPENROUTER_BACKUP_MODELS],
-    cloudflare: [CLOUDFLARE_DEFAULT_MODEL, ...CLOUDFLARE_BACKUP_MODELS],
-    airforce: [AIRFORCE_DEFAULT_MODEL, ...AIRFORCE_BACKUP_MODELS],
-    orcarouter:
-      taskCategory === 'playable'
-        ? [ORCAROUTER_DEFAULT_MODEL]
-        : [ORCAROUTER_DEFAULT_MODEL, ...ORCAROUTER_BACKUP_MODELS],
-    pollinations: [POLLINATIONS_DEFAULT_MODEL, ...POLLINATIONS_BACKUP_MODELS],
+    openrouter: [OPENROUTER_MODEL],
+    cloudflare: [CLOUDFLARE_DEFAULT_MODEL],
+    airforce: [AIRFORCE_DEFAULT_MODEL],
+    orcarouter: [ORCAROUTER_DEFAULT_MODEL],
+    pollinations: [POLLINATIONS_DEFAULT_MODEL],
     aionlabs: ['aion-2.0'],
   };
 
-  const byokProviders: AIProvider[] = taskCategory === 'quick'
-    ? ['groq', 'gemini']
-    : taskCategory === 'playable'
-      ? ['gemini', 'openrouter', 'groq']
-      : taskCategory === 'basic'
-        ? ['groq', 'gemini', 'openrouter']
-        : ['gemini', 'openrouter', 'groq'];
-  const hasByok = (provider: AIProvider): boolean => {
+  // Tuyến đầu: 1 Key BYOK mới nhất (chỉ lấy tối đa 1 provider BYOK có key, không xoay vòng nhiều provider cũ).
+  const byokProviders: AIProvider[] = ['gemini', 'groq', 'openrouter'];
+  const activeByokProvider = byokProviders.find(provider => {
     if (provider === 'gemini') return Boolean(userApiKeys?.gemini?.length);
     if (provider === 'groq') return Boolean(userApiKeys?.groq?.length);
     if (provider === 'openrouter') return Boolean(userApiKeys?.openrouter?.length);
     return false;
-  };
+  });
 
-  const byokRoutes: CascadeRoute[] = byokProviders
-    .filter(hasByok)
-    .map(provider => ({ provider, models: providerModels[provider], keyMode: 'byok' }));
+  const byokRoutes: CascadeRoute[] = activeByokProvider
+    ? [{ provider: activeByokProvider, models: providerModels[activeByokProvider], keyMode: 'byok' }]
+    : [];
 
-  // Đội hình AI sau khi thanh lọc APMIX & GonkaBroker (đều toàn model trả phí):
-  // Cấp 1: Puter.js (client silent) → BYOK (Groq → Gemini) → Groq Pool (2 keys) → Cloudflare → Airforce.
-  // Không dùng OrcaRouter / Gemini Pool ở cấp này để giữ quỹ ngữ cảnh lớn.
-  const quickChain: AIProvider[] = ['groq', 'cloudflare', 'airforce', 'gemini'];
-  // Cấp 2 Hybrid/Creative: Cloudflare → Groq Pool → Airforce → Aion Labs → Pollinations → OrcaRouter → OpenRouter (:free) → Gemini Pool → Cohere
-  const basicHybrid: AIProvider[] = ['cloudflare', 'groq', 'airforce', 'aionlabs', 'pollinations', 'orcarouter', 'openrouter', 'gemini', 'cohere'];
-  // Cấp 2 Strict RAG: Cloudflare → OrcaRouter → Groq Pool → Gemini Pool → OpenRouter (:free) → Aion Labs → Airforce → Cohere
-  const basicStrict: AIProvider[] = ['cloudflare', 'orcarouter', 'groq', 'gemini', 'openrouter', 'aionlabs', 'airforce', 'cohere'];
-  // Cấp 3 Complex: OrcaRouter (1M, #1) → Gemini Pool (1M) → Pollinations (256K) → OpenRouter (:free) → Aion Labs → Cloudflare → Airforce → Groq Pool → Cohere
-  const complexChain: AIProvider[] = ['orcarouter', 'gemini', 'pollinations', 'openrouter', 'aionlabs', 'cloudflare', 'airforce', 'groq', 'cohere'];
-  // Cấp 4 Playable: OrcaRouter → Gemini Pool → Groq Pool (70B) → OpenRouter (:free ≥70B) → Pollinations → Aion Labs
-  const playableChain: AIProvider[] = ['orcarouter', 'gemini', 'groq', 'openrouter', 'pollinations', 'aionlabs'];
-
-  let systemProviders: AIProvider[];
-  if (taskCategory === 'quick') {
-    systemProviders = quickChain;
-  } else if (taskCategory === 'playable') {
-    systemProviders = playableChain;
-  } else if (taskCategory === 'basic') {
-    systemProviders = mode === 'strict' ? basicStrict : basicHybrid;
-  } else {
-    systemProviders = complexChain;
-  }
+  // Đội hình System Free tinh gọn: tối đa 4 cổng khỏe nhất mỗi phân khúc tải.
+  // Pollinations / AionLabs / Airforce / Cohere chỉ giữ lại cho chế độ kiểm thử thủ công của giảng viên.
+  const taskWeight = mapTaskCategoryToWeight(taskCategory);
+  const systemProviders: AIProvider[] = getPrunedSystemChain(taskWeight, mode);
 
   const systemRoutes: CascadeRoute[] = systemProviders.map(provider => ({
     provider,
@@ -901,9 +893,8 @@ export async function generateText(
     ? `${opts.system}\n\n${langDirective}`
     : langDirective;
 
-  // BYOK: Load personalized user keys if userId provided and keys not already populated.
-  // When a specific model is selected, only load that provider's BYOK keys so other
-  // providers' user keys are never fetched or initialized.
+  // BYOK: 1-Key BYOK Frontline Policy — in auto mode, load ONLY the single newest BYOK key.
+  // When a specific model is selected manually, load only that provider's keys.
   let resolvedUserKeys = opts.userApiKeys;
   if (opts.userId && !resolvedUserKeys) {
     try {
@@ -911,7 +902,10 @@ export async function generateText(
         const keys = await getUserApiKeys(opts.userId, parsed.provider);
         resolvedUserKeys = { gemini: [], groq: [], openrouter: [], [parsed.provider]: keys };
       } else {
-        resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+        const latestKey = await getLatestUserApiKey(opts.userId);
+        resolvedUserKeys = latestKey
+          ? { gemini: [], groq: [], openrouter: [], [latestKey.provider]: [latestKey.apiKey] }
+          : { gemini: [], groq: [], openrouter: [] };
       }
     } catch (e) {
       console.warn('[BYOK Registry] Could not load user keys:', e);
@@ -1023,7 +1017,7 @@ export async function generateText(
         }
       } catch (err) {
         if (opts.signal?.aborted) throw err;
-        if (route.keyMode !== 'byok' && isQuotaExhaustedError(err)) {
+        if (route.keyMode !== 'byok' && isCircuitBreakerError(err)) {
           blockProviderUntilTomorrow(provider, String(err));
           break;
         }
@@ -1057,9 +1051,8 @@ export async function generateTextStream(
     ? `${opts.system}\n\n${langDirective}`
     : langDirective;
 
-  // BYOK: Load personalized user keys if userId provided and keys not already populated.
-  // When a specific model is selected, only load that provider's BYOK keys so other
-  // providers' user keys are never fetched or initialized.
+  // BYOK: 1-Key BYOK Frontline Policy — in auto mode, load ONLY the single newest BYOK key.
+  // When a specific model is selected manually, load only that provider's keys.
   let resolvedUserKeys = opts.userApiKeys;
   if (opts.userId && !resolvedUserKeys) {
     try {
@@ -1067,7 +1060,10 @@ export async function generateTextStream(
         const keys = await getUserApiKeys(opts.userId, parsed.provider);
         resolvedUserKeys = { gemini: [], groq: [], openrouter: [], [parsed.provider]: keys };
       } else {
-        resolvedUserKeys = await getUserApiKeysMap(opts.userId);
+        const latestKey = await getLatestUserApiKey(opts.userId);
+        resolvedUserKeys = latestKey
+          ? { gemini: [], groq: [], openrouter: [], [latestKey.provider]: [latestKey.apiKey] }
+          : { gemini: [], groq: [], openrouter: [] };
       }
     } catch (e) {
       console.warn('[BYOK Registry] Could not load user keys for stream:', e);
@@ -1245,7 +1241,7 @@ export async function generateTextStream(
         }
       } catch (err) {
         if (opts.signal?.aborted) throw err;
-        if (route.keyMode !== 'byok' && isQuotaExhaustedError(err)) {
+        if (route.keyMode !== 'byok' && isCircuitBreakerError(err)) {
           blockProviderUntilTomorrow(provider, String(err));
           break;
         }
@@ -1257,49 +1253,22 @@ export async function generateTextStream(
     }
   }
 
-  // Fallback sang non-streaming nếu mọi luồng stream đều lỗi
-  try {
-    const isContinuing = accumulatedText.trim().length > 0 && !opts.jsonMode;
-    const fallbackPrompt = isContinuing
-      ? buildContinuationPrompt(opts.userPrompt, accumulatedText)
-      : opts.userPrompt;
-
-    const fallbackOpts: GenerateTextOptions = {
-      ...effectiveOpts,
-      userPrompt: fallbackPrompt,
-    };
-
-    const fallback = await generateText(modelSelector, fallbackOpts);
-    if (fallback.text) {
-      opts.onDelta(fallback.text);
-      accumulatedText += fallback.text;
-    }
+  // Bảo toàn nội dung đã stream được nếu tất cả cổng khỏe đều lỗi; không chạy lại vòng non-stream toàn tuyến gây nhân đôi độ trễ.
+  if (accumulatedText.trim().length > 0) {
     return {
-      text: accumulatedText || fallback.text || '',
-      groundingMetadata: fallback.groundingMetadata || lastGroundingMetadata,
-      provider: fallback.provider || activeProvider,
-      modelId: fallback.modelId || activeModelId,
-      modelName: fallback.modelName || activeModelName,
-      finishReason: fallback.finishReason || activeFinishReason || 'stop',
-      keySource: fallback.keySource,
+      text: accumulatedText,
+      groundingMetadata: lastGroundingMetadata,
+      provider: activeProvider,
+      modelId: activeModelId,
+      modelName: activeModelName,
+      finishReason: activeFinishReason || 'error',
     };
-  } catch (fallbackErr) {
-    if (accumulatedText.trim().length > 0) {
-      // Dù fallback thất bại hoàn toàn, bảo toàn đoạn văn bản đã xuất ra cho học viên
-      return {
-        text: accumulatedText,
-        groundingMetadata: lastGroundingMetadata,
-        provider: activeProvider,
-        modelId: activeModelId,
-        modelName: activeModelName,
-        finishReason: 'error',
-      };
-    }
-    throw fallbackErr;
   }
+
+  return { text: '' };
 }
 
-/** Call a specific provider with streaming */
+/** Call a specific provider with streaming and a 4s TTFT ceiling in auto-cascade mode */
 async function callProviderStream(
   provider: AIProvider,
   modelId: string,
@@ -1311,8 +1280,30 @@ async function callProviderStream(
   }
   let keySource: 'system' | 'byok' | undefined;
   let metaSent = false;
+  let firstTokenReceived = false;
+  let ttftTimedOut = false;
+
+  // Enforce 4-second TTFT (Time-To-First-Token) limit for auto-cascade; cancel timer on first delta.
+  const ttftController = !opts.strictModel ? new AbortController() : null;
+  const ttftTimer = ttftController
+    ? setTimeout(() => {
+        if (!firstTokenReceived) {
+          ttftTimedOut = true;
+          ttftController.abort(new Error(`TTFT_TIMEOUT (${TTFT_TIMEOUT_MS}ms) on ${provider}:${modelId}`));
+        }
+      }, TTFT_TIMEOUT_MS)
+    : null;
+
+  const combinedSignal =
+    ttftController && opts.signal
+      ? AbortSignal.any([opts.signal, ttftController.signal])
+      : ttftController
+        ? ttftController.signal
+        : opts.signal;
+
   const wrappedOpts: GenerateTextStreamOptions = {
     ...opts,
+    signal: combinedSignal,
     userApiKeys: opts.keyMode === 'system'
       ? { gemini: [], groq: [], openrouter: [] }
       : opts.userApiKeys,
@@ -1321,6 +1312,10 @@ async function callProviderStream(
       opts.onKeySource?.(source);
     },
     onDelta: (delta: string) => {
+      if (!firstTokenReceived && delta) {
+        firstTokenReceived = true;
+        if (ttftTimer) clearTimeout(ttftTimer);
+      }
       if (!metaSent) {
         metaSent = true;
         opts.onMeta?.({
@@ -1335,50 +1330,71 @@ async function callProviderStream(
   };
 
   let res: GenerateTextResult | null = null;
-  switch (provider) {
-    case 'cohere':
-      res = await callCohereStream(modelId, wrappedOpts);
-      break;
-    case 'gemini':
-      res = await callGeminiStream(modelId, wrappedOpts);
-      break;
-    case 'groq':
-      res = await callGroqStream(modelId, wrappedOpts);
-      break;
-    case 'cloudflare':
-      res = await callCloudflareAIStream(modelId, wrappedOpts);
-      break;
-    case 'openrouter':
-      res = await callOpenRouterStream(modelId, wrappedOpts);
-      break;
-    case 'airforce':
-      res = await callAirforceStream(modelId, wrappedOpts);
-      break;
-    case 'orcarouter':
-      res = await callOrcaRouterStream(modelId, wrappedOpts);
-      break;
-    case 'pollinations':
-      res = await callPollinationsStream(modelId, wrappedOpts);
-      break;
-    case 'aionlabs':
-      res = await callAionlabsStream(modelId, wrappedOpts);
-      break;
-    case 'anthropic':
-      res = await callAnthropicStream(modelId, wrappedOpts);
-      break;
-    case 'datacurso': {
-      res = await callGroqStream(GROQ_MODEL, wrappedOpts);
-      if (!res?.text && GROQ_BACKUP_MODELS[0]) {
-        res = await callGroqStream(GROQ_BACKUP_MODELS[0], wrappedOpts);
+  try {
+    switch (provider) {
+      case 'cohere':
+        res = await callCohereStream(modelId, wrappedOpts);
+        break;
+      case 'gemini':
+        res = await callGeminiStream(modelId, wrappedOpts);
+        break;
+      case 'groq':
+        res = await callGroqStream(modelId, wrappedOpts);
+        break;
+      case 'cloudflare':
+        res = await callCloudflareAIStream(modelId, wrappedOpts);
+        break;
+      case 'openrouter':
+        res = await callOpenRouterStream(modelId, wrappedOpts);
+        break;
+      case 'airforce':
+        res = await callAirforceStream(modelId, wrappedOpts);
+        break;
+      case 'orcarouter':
+        res = await callOrcaRouterStream(modelId, wrappedOpts);
+        break;
+      case 'pollinations':
+        res = await callPollinationsStream(modelId, wrappedOpts);
+        break;
+      case 'aionlabs':
+        res = await callAionlabsStream(modelId, wrappedOpts);
+        break;
+      case 'anthropic':
+        res = await callAnthropicStream(modelId, wrappedOpts);
+        break;
+      case 'datacurso': {
+        res = await callGroqStream(GROQ_MODEL, wrappedOpts);
+        break;
       }
-      if (!res?.text) {
-        res = await callGeminiStream(GEMINI_MODEL, wrappedOpts);
-      }
-      break;
+      default:
+        return null;
     }
-    default:
+  } catch (err) {
+    if (opts.signal?.aborted) throw err;
+    if (ttftTimedOut) {
+      const reason = `TTFT_TIMEOUT (${TTFT_TIMEOUT_MS}ms)`;
+      setLastProviderError(provider, reason);
+      if (opts.keyMode !== 'byok') {
+        blockProviderUntilTomorrow(provider, reason);
+      }
+      console.warn(`[AI TTFT Guard] ${provider}:${modelId} exceeded ${TTFT_TIMEOUT_MS}ms without first token; switching route.`);
       return null;
+    }
+    throw err;
+  } finally {
+    if (ttftTimer) clearTimeout(ttftTimer);
   }
+
+  if (ttftTimedOut && !firstTokenReceived) {
+    const reason = `TTFT_TIMEOUT (${TTFT_TIMEOUT_MS}ms)`;
+    setLastProviderError(provider, reason);
+    if (opts.keyMode !== 'byok') {
+      blockProviderUntilTomorrow(provider, reason);
+    }
+    console.warn(`[AI TTFT Guard] ${provider}:${modelId} timed out before first token; switching route.`);
+    return null;
+  }
+
   if (res && res.text) {
     return {
       ...res,
@@ -1445,28 +1461,13 @@ async function callGemini(modelId: string, opts: GenerateTextOptions): Promise<G
       : AbortSignal.timeout(8000);
 
     return await executeWithGeminiPool(async (client) => {
-      let response;
-      try {
-        response = await client.models.generateContent({
-          model: modelId,
-          contents: formattedContents,
-          config,
-          ...(timeoutSignal ? { signal: timeoutSignal } : {}),
-        });
-      } catch (firstErr: any) {
-        if (firstErr?.status === 503 || String(firstErr).includes('503')) {
-          await new Promise(r => setTimeout(r, 1200));
-          timeoutSignal?.throwIfAborted();
-          response = await client.models.generateContent({
-            model: modelId,
-            contents: formattedContents,
-            config,
-            ...(timeoutSignal ? { signal: timeoutSignal } : {}),
-          });
-        } else {
-          throw firstErr;
-        }
-      }
+      // 1 provider = 1 call (no 1200ms 503 sleep retry)
+      const response = await client.models.generateContent({
+        model: modelId,
+        contents: formattedContents,
+        config,
+        ...(timeoutSignal ? { signal: timeoutSignal } : {}),
+      });
 
       const text = (response.text || '').trim();
       if (!text) return null;

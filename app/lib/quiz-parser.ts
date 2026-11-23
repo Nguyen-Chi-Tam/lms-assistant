@@ -1,4 +1,4 @@
-import { stripFluff } from '@/lib/anti-fluff';
+import { stripFluff } from '@/lib/ai/anti-fluff';
 
 export interface MatchingPair {
   left: string;

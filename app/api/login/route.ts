@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { runtimeEnv } from '../../../db/runtime';
-import { supabaseAdmin } from '../../../lib/supabase';
+import { supabaseAdmin } from '../../../lib/database/supabase';
 import { getDb } from '../../../db';
 import { users } from '../../../db/schema';
 import { eq } from 'drizzle-orm';

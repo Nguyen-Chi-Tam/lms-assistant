@@ -1,6 +1,6 @@
-import { generateEmbeddings, cosineSimilarity } from './rag';
-import { supabaseAdmin } from './supabase';
-import { stripFluff, isPollutedResponse } from './anti-fluff';
+import { generateEmbeddings, cosineSimilarity } from '@/lib/rag/rag';
+import { supabaseAdmin } from '@/lib/database/supabase';
+import { stripFluff, isPollutedResponse } from '@/lib/ai/anti-fluff';
 
 export interface CachedQaItem {
   id: string;
@@ -201,9 +201,11 @@ export async function findCachedAnswer(options: {
   canonicalQuery?: string;
   courseId?: string | number;
   threshold?: number;
+  /** Optional precomputed query embedding shared with Vector RAG to avoid duplicate embedding calls. */
+  precomputedEmbedding?: number[];
 }): Promise<CacheMatchResult | null> {
   totalCacheQueries++;
-  const { question, canonicalQuery, courseId, threshold = 0.92 } = options;
+  const { question, canonicalQuery, courseId, threshold = 0.92, precomputedEmbedding } = options;
   const rawClean = question.trim();
   if (!rawClean) return null;
 
@@ -332,11 +334,15 @@ export async function findCachedAnswer(options: {
   }
 
   // 3. Semantic Path: Vector search on Supabase via match_cached_queries RPC
-  // Use canonical query if available for clean, noise-free vector representation
+  // Reuse precomputed embedding when provided to avoid a duplicate embedding API call.
   const textToEmbed = canonicalClean && canonicalClean.length >= 3 ? canonicalClean : rawClean;
 
   try {
-    const [queryEmbed] = await generateEmbeddings([textToEmbed]);
+    let queryEmbed = precomputedEmbedding;
+    if (!queryEmbed || queryEmbed.length === 0) {
+      const [generated] = await generateEmbeddings([textToEmbed]);
+      queryEmbed = generated ?? undefined;
+    }
     if (queryEmbed && queryEmbed.length > 0) {
       if (supabaseAdmin) {
         try {
@@ -365,33 +371,15 @@ export async function findCachedAnswer(options: {
             const sim = Number(hit.similarity) || threshold;
             totalCacheHits++;
 
-            // Lookup full record to get id and current hit_count for accurate LRU tracking
-            let hitId = hit.id as string | undefined;
-            let currentHitCount = typeof hit.hit_count === 'number' ? hit.hit_count : 0;
-
-            try {
-              const { data: fullRow } = await supabaseAdmin
-                .from('semantic_query_cache')
-                .select('id, hit_count')
-                .eq('course_id', targetCourseId)
-                .eq('ai_response', hit.ai_response)
-                .limit(1)
-                .maybeSingle();
-
-              if (fullRow) {
-                hitId = fullRow.id;
-                currentHitCount = Number(fullRow.hit_count) || 0;
-              }
-            } catch {
-              // Best effort fallback
-            }
-
+            // Use id/hit_count directly from RPC payload; avoid an extra blocking SELECT round-trip.
+            const hitId = hit.id as string | undefined;
+            const currentHitCount = typeof hit.hit_count === 'number' ? hit.hit_count : 0;
             const nextHitCount = currentHitCount + 1;
             console.log(
               `[Semantic Cache RPC Hit] "${rawClean.slice(0, 45)}" -> match ${(sim * 100).toFixed(1)}% >= ${(threshold * 100).toFixed(0)}% (course: ${targetCourseId}, Count: ${nextHitCount})`
             );
 
-            // Update hit_count and last_accessed_at in Supabase
+            // Fire-and-forget hit_count & last_accessed_at update (non-blocking)
             if (hitId) {
               Promise.resolve(
                 supabaseAdmin

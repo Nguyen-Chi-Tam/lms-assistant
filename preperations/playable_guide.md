@@ -9,12 +9,12 @@ Tài liệu này hướng dẫn triển khai chi tiết phân hệ **6 trò chơ
 
 ---
 
-## 1. Cơ chế Giới hạn 1 Lượt/Ngày/Môn & Chống Gọi Trùng Puter (`lib/playable-limit.ts`)
+## 1. Cơ chế Giới hạn 1 Lượt/Ngày/Môn & Chống Gọi Trùng Puter (`lib/playable/playable-limit.ts`)
 
 Quản lý trạng thái theo ngày trong `localStorage` để đảm bảo mỗi trò chơi chỉ được chơi 1 lượt/ngày cho mỗi môn học, đồng thời giữ lại bàn chơi đang dở nếu người dùng lỡ tay bấm `F5` giữa chừng (tránh mất lượt hoặc gọi lại Puter.js lần 2).
 
 ```ts
-// lib/playable-limit.ts
+// lib/playable/playable-limit.ts
 export type PlayableType =
   | "mystery_concept" // Đoán thuật ngữ ẩn (kiểu Statle)
   | "speed_matching"  // Nối cặp tốc độ 45s
@@ -87,12 +87,12 @@ export function saveDailyPlayable<T>(
 
 ---
 
-## 2. Bộ Sinh Dữ liệu 1-Pass từ Puter.js (`lib/playable-generator.ts`)
+## 2. Bộ Sinh Dữ liệu 1-Pass từ Puter.js (`lib/playable/playable-generator.ts`)
 
 Mỗi prompt ép mô hình trả về JSON thuần kèm sẵn trường `explanation` (giải thích ngắn 1–2 câu) để UI hiển thị ngay lập tức khi người chơi trả lời sai hoặc hết giờ.
 
 ```ts
-// lib/playable-generator.ts
+// lib/playable/playable-generator.ts
 import { PlayableType } from "./playable-limit";
 
 declare global {
@@ -261,11 +261,11 @@ export function buildWordMask(target: string): string {
 }
 ```
 
-### 3.2. Thuật toán Xếp lưới Ô chữ Tự động (`lib/crossword-layout.ts`)
+### 3.2. Thuật toán Xếp lưới Ô chữ Tự động (`lib/playable/crossword-layout.ts`)
 Thay vì để AI tự tính tọa độ lưới 2D (dễ gây lệch chữ), thuật toán dưới đây nhận danh sách `{ word, clue }` từ Puter.js và tự dựng lưới giao cắt trên trình duyệt trong $< 5\text{ms}$, đồng thời xuất ra trường `unlockedBy` phục vụ 3 cấp độ khó (**Dễ**: mở hết gợi ý; **Bình thường / Khó**: giải xong từ gốc mới mở khóa gợi ý từ giao cắt).
 
 ```ts
-// lib/crossword-layout.ts
+// lib/playable/crossword-layout.ts
 export interface PlacedWord {
   id: number;
   word: string;

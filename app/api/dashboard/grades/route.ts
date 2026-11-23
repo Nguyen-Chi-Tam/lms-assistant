@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { runtimeEnv } from '@/db/runtime';
-import { fetchWithCache, invalidateCache } from '@/lib/server-cache';
-import { supabaseAdmin } from '@/lib/supabase';
+import { fetchWithCache, invalidateCache } from '@/lib/utils/server-cache';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import type {
   CourseAnalyticsItem,
   CourseGradeSummary,

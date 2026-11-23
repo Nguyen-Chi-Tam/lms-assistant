@@ -3,11 +3,11 @@ import { currentUserId } from '../../../db/runtime';
 import { getDb } from '../../../db';
 import { personalMaterials, users } from '../../../db/schema';
 import { eq, desc } from 'drizzle-orm';
-import { deleteMaterialFile, uploadMaterialFile } from '../../../lib/cloudinary';
-import { supabaseAdmin } from '../../../lib/supabase';
-import { deleteFirebaseRow, getFirebaseRow, setFirebaseRow } from '@/lib/firebase-admin';
-import { getPersonalMaterials } from '@/lib/firebase-data';
-import { invalidateCourseCache } from '@/lib/semantic-cache';
+import { deleteMaterialFile, uploadMaterialFile } from '../../../lib/media/cloudinary';
+import { supabaseAdmin } from '../../../lib/database/supabase';
+import { deleteFirebaseRow, getFirebaseRow, setFirebaseRow } from '@/lib/database/firebase-admin';
+import { getPersonalMaterials } from '@/lib/database/firebase-data';
+import { invalidateCourseCache } from '@/lib/rag/semantic-cache';
 
 const allowedTypes = new Set([
   'application/pdf',

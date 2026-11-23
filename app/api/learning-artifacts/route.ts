@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { saveLearningArtifact, getLearningArtifacts, deleteLearningArtifact, updateLearningArtifact } from '@/lib/learning-artifacts';
-import { supabaseAdmin } from '@/lib/supabase';
+import { saveLearningArtifact, getLearningArtifacts, deleteLearningArtifact, updateLearningArtifact } from '@/lib/learning/learning-artifacts';
+import { supabaseAdmin } from '@/lib/database/supabase';
 import { getDb } from '@/db';
 import { learningArtifacts } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';

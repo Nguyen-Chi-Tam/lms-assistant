@@ -161,7 +161,7 @@ import {
 } from "lucide-react";
 import { MysteryConceptSession, GuessTurn } from "@/types/mystery-concept";
 import { isGuessCorrect } from "@/lib/mystery-concept-utils";
-import { saveDailyPlayable } from "@/lib/playable-limit";
+import { saveDailyPlayable } from "@/lib/playable/playable-limit";
 
 interface MysteryConceptGameProps {
   userId: number;

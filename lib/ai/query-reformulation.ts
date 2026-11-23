@@ -1,6 +1,6 @@
 import { getGroqClient, executeWithGroqPool, GROQ_MODEL, GROQ_BACKUP_MODELS } from '@/models/groq';
 import { isProviderBlocked, blockProviderUntilTomorrow, isQuotaExhaustedError } from '@/models/registry';
-import { isStudentProgressQuery } from '@/lib/scope-guard';
+import { isStudentProgressQuery } from '@/lib/ai/scope-guard';
 
 /** Nhãn ý định 3 cấp do Groq trả về trong CÙNG request với cụm từ khóa. */
 export type ReformulatedIntent = 'student_progress' | 'curriculum_or_prereq' | 'off_topic';

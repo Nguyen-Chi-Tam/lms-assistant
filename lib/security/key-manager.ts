@@ -1,8 +1,8 @@
 import { getDb } from '@/db';
 import { userApiKeys } from '@/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
-import { supabaseAdmin } from '@/lib/supabase';
-import { encryptApiKey, decryptApiKey, maskApiKey } from './encryption-utils';
+import { supabaseAdmin } from '@/lib/database/supabase';
+import { encryptApiKey, decryptApiKey, maskApiKey } from '@/lib/security/encryption-utils';
 
 export type ByokProvider = 'gemini' | 'groq' | 'openrouter';
 
@@ -48,12 +48,22 @@ export function normalizeProvider(provider: string): ByokProvider | null {
  * In-memory TTL cache for decrypted user keys to avoid querying & decrypting
  * on every single streaming token or parallel API call.
  */
+export interface LatestByokKey {
+  id: string;
+  userId: number;
+  provider: ByokProvider;
+  apiKey: string;
+  keyName: string;
+  createdAt: string;
+}
+
 interface CachedKeys {
   keysMap: {
     gemini: string[];
     groq: string[];
     openrouter: string[];
   };
+  latestKey: LatestByokKey | null;
   summary: UserKeySummary;
   expiresAt: number;
 }
@@ -145,6 +155,7 @@ async function loadDecryptedUserKeys(userId: number): Promise<CachedKeys> {
   };
 
   const keyRecords: UserApiKeyRecord[] = [];
+  let latestKey: LatestByokKey | null = null;
 
   for (const row of rawRows) {
     const canonical = normalizeProvider(row.provider);
@@ -157,16 +168,32 @@ async function loadDecryptedUserKeys(userId: number): Promise<CachedKeys> {
     );
 
     if (decrypted && decrypted.trim()) {
-      keysMap[canonical].push(decrypted.trim());
+      const cleanKey = decrypted.trim();
+      keysMap[canonical].push(cleanKey);
 
-      const masked = maskApiKey(decrypted);
+      const masked = maskApiKey(cleanKey);
+      const createdAtIso = row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString();
+      const keyName = row.key_name || `${canonical.toUpperCase()} Key (${masked})`;
+
+      // rawRows is ordered newest-first (created_at DESC, id DESC), so the first valid row is the latest BYOK key.
+      if (!latestKey) {
+        latestKey = {
+          id: row.id,
+          userId: row.user_id,
+          provider: canonical,
+          apiKey: cleanKey,
+          keyName,
+          createdAt: createdAtIso,
+        };
+      }
+
       keyRecords.push({
         id: row.id,
         userId: row.user_id,
         provider: canonical,
-        keyName: row.key_name || `${canonical.toUpperCase()} Key (${masked})`,
+        keyName,
         maskedKey: masked,
-        createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+        createdAt: createdAtIso,
       });
     }
   }
@@ -183,6 +210,7 @@ async function loadDecryptedUserKeys(userId: number): Promise<CachedKeys> {
 
   const entry: CachedKeys = {
     keysMap,
+    latestKey,
     summary,
     expiresAt: Date.now() + CACHE_TTL_MS,
   };
@@ -202,6 +230,18 @@ export async function getUserApiKeys(
   if (!userId || userId <= 0) return [];
   const { keysMap } = await loadDecryptedUserKeys(userId);
   return keysMap[provider] || [];
+}
+
+/**
+ * Returns only the single most recently added/updated BYOK key for a user.
+ * Enforces the 1-Key BYOK Frontline Policy (no cycling through older BYOK keys).
+ */
+export async function getLatestUserApiKey(
+  userId: number | undefined | null
+): Promise<LatestByokKey | null> {
+  if (!userId || userId <= 0) return null;
+  const { latestKey } = await loadDecryptedUserKeys(userId);
+  return latestKey;
 }
 
 /**

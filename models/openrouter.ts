@@ -6,7 +6,7 @@ import type {
   GenerateTextResult,
 } from './registry';
 import { isQuotaExhaustedError, blockProviderUntilTomorrow, setLastProviderError } from './registry';
-import { stripFluff } from '@/lib/anti-fluff';
+import { stripFluff } from '@/lib/ai/anti-fluff';
 
 const systemClientMap = new Map<string, OpenAI>();
 const systemKeyBlockedUntil = new Map<string, number>();

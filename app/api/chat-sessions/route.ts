@@ -2,10 +2,10 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/db';
 import { chatSessions, users } from '@/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
-import { supabaseAdmin } from '@/lib/supabase';
-import { deleteFirebaseRow, getFirebaseRows, setFirebaseRow } from '@/lib/firebase-admin';
-import { stripFluff } from '@/lib/anti-fluff';
-import { fetchWithCache, invalidateCache } from '@/lib/server-cache';
+import { supabaseAdmin } from '@/lib/database/supabase';
+import { deleteFirebaseRow, getFirebaseRows, setFirebaseRow } from '@/lib/database/firebase-admin';
+import { stripFluff } from '@/lib/ai/anti-fluff';
+import { fetchWithCache, invalidateCache } from '@/lib/utils/server-cache';
 
 export async function GET(request: Request) {
   try {
